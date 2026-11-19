@@ -80,7 +80,7 @@ const openHand = hand(null);
 const fistHand = fistOf(openHand);
 const openOp = B.palmOpenness(openHand), fistOp = B.palmOpenness(fistHand);
 check('OPENNESS open hand above open minimum', openOp >= B.PALM_OPEN_MIN, 'open=' + openOp.toFixed(2));
-check('OPENNESS fist below closed maximum', fistOp <= 1.45, 'fist=' + fistOp.toFixed(2));
+check('OPENNESS fist below closed maximum', fistOp <= B.PALM_CLOSED_MAX, 'fist=' + fistOp.toFixed(2));
 check('OPENNESS garbage landmarks -> null', B.palmOpenness([{ x: 0, y: 0 }]) === null && B.palmOpenness(null) === null);
 let ev = B.evaluatePalmMovement([2.08, 2.05, 2.09, 2.07, 2.06, 2.08, 2.05, 2.09]); // a photo: constant
 check('MOVEMENT static series (photo) FAILS', !ev.pass, 'range=' + ev.range.toFixed(3));
