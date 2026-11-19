@@ -111,6 +111,11 @@
         <button type="button" data-facing="environment">Back camera</button>
       </div>
       <p class="camnote">Front camera = self-scan. Back camera = a cashier scans a customer across the counter. This choice applies to this step only.</p>
+      <div class="camtoggle flashtoggle" data-flash-toggle="enrollFace" role="group" aria-label="Face flash choice">
+        <button type="button" data-flash="off" class="on">Flash Off</button>
+        <button type="button" data-flash="on">Flash On</button>
+      </div>
+      <p class="camnote flashnote" data-flash-note="enrollFace"></p>
       <div class="camwrap"><video id="faceVideo" autoplay playsinline muted></video>
         <div class="guide"><div class="oval"></div></div>
         <div class="camstatus" id="faceStatus">Camera not started.</div></div>
@@ -130,6 +135,11 @@
         <button type="button" data-facing="environment">Back camera</button>
       </div>
       <p class="camnote">Front camera = self-scan. Back camera = a cashier scans a customer across the counter. This choice applies to this step only.</p>
+      <div class="camtoggle flashtoggle" data-flash-toggle="enrollPalm" role="group" aria-label="Palm flash choice">
+        <button type="button" data-flash="off" class="on">Flash Off</button>
+        <button type="button" data-flash="on">Flash On</button>
+      </div>
+      <p class="camnote flashnote" data-flash-note="enrollPalm"></p>
       <div class="camwrap"><video id="palmVideo" autoplay playsinline muted></video>
         <div class="guide"><div class="hand"></div></div>
         <div class="camstatus" id="palmStatus">Camera not started.</div></div>
@@ -143,12 +153,17 @@
 
     <div id="enroll-finger" class="card hidden">
       <h2>Step 4 — Fingerprint through the camera (real)</h2>
-      <p class="sub">Defaults to the <b>back camera</b> — you can switch to the front camera with the toggle below. Hold your fingertip facing the camera, <b>5–8 cm away</b>, filling the guide, in good light, and keep still. You will see your original photo and the enhanced ridge image taken from its real pixels. Blurry prints are rejected — never invented.</p>
+      <p class="sub">Defaults to the <b>back camera</b> — you can switch to the front camera with the toggle below. Hold your fingertip facing the camera, <b>5–8 cm away</b>, filling the guide, in good light, and keep still. Turn Flash On if the fingertip is too dark - flash is manual, it never comes on by itself. You will see your original photo and the enhanced ridge image taken from its real pixels. Blurry prints are rejected — never invented.</p>
       <div class="camtoggle" data-cam-toggle="enrollFinger" role="group" aria-label="Fingerprint camera choice">
         <button type="button" data-facing="user">Front camera</button>
         <button type="button" data-facing="environment" class="on">Back camera</button>
       </div>
       <p class="camnote">Back camera = a cashier scans a customer's fingertip across the counter (default for fingerprint). Front camera = self-scan. This choice applies to this step only.</p>
+      <div class="camtoggle flashtoggle" data-flash-toggle="enrollFinger" role="group" aria-label="Fingerprint flash choice">
+        <button type="button" data-flash="off" class="on">Flash Off</button>
+        <button type="button" data-flash="on">Flash On</button>
+      </div>
+      <p class="camnote flashnote" data-flash-note="enrollFinger"></p>
       <div class="camwrap"><video id="fingerVideo" autoplay playsinline muted></video>
         <div class="guide"><div class="finger"></div></div>
         <div class="camstatus" id="fingerStatus">Camera not started.</div></div>
@@ -192,6 +207,11 @@
         <button type="button" data-facing="environment">Back camera</button>
       </div>
       <p class="camnote">Front camera = self-scan. Back camera = a cashier scans a customer across the counter. The terminal remembers a separate choice for each method (Face / Palm / Fingerprint).</p>
+      <div class="camtoggle flashtoggle" data-flash-toggle="terminal" role="group" aria-label="Terminal flash choice">
+        <button type="button" data-flash="off" class="on">Flash Off</button>
+        <button type="button" data-flash="on">Flash On</button>
+      </div>
+      <p class="camnote flashnote" data-flash-note="terminal"></p>
       <div class="camwrap" style="margin-top:14px"><video id="termVideo" autoplay playsinline muted></video>
         <div class="guide"><div class="oval" id="termGuide"></div></div>
         <div class="camstatus" id="termStatus">Camera not started.</div></div>

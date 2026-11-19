@@ -84,10 +84,11 @@
 
   /* ---------------- Camera manager --------------------------------------- */
   var Cam = {
-    stream: null, video: null,
-    start: function (video, facingMode) {
+    stream: null, video: null, viewKey: null,
+    start: function (video, facingMode, viewKey) {
       this.stop();
       this.video = video;
+      this.viewKey = viewKey || null;
       // Preview mirroring is DISPLAY ONLY and only for the front camera.
       // Captures always use the raw video frame (drawImage / detectors read
       // the untransformed pixels), so enrolling on one camera and verifying
@@ -102,18 +103,25 @@
         Cam.stream = stream;
         video.srcObject = stream;
         return video.play().then(function () {
-          // Best-effort torch for the rear camera fingerprint step.
-          try {
-            var track = stream.getVideoTracks()[0];
-            var caps = track && track.getCapabilities ? track.getCapabilities() : {};
-            if (caps && caps.torch) track.applyConstraints({ advanced: [{ torch: true }] }).catch(function () {});
-          } catch (e) {}
+          // Flash is MANUAL only - it is never turned on automatically.
+          // The one exception to "only from the toggle": if the user had
+          // already chosen Flash On for this view before the camera
+          // started, honour that explicit choice now (via the same
+          // apply helper the toggle uses).
+          if (viewKey && typeof flashState !== 'undefined' && flashState[viewKey]) {
+            return applyFlashForKey(viewKey).then(function () { return stream; });
+          }
           return stream;
         });
       });
     },
     stop: function () {
-      if (this.stream) { this.stream.getTracks().forEach(function (t) { t.stop(); }); this.stream = null; }
+      if (this.stream) {
+        this.stream.getTracks().forEach(function (t) { t.stop(); });
+        this.stream = null;
+        // The old track is gone, so that view's flash choice resets to Off.
+        if (this.viewKey && typeof resetFlash === 'function') resetFlash(this.viewKey);
+      }
       if (this.video) { try { this.video.srcObject = null; } catch (e) {} }
     }
   };
@@ -154,6 +162,96 @@
           var videoId = groupKey === 'enrollFace' ? 'faceVideo' : groupKey === 'enrollPalm' ? 'palmVideo' : groupKey === 'enrollFinger' ? 'fingerVideo' : 'termVideo';
           applyMirror(videoId, b.dataset.facing);
           if (restart && Cam.stream && Cam.video === $(videoId)) restart();
+        });
+      });
+    });
+  }
+
+  /* ---------------- Per-view flash (torch) choice -------------------------
+     Flash is INDEPENDENT and MANUAL - never automatic. Every camera view
+     has its own Flash Off | Flash On toggle next to its Front | Back
+     toggle, default OFF, remembered per view (terminal: per method) in
+     this state object - keyed exactly like camFacing. The ONLY code that
+     ever lights the torch is applyTorchToCurrentTrack below, and it is
+     only ever called from the flash toggle handler or, when a camera
+     starts, to honour a Flash On the user had already chosen for that
+     view. Switching camera or stopping the camera resets that view's
+     flash to Off (see Cam.stop). */
+  var flashState = {
+    enrollFace: false, enrollPalm: false, enrollFinger: false,
+    termFace: false, termPalm: false, termFinger: false
+  };
+  function flashGroupKey(key) { return key.indexOf('term') === 0 ? 'terminal' : key; }
+  function flashKeyForGroup(groupKey) { return groupKey === 'terminal' ? termFacingKey($('termMethod').value) : groupKey; }
+  function flashVideoId(groupKey) {
+    return groupKey === 'enrollFace' ? 'faceVideo' : groupKey === 'enrollPalm' ? 'palmVideo' : groupKey === 'enrollFinger' ? 'fingerVideo' : 'termVideo';
+  }
+  function syncFlashToggle(groupKey) {
+    var key = flashKeyForGroup(groupKey);
+    document.querySelectorAll('[data-flash-toggle="' + groupKey + '"] button').forEach(function (b) {
+      b.classList.toggle('on', (b.dataset.flash === 'on') === !!flashState[key]);
+    });
+  }
+  function setFlashNote(groupKey, text) {
+    var n = document.querySelector('[data-flash-note="' + groupKey + '"]');
+    if (n) n.textContent = text || '';
+  }
+  function resetFlash(key) {
+    if (!key || !(key in flashState)) return;
+    flashState[key] = false;
+    syncFlashToggle(flashGroupKey(key));
+    setFlashNote(flashGroupKey(key), '');
+  }
+  /* The single place in the app that applies the torch constraint.
+     Resolves true only when the live track actually accepted it. */
+  function applyTorchToCurrentTrack(on) {
+    var track = Cam.stream && Cam.stream.getVideoTracks ? Cam.stream.getVideoTracks()[0] : null;
+    if (!track || !track.applyConstraints) return Promise.resolve(false);
+    var caps = {};
+    try { caps = track.getCapabilities ? track.getCapabilities() : {}; } catch (e) {}
+    if (!caps.torch) return Promise.resolve(false); // not supported on this camera/device
+    return track.applyConstraints({ advanced: [{ torch: !!on }] })
+      .then(function () { return true; })
+      .catch(function () { return false; });
+  }
+  /* Honour view key's stored Flash On against the live track. If the
+     camera/device has no torch, say so plainly and leave flash Off. */
+  function applyFlashForKey(key) {
+    var groupKey = flashGroupKey(key);
+    if (!flashState[key]) { setFlashNote(groupKey, ''); return Promise.resolve(); }
+    return applyTorchToCurrentTrack(true).then(function (ok) {
+      if (!ok) {
+        flashState[key] = false;
+        syncFlashToggle(groupKey);
+        setFlashNote(groupKey, 'Flash is not available on this camera/device.');
+      } else {
+        setFlashNote(groupKey, '');
+      }
+    });
+  }
+  function wireFlashToggles() {
+    document.querySelectorAll('[data-flash-toggle]').forEach(function (group) {
+      var groupKey = group.dataset.flashToggle;
+      group.querySelectorAll('button').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var key = flashKeyForGroup(groupKey);
+          var wantOn = b.dataset.flash === 'on';
+          if (!!flashState[key] === wantOn) { syncFlashToggle(groupKey); return; }
+          flashState[key] = wantOn;
+          syncFlashToggle(groupKey);
+          var live = Cam.stream && Cam.video === $(flashVideoId(groupKey));
+          if (!wantOn) {
+            setFlashNote(groupKey, '');
+            if (live) applyTorchToCurrentTrack(false);
+            return;
+          }
+          if (live) {
+            applyFlashForKey(key);
+          } else {
+            // Camera not started yet: remember the choice; it is applied
+            // when the camera starts - because the user chose it.
+            setFlashNote(groupKey, 'Flash is set On - it will light when this camera starts.');
+          }
         });
       });
     });
@@ -383,7 +481,7 @@
   function startFaceCamera() {
     var status = $('faceStatus');
     loadFaceModel(status).catch(function () {});
-    Cam.start($('faceVideo'), camFacing.enrollFace).then(function () {
+    Cam.start($('faceVideo'), camFacing.enrollFace, 'enrollFace').then(function () {
       status.textContent = 'Loading face model / looking for a face...';
       stopFaceWatch();
       faceWatch = setInterval(function () {
@@ -412,7 +510,7 @@
 
   /* Palm enroll */
   function startPalmCamera() {
-    Cam.start($('palmVideo'), camFacing.enrollPalm).then(function () {
+    Cam.start($('palmVideo'), camFacing.enrollPalm, 'enrollPalm').then(function () {
       Palm.startLoop($('palmVideo'), $('palmStatus'));
       var iv = setInterval(function () { $('palmCapture').disabled = !Palm.latest; if (!Palm.running) clearInterval(iv); }, 300);
     }).catch(function (e) { $('palmMsg').innerHTML = cameraErrorHTML(e); $('palmStatus').textContent = 'Camera blocked.'; });
@@ -434,7 +532,7 @@
 
   /* Finger enroll */
   function startFingerCamera() {
-    Cam.start($('fingerVideo'), camFacing.enrollFinger).then(function () {
+    Cam.start($('fingerVideo'), camFacing.enrollFinger, 'enrollFinger').then(function () {
       $('fingerStatus').textContent = (camFacing.enrollFinger === 'environment' ? 'Back' : 'Front') + ' camera on - fingertip 5-8 cm away, filling the guide.';
       $('fingerCapture').disabled = false;
     }).catch(function (e) { $('fingerMsg').innerHTML = cameraErrorHTML(e); $('fingerStatus').textContent = 'Camera blocked.'; });
@@ -497,6 +595,8 @@
     $('termGuide').className = m === 'finger' ? 'finger' : m === 'palm' ? 'hand' : 'oval';
     $('termScan').disabled = true;
     syncCamToggle('terminal');
+    syncFlashToggle('terminal');
+    setFlashNote('terminal', flashState[termFacingKey(m)] ? 'Flash is set On - it will light when this camera starts.' : '');
     applyMirror('termVideo', camFacing[termFacingKey(m)]);
     if (Cam.stream && Cam.video === $('termVideo')) startTermCamera();
   });
@@ -514,7 +614,7 @@
         return;
       }
       if (method === 'face') loadFaceModel(status).catch(function () {});
-      Cam.start($('termVideo'), camFacing[termFacingKey(method)]).then(function () {
+      Cam.start($('termVideo'), camFacing[termFacingKey(method)], termFacingKey(method)).then(function () {
         status.textContent = method === 'finger' ? 'Camera on - fingertip 5-8 cm away, filling the guide.' : 'Camera on - position for the scan, then Run Scan.';
         $('termScan').disabled = false;
         if (method === 'palm') Palm.startLoop($('termVideo'), status);
@@ -656,7 +756,9 @@
   /* ---------------- Boot --------------------------------------------------- */
   window.TSGApp = { go: go };
   wireCamToggles();
+  wireFlashToggles();
   syncCamToggle('terminal');
+  ['enrollFace', 'enrollPalm', 'enrollFinger', 'terminal'].forEach(function (g) { syncFlashToggle(g); });
   fillStoreSelects();
   DB.open().then(function () { renderDashboard(); fillTerminalPeople(); });
 })();
