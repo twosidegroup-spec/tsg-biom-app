@@ -270,27 +270,57 @@
     ]);
     return faceModelReady;
   }
+  var FACE_SCORE_FLOOR = 0.65;
   function detectFaceDescriptor(video) {
+    // Strict: EXACTLY ONE face in frame, detection confidence at or above
+    // the floor, and a sane (non-degenerate) descriptor. Anything else is
+    // "no face" - it can never become a capture or a verification.
     return loadFaceModel().then(function () {
-      return faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.5 }))
-        .withFaceLandmarks().withFaceDescriptor();
-    }).then(function (det) {
-      if (!det) return null;
-      return Array.from(det.descriptor);
+      return faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: FACE_SCORE_FLOOR }))
+        .withFaceLandmarks().withFaceDescriptors();
+    }).then(function (dets) {
+      if (!dets || dets.length !== 1) return null;
+      var det = dets[0];
+      if (!det.detection || det.detection.score < FACE_SCORE_FLOOR) return null;
+      var desc = Array.from(det.descriptor);
+      return B.faceDescriptorSane(desc) ? desc : null;
     });
   }
 
   /* ---------------- Palm (MediaPipe Hands) ------------------------------- */
   var Palm = {
-    hands: null, latest: null, running: false, video: null,
+    hands: null, latest: null, running: false, video: null, buffer: [],
     init: function () {
       if (this.hands) return;
       var self = this;
       this.hands = new Hands({ locateFile: function (f) { return 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/' + f; } });
-      this.hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+      this.hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.5 });
       this.hands.onResults(function (res) {
         self.latest = (res.multiHandLandmarks && res.multiHandLandmarks[0]) ? res.multiHandLandmarks[0] : null;
+        // Keep the last 8 landmark sets: captures average them, which cuts
+        // single-frame landmark jitter roughly in half - the main cause of
+        // genuine palm scans being rejected ("not properly scanning").
+        if (self.latest) {
+          self.buffer.push(self.latest);
+          if (self.buffer.length > 8) self.buffer.shift();
+        }
       });
+    },
+    // Averaged landmarks over recent frames, or null if too few samples.
+    averagedLandmarks: function () {
+      if (this.buffer.length < 3) return null;
+      var sets = this.buffer.slice(-5);
+      var out = [];
+      for (var i = 0; i < 21; i++) {
+        var x = 0, y = 0, z = 0;
+        sets.forEach(function (s) { x += s[i].x; y += s[i].y; z += s[i].z || 0; });
+        out.push({ x: x / sets.length, y: y / sets.length, z: z / sets.length });
+      }
+      return out;
+    },
+    captureDescriptor: function () {
+      var avg = this.averagedLandmarks();
+      return avg ? B.palmDescriptorFromLandmarks(avg) : null;
     },
     startLoop: function (video, statusEl) {
       this.init();
@@ -306,7 +336,7 @@
         setTimeout(loop, 120);
       })();
     },
-    stop: function () { this.running = false; this.latest = null; }
+    stop: function () { this.running = false; this.latest = null; this.buffer = []; }
   };
 
   /* ---------------- Fingerprint through camera --------------------------- */
@@ -328,7 +358,10 @@
     var ridge = B.adaptiveThreshold(sharp, size, size, 10, 12);
     drawGray(origCanvas, stretched, size, size);
     drawGray(ridgeCanvas, ridge, size, size);
-    var quality = B.fingerprintQuality(stretched, size, size, ridge);
+    // The quality gate reads the ORIGINAL grayscale - never the stretched
+    // copy (stretching amplifies dark-room sensor noise until blank frames
+    // look "sharp", which let covered-camera frames pass the old gate).
+    var quality = B.fingerprintQuality(gray, size, size, ridge);
     var record = null;
     if (quality.ok) {
       var template = B.downscaleTemplate(ridge, size, size, 96);
@@ -351,7 +384,8 @@
 
   /* ---------------- Navigation ------------------------------------------- */
   function go(page) {
-    document.querySelectorAll('#mainNav button').forEach(function (b) { b.classList.toggle('active', b.dataset.page === page); });
+    var navPage = (page === 'stores' || page === 'logs' || page === 'partner') ? 'more' : page;
+    document.querySelectorAll('#mainNav button').forEach(function (b) { b.classList.toggle('active', b.dataset.page === navPage); });
     document.querySelectorAll('section.page').forEach(function (s) { s.classList.toggle('active', s.id === 'page-' + page); });
     if (page !== 'enroll' && page !== 'terminal') { Cam.stop(); Palm.stop(); stopFaceWatch(); }
     if (page === 'dashboard') renderDashboard();
@@ -365,6 +399,9 @@
   });
   document.querySelectorAll('[data-launch]').forEach(function (b) {
     b.addEventListener('click', function () { go('terminal'); $('termStore').value = b.dataset.launch; toast('Terminal set to ' + b.dataset.launch); });
+  });
+  document.querySelectorAll('[data-go]').forEach(function (b) {
+    b.addEventListener('click', function () { go(b.dataset.go); });
   });
 
   /* ---------------- Dashboard -------------------------------------------- */
@@ -390,16 +427,19 @@
   var ENROLL_ORDER = ['face', 'palm', 'finger'];
   var METHOD_LABEL = { face: 'Face', palm: 'Palm', finger: 'Fingerprint' };
   var enroll = { details: null, face: null, palm: null, finger: null, types: { face: true, palm: true, finger: true } };
+  var STEP_LABEL = { details: 'Details + Wallet', face: 'Face Scan', palm: 'Palm Scan', finger: 'Fingerprint Scan', done: 'Biom ID' };
   function setStep(step) {
-    document.querySelectorAll('#enrollSteps span').forEach(function (s) {
-      var order = ['details', 'face', 'palm', 'finger', 'done'];
-      s.classList.toggle('on', s.dataset.step === step);
-      s.classList.toggle('done', order.indexOf(s.dataset.step) < order.indexOf(step));
-      s.classList.toggle('skipped', ENROLL_ORDER.indexOf(s.dataset.step) >= 0 && !enroll.types[s.dataset.step]);
-    });
     ['details', 'face', 'palm', 'finger', 'done'].forEach(function (s) {
       $('enroll-' + s).classList.toggle('hidden', s !== step);
     });
+    // Simple progress: "Step 2 of 4 - Palm Scan", counting only the steps
+    // this enrollment actually takes (details + chosen biometrics + done).
+    var flow = ['details'].concat(ENROLL_ORDER.filter(function (s) { return enroll.types[s]; }), ['done']);
+    var idx = flow.indexOf(step);
+    if (idx >= 0) {
+      $('enrollProgress').textContent = 'Step ' + (idx + 1) + ' of ' + flow.length + ' — ' + STEP_LABEL[step];
+      $('enrollProgressBar').style.width = Math.round(((idx + 1) / flow.length) * 100) + '%';
+    }
   }
   function capturedCount() { return [enroll.face, enroll.palm, enroll.finger].filter(function (v) { return !!v; }).length; }
   function advanceFrom(step) {
@@ -512,14 +552,14 @@
   function startPalmCamera() {
     Cam.start($('palmVideo'), camFacing.enrollPalm, 'enrollPalm').then(function () {
       Palm.startLoop($('palmVideo'), $('palmStatus'));
-      var iv = setInterval(function () { $('palmCapture').disabled = !Palm.latest; if (!Palm.running) clearInterval(iv); }, 300);
+      var iv = setInterval(function () { $('palmCapture').disabled = Palm.buffer.length < 3; if (!Palm.running) clearInterval(iv); }, 300);
     }).catch(function (e) { $('palmMsg').innerHTML = cameraErrorHTML(e); $('palmStatus').textContent = 'Camera blocked.'; });
   }
   $('palmStart').addEventListener('click', startPalmCamera);
   camRestarters.enrollPalm = startPalmCamera;
   $('palmCapture').addEventListener('click', function () {
-    var desc = Palm.latest ? B.palmDescriptorFromLandmarks(Palm.latest) : null;
-    if (!desc) { $('palmMsg').innerHTML = '<div class="error">No hand landmarks available. Nothing was stored. Show an open palm and retry.</div>'; return; }
+    var desc = Palm.captureDescriptor();
+    if (!desc) { $('palmMsg').innerHTML = '<div class="error">No usable open palm detected. Nothing was stored. Hold one open palm still, fingers spread, filling the guide, and retry.</div>'; return; }
     enroll.palm = desc; Palm.stop(); Cam.stop();
     $('palmMsg').innerHTML = '<div class="success">Real palm hand-geometry descriptor captured (30 measures from 21 landmarks).</div>';
     advanceFrom('palm');
@@ -566,18 +606,46 @@
   });
 
   /* ---------------- Terminal --------------------------------------------- */
+  var termPeopleCache = [];
+  function renderTermPeople() {
+    var q = ($('termSearch').value || '').toLowerCase();
+    var current = $('termPerson').value;
+    var list = termPeopleCache.filter(function (p) {
+      return !q || p.name.toLowerCase().indexOf(q) >= 0 || p.id.toLowerCase().indexOf(q) >= 0 || (p.phone || '').indexOf(q) >= 0;
+    });
+    $('termPerson').innerHTML = list.length
+      ? list.map(function (p) { return '<option value="' + esc(p.id) + '">' + esc(p.name) + ' — ' + esc(p.id) + '</option>'; }).join('')
+      : '<option value="">' + (termPeopleCache.length ? 'No one matches that search' : 'No one enrolled on this device yet') + '</option>';
+    if (list.some(function (p) { return p.id === current; })) $('termPerson').value = current;
+    fillTermMethods();
+  }
   function fillTerminalPeople() {
     return DB.all('people').then(function (people) {
-      $('termPerson').innerHTML = people.length
-        ? people.map(function (p) { return '<option value="' + esc(p.id) + '">' + esc(p.name) + ' — ' + esc(p.id) + '</option>'; }).join('')
-        : '<option value="">No one enrolled on this device yet</option>';
+      termPeopleCache = people;
+      renderTermPeople();
     });
   }
+  // Method list shows ONLY what the selected person actually enrolled.
+  function fillTermMethods() {
+    var person = termPeopleCache.find(function (p) { return p.id === $('termPerson').value; }) || null;
+    var current = $('termMethod').value;
+    var available = ENROLL_ORDER.filter(function (m) { return personHasMethod(person, m); });
+    $('termMethod').innerHTML = available.length
+      ? available.map(function (m) { return '<option value="' + m + '">' + esc(METHOD_LABEL[m]) + (m === 'palm' ? ' — Hand Geometry' : m === 'finger' ? ' (camera)' : '') + '</option>'; }).join('')
+      : '<option value="">No biometrics enrolled for this person</option>';
+    if (available.indexOf(current) >= 0) $('termMethod').value = current;
+    $('termMethodNote').textContent = person
+      ? (available.length ? person.name + ' enrolled: ' + available.map(function (m) { return METHOD_LABEL[m]; }).join(', ') + '.' : person.name + ' has no usable biometric enrolled - re-enroll this person first.')
+      : '';
+    $('termMethod').dispatchEvent(new Event('change'));
+  }
   function personHasMethod(person, method) {
+    // An enrollment only counts if the stored data is present AND sane -
+    // a missing, empty or degenerate template can never be verified against.
     if (!person) return false;
-    if (method === 'face') return !!person.faceDescriptor;
-    if (method === 'palm') return !!person.palmDescriptor;
-    return !!person.fingerprint;
+    if (method === 'face') return B.faceDescriptorSane(person.faceDescriptor);
+    if (method === 'palm') return B.palmDescriptorSane(person.palmDescriptor);
+    return B.fingerprintRecordSane(person.fingerprint);
   }
   function notEnrolledMessage(person, method) {
     return 'This person has no ' + METHOD_LABEL[method] + ' enrolled - choose a method they enrolled. ' +
@@ -600,7 +668,8 @@
     applyMirror('termVideo', camFacing[termFacingKey(m)]);
     if (Cam.stream && Cam.video === $('termVideo')) startTermCamera();
   });
-  $('termPerson').addEventListener('change', function () { $('termScan').disabled = true; });
+  $('termPerson').addEventListener('change', function () { $('termScan').disabled = true; fillTermMethods(); });
+  $('termSearch').addEventListener('input', renderTermPeople);
   function startTermCamera() {
     var method = $('termMethod').value;
     var status = $('termStatus');
@@ -649,10 +718,10 @@
           return { r: r, measured: 'Euclidean distance ' + (r.distance === null ? 'n/a' : r.distance.toFixed(3)) + ' (threshold ' + r.threshold + ')' };
         });
       } else if (method === 'palm') {
-        var livePalm = Palm.latest ? B.palmDescriptorFromLandmarks(Palm.latest) : null;
-        if (!livePalm) { $('termResult').innerHTML = '<div class="error">No hand detected in the live frame. Nothing was verified. Show an open palm and run the scan again.</div>'; return null; }
+        var livePalm = Palm.captureDescriptor();
+        if (!livePalm) { $('termResult').innerHTML = '<div class="error">No usable open palm detected in the live frames. Nothing was verified. Hold one open palm still, fingers spread, and run the scan again.</div>'; return null; }
         var rp = B.verifyPalm(person.palmDescriptor, livePalm);
-        attempt = Promise.resolve({ r: rp, measured: 'Geometry distance ' + rp.distance.toFixed(3) + ' (threshold ' + rp.threshold + ')' });
+        attempt = Promise.resolve({ r: rp, measured: 'Geometry distance ' + (rp.distance === null ? 'n/a' : rp.distance.toFixed(3)) + ' (threshold ' + rp.threshold + ')' });
       } else {
         var cap;
         try { cap = captureFinger($('termVideo'), $('termFingerOriginal'), $('termFingerRidge')); }
@@ -662,22 +731,22 @@
           return null;
         }
         var rf = B.verifyFingerprint(person.fingerprint, cap.record);
-        attempt = Promise.resolve({ r: rf, measured: 'Template correlation ' + rf.correlation.toFixed(3) + ', texture similarity ' + rf.textureSimilarity.toFixed(3) + ', score ' + rf.score.toFixed(3) + ' (threshold ' + rf.threshold + ')' });
+        attempt = Promise.resolve({ r: rf, measured: 'Template correlation ' + (rf.correlation === null ? 'n/a' : rf.correlation.toFixed(3)) + ' (needs ' + rf.threshold + '), texture similarity ' + (rf.textureSimilarity === null ? 'n/a' : rf.textureSimilarity.toFixed(3)) + ' (needs ' + rf.textureThreshold + ') - both must pass' });
       }
 
       return Promise.resolve(attempt).then(function (out) {
         if (!out) return;
         if (out.fail) { $('termResult').innerHTML = '<div class="error">' + esc(out.fail) + '</div>'; return; }
         var r = out.r;
-        var verified = !!r.verified;
+        var verified = r.ok === true && r.verified === true; // fail closed: only an explicit pass verifies
         return logVerification(person, method, out.measured, verified ? 'Verified' : 'Denied').then(function () {
           var html;
           if (!verified) {
-            html = '<div class="error"><b>Denied.</b> ' + esc(r.reason) + '<br>Measured: ' + esc(out.measured) + '</div>';
+            html = '<div class="resultbig bad"><div class="verdict">NOT VERIFIED</div><div class="who">' + esc(person.name) + ' — ' + esc(METHOD_LABEL[method]) + ' scan did not match</div><div class="meas">' + esc(r.reason) + '<br>Measured: ' + esc(out.measured) + '</div></div>';
             $('termResult').innerHTML = html;
             return;
           }
-          html = '<div class="success"><b>Verified — ' + esc(person.name) + ' (' + esc(person.id) + ')</b><br>Measured: ' + esc(out.measured) + '</div>';
+          html = '<div class="resultbig ok"><div class="verdict">VERIFIED</div><div class="who">' + esc(person.name) + ' (' + esc(person.id) + ')</div><div class="meas">Measured: ' + esc(out.measured) + '</div></div>';
           if (amount > 0) {
             if (!person.walletProvider) {
               $('termResult').innerHTML = html + '<div class="error" style="margin-top:10px">Biom Pay not created: this person has no linked bKash / Nagad wallet.</div>';
@@ -691,10 +760,12 @@
               };
               return DB.put('transactions', tx).then(function () {
                 $('termResult').innerHTML = html +
-                  '<div class="card" style="margin-top:12px"><h2>Biom Pay receipt</h2><div class="kv">' +
+                  '<div class="receipt"><div class="rhead">Biom Pay — Payment Authorized</div><div class="kv">' +
+                  '<b>Amount:</b> BDT ' + tx.amount.toLocaleString() + '<br>' +
+                  '<b>Paid by:</b> ' + esc(person.name) + '<br>' +
+                  '<b>Wallet:</b> ' + esc(tx.provider) + ' ' + esc(tx.walletMasked) + '<br>' +
                   '<b>Record ID:</b> ' + esc(tx.id) + ' (TSG Biom record — not a ' + esc(tx.provider) + ' TrxID)<br>' +
-                  '<b>Amount:</b> BDT ' + tx.amount.toLocaleString() + '<br><b>Wallet:</b> ' + esc(tx.provider) + ' ' + esc(tx.walletMasked) + '<br>' +
-                  '<b>Store:</b> ' + esc(tx.store) + '<br><b>Authorized by:</b> ' + esc(method) + ' scan — ' + esc(out.measured) + '<br>' +
+                  '<b>Store:</b> ' + esc(tx.store) + '<br><b>Authorized by:</b> ' + esc(METHOD_LABEL[method]) + ' scan — ' + esc(out.measured) + '<br>' +
                   '<b>Status:</b> ' + esc(tx.status) + '</div></div>';
                 toast('Biom Pay authorized: ' + tx.id);
               });
@@ -715,15 +786,21 @@
       }).map(function (p) {
         return '<tr><td><b>' + esc(p.name) + '</b><br><span style="color:var(--muted)">' + esc(p.phone || '') + '</span></td>' +
           '<td>' + esc(p.id) + '</td><td>' + esc(p.type) + '<br><span style="color:var(--muted)">' + esc(p.store) + '</span></td>' +
-          '<td>' + (p.faceDescriptor ? '<span class="badge ok">Enrolled</span>' : '<span class="badge bad">Not enrolled</span>') + '</td>' +
-          '<td>' + (p.palmDescriptor ? '<span class="badge ok">Enrolled</span>' : '<span class="badge bad">Not enrolled</span>') + '</td>' +
-          '<td>' + (p.fingerprint ? '<img class="thumb" src="' + p.fingerprint.ridgeImage + '" alt="Captured fingerprint ridges"><br><span class="badge ok">Enrolled</span>' : '<span class="badge bad">Not enrolled</span>') + '</td>' +
+          '<td>' + (personHasMethod(p, 'face') ? '<span class="badge ok">Enrolled</span>' : '<span class="badge bad">Not enrolled</span>') + '</td>' +
+          '<td>' + (personHasMethod(p, 'palm') ? '<span class="badge ok">Enrolled</span>' : '<span class="badge bad">Not enrolled</span>') + '</td>' +
+          '<td>' + (personHasMethod(p, 'finger') ? '<img class="thumb" src="' + p.fingerprint.ridgeImage + '" alt="Captured fingerprint ridges"><br><span class="badge ok">Enrolled</span>' : '<span class="badge bad">Not enrolled</span>') + '</td>' +
           '<td>' + (p.walletProvider ? esc(p.walletProvider) + '<br>' + esc(B.maskWalletNumber(p.walletNumber)) : '—') + '</td>' +
           '<td><button class="btn small" data-verify="' + esc(p.id) + '">Verify</button></td></tr>';
       }).join('');
       $('registryBody').innerHTML = rows || '<tr><td colspan="8" style="color:var(--muted)">No enrollments on this device yet.</td></tr>';
       document.querySelectorAll('[data-verify]').forEach(function (b) {
-        b.addEventListener('click', function () { go('terminal'); $('termPerson').value = b.dataset.verify; });
+        b.addEventListener('click', function () {
+          go('terminal');
+          $('termSearch').value = '';
+          renderTermPeople();
+          $('termPerson').value = b.dataset.verify;
+          fillTermMethods();
+        });
       });
     });
   }
