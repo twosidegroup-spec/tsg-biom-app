@@ -88,6 +88,11 @@
     start: function (video, facingMode) {
       this.stop();
       this.video = video;
+      // Preview mirroring is DISPLAY ONLY and only for the front camera.
+      // Captures always use the raw video frame (drawImage / detectors read
+      // the untransformed pixels), so enrolling on one camera and verifying
+      // on the other still compares consistently.
+      video.classList.toggle('mirror', facingMode === 'user');
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         return Promise.reject(new Error('This browser does not expose a camera (getUserMedia unavailable). Open TSG Biom over HTTPS in Chrome or Safari.'));
       }
@@ -116,6 +121,42 @@
   function cameraErrorHTML(err) {
     return '<div class="error">Camera unavailable: ' + esc(err && err.message ? err.message : err) +
       '<br>Allow camera permission for this site and retry. TSG Biom does not simulate a scan when the camera is blocked.</div>';
+  }
+
+  /* ---------------- Per-step camera choice (Front / Back) -----------------
+     Every camera view has its own independent Front | Back toggle.
+     Defaults: Face Front, Palm Front, Fingerprint Back — for enrollment
+     steps and, separately, for each terminal method. Choices are kept in
+     this state object for the whole session. */
+  var camFacing = {
+    enrollFace: 'user', enrollPalm: 'user', enrollFinger: 'environment',
+    termFace: 'user', termPalm: 'user', termFinger: 'environment'
+  };
+  var camRestarters = {}; // key -> function that (re)starts that view's camera
+  function termFacingKey(method) { return 'term' + method.charAt(0).toUpperCase() + method.slice(1); }
+  function syncCamToggle(key) {
+    document.querySelectorAll('[data-cam-toggle="' + key + '"] button').forEach(function (b) {
+      b.classList.toggle('on', b.dataset.facing === camFacing[key === 'terminal' ? termFacingKey($('termMethod').value) : key]);
+    });
+  }
+  function applyMirror(videoId, facing) { var v = $(videoId); if (v) v.classList.toggle('mirror', facing === 'user'); }
+  function wireCamToggles() {
+    document.querySelectorAll('[data-cam-toggle]').forEach(function (group) {
+      var groupKey = group.dataset.camToggle;
+      group.querySelectorAll('button').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var key = groupKey === 'terminal' ? termFacingKey($('termMethod').value) : groupKey;
+          if (camFacing[key] === b.dataset.facing) return;
+          camFacing[key] = b.dataset.facing;
+          syncCamToggle(groupKey);
+          // If this view's camera is live, restart it on the new camera.
+          var restart = camRestarters[groupKey];
+          var videoId = groupKey === 'enrollFace' ? 'faceVideo' : groupKey === 'enrollPalm' ? 'palmVideo' : groupKey === 'enrollFinger' ? 'fingerVideo' : 'termVideo';
+          applyMirror(videoId, b.dataset.facing);
+          if (restart && Cam.stream && Cam.video === $(videoId)) restart();
+        });
+      });
+    });
   }
 
   /* ---------------- Face model (face-api) -------------------------------- */
@@ -248,16 +289,62 @@
   }
 
   /* ---------------- Enroll flow ------------------------------------------ */
-  var enroll = { details: null, face: null, palm: null, finger: null };
+  var ENROLL_ORDER = ['face', 'palm', 'finger'];
+  var METHOD_LABEL = { face: 'Face', palm: 'Palm', finger: 'Fingerprint' };
+  var enroll = { details: null, face: null, palm: null, finger: null, types: { face: true, palm: true, finger: true } };
   function setStep(step) {
     document.querySelectorAll('#enrollSteps span').forEach(function (s) {
       var order = ['details', 'face', 'palm', 'finger', 'done'];
       s.classList.toggle('on', s.dataset.step === step);
       s.classList.toggle('done', order.indexOf(s.dataset.step) < order.indexOf(step));
+      s.classList.toggle('skipped', ENROLL_ORDER.indexOf(s.dataset.step) >= 0 && !enroll.types[s.dataset.step]);
     });
     ['details', 'face', 'palm', 'finger', 'done'].forEach(function (s) {
       $('enroll-' + s).classList.toggle('hidden', s !== step);
     });
+  }
+  function capturedCount() { return [enroll.face, enroll.palm, enroll.finger].filter(function (v) { return !!v; }).length; }
+  function advanceFrom(step) {
+    var idx = ENROLL_ORDER.indexOf(step);
+    var next = ENROLL_ORDER.slice(idx + 1).filter(function (s) { return enroll.types[s]; })[0];
+    if (next) { setStep(next); return; }
+    finishEnrollment(step);
+  }
+  function finishEnrollment(fromStep) {
+    var msgIds = { face: 'faceMsg', palm: 'palmMsg', finger: 'fingerMsg' };
+    function fail(html) {
+      var id = msgIds[fromStep];
+      if (id && $(id)) $(id).innerHTML = html;
+      toast('Enrollment not finished - no biometric was captured.');
+    }
+    if (!enroll.details) { fail('<div class="error">Enrollment is incomplete - details are missing. Go back and start again.</div>'); return; }
+    if (capturedCount() === 0) {
+      fail('<div class="error">No biometric was captured, so no Biom ID was issued. Capture at least one of Face, Palm or Fingerprint - each one works independently.</div>');
+      return;
+    }
+    Cam.stop(); Palm.stop(); stopFaceWatch();
+    DB.nextSeq('biomSeq', 2841).then(function (seq) {
+      var person = {
+        id: 'TSG-BIO-' + seq,
+        name: enroll.details.name, phone: enroll.details.phone, type: enroll.details.type, store: enroll.details.store,
+        walletProvider: enroll.details.walletProvider, walletNumber: enroll.details.walletNumber,
+        faceDescriptor: enroll.face || null, palmDescriptor: enroll.palm || null,
+        fingerprint: enroll.finger ? { template: enroll.finger.template, texture: enroll.finger.texture, quality: enroll.finger.quality, ridgeImage: enroll.finger.ridgeImage } : null,
+        enrolledAt: Date.now()
+      };
+      return DB.put('people', person).then(function () {
+        setStep('done');
+        $('enrollDoneBody').innerHTML =
+          '<b>Name:</b> ' + esc(person.name) + '<br><b>Biom ID:</b> ' + esc(person.id) + '<br>' +
+          '<b>Store:</b> ' + esc(person.store) + '<br>' +
+          '<b>Face:</b> ' + (person.faceDescriptor ? 'Enrolled (128-d descriptor)' : 'Not enrolled') + '<br>' +
+          '<b>Palm:</b> ' + (person.palmDescriptor ? 'Enrolled (hand geometry)' : 'Not enrolled') + '<br>' +
+          '<b>Fingerprint:</b> ' + (person.fingerprint ? 'Enrolled (camera template, quality ' + person.fingerprint.quality.sharpness.toFixed(1) + ')' : 'Not enrolled') + '<br>' +
+          '<b>Wallet:</b> ' + (person.walletProvider ? esc(person.walletProvider) + ' ' + esc(B.maskWalletNumber(person.walletNumber)) : 'Not linked');
+        enroll = { details: null, face: null, palm: null, finger: null, types: { face: true, palm: true, finger: true } };
+        toast('Enrolled: ' + person.id);
+      });
+    }).catch(function (e) { fail('<div class="error">Could not save enrollment on this device: ' + esc(e.message || e) + '</div>'); });
   }
   function fillStoreSelects() {
     ['enStore', 'termStore'].forEach(function (id) {
@@ -277,22 +364,26 @@
       if (!wallet) err = 'Wallet number is not a valid Bangladeshi mobile number (01 + 9 digits). It was not saved.';
     }
     if (!err && !provider && walletRaw) err = 'Choose bKash or Nagad, or clear the wallet number.';
+    var types = { face: $('enOptFace').checked, palm: $('enOptPalm').checked, finger: $('enOptFinger').checked };
+    if (!err && !types.face && !types.palm && !types.finger) err = 'Select at least one biometric to enroll (Face, Palm or Fingerprint) - each one works independently, but a Biom ID needs at least one captured.';
     if (err) { $('enrollDetailsError').innerHTML = '<div class="error">' + esc(err) + '</div>'; return; }
     $('enrollDetailsError').innerHTML = '';
+    enroll.types = types;
+    enroll.face = null; enroll.palm = null; enroll.finger = null;
     enroll.details = {
       name: name, phone: $('enPhone').value.trim(), type: $('enType').value, store: $('enStore').value,
       walletProvider: provider || '', walletNumber: wallet || ''
     };
-    setStep('face');
+    setStep(ENROLL_ORDER.filter(function (s) { return types[s]; })[0]);
   });
 
   /* Face enroll */
   var faceWatch = null;
   function stopFaceWatch() { if (faceWatch) { clearInterval(faceWatch); faceWatch = null; } }
-  $('faceStart').addEventListener('click', function () {
+  function startFaceCamera() {
     var status = $('faceStatus');
     loadFaceModel(status).catch(function () {});
-    Cam.start($('faceVideo'), 'user').then(function () {
+    Cam.start($('faceVideo'), camFacing.enrollFace).then(function () {
       status.textContent = 'Loading face model / looking for a face...';
       stopFaceWatch();
       faceWatch = setInterval(function () {
@@ -302,37 +393,59 @@
         }).catch(function () { status.textContent = 'Face model still loading...'; });
       }, 900);
     }).catch(function (e) { $('faceMsg').innerHTML = cameraErrorHTML(e); status.textContent = 'Camera blocked.'; });
-  });
+  }
+  $('faceStart').addEventListener('click', startFaceCamera);
+  camRestarters.enrollFace = startFaceCamera;
   $('faceCapture').addEventListener('click', function () {
     detectFaceDescriptor($('faceVideo')).then(function (desc) {
       if (!desc) { $('faceMsg').innerHTML = '<div class="error">No face detected in this frame. Nothing was stored. Reposition and capture again.</div>'; return; }
       enroll.face = desc; stopFaceWatch(); Cam.stop();
       $('faceMsg').innerHTML = '<div class="success">Real face descriptor captured (128 points).</div>';
-      setStep('palm');
+      advanceFrom('face');
     });
+  });
+  $('faceSkip').addEventListener('click', function () {
+    enroll.face = null; stopFaceWatch(); Cam.stop();
+    toast('Face skipped - it will show as Not enrolled.');
+    advanceFrom('face');
   });
 
   /* Palm enroll */
-  $('palmStart').addEventListener('click', function () {
-    Cam.start($('palmVideo'), 'user').then(function () {
+  function startPalmCamera() {
+    Cam.start($('palmVideo'), camFacing.enrollPalm).then(function () {
       Palm.startLoop($('palmVideo'), $('palmStatus'));
       var iv = setInterval(function () { $('palmCapture').disabled = !Palm.latest; if (!Palm.running) clearInterval(iv); }, 300);
     }).catch(function (e) { $('palmMsg').innerHTML = cameraErrorHTML(e); $('palmStatus').textContent = 'Camera blocked.'; });
-  });
+  }
+  $('palmStart').addEventListener('click', startPalmCamera);
+  camRestarters.enrollPalm = startPalmCamera;
   $('palmCapture').addEventListener('click', function () {
     var desc = Palm.latest ? B.palmDescriptorFromLandmarks(Palm.latest) : null;
     if (!desc) { $('palmMsg').innerHTML = '<div class="error">No hand landmarks available. Nothing was stored. Show an open palm and retry.</div>'; return; }
     enroll.palm = desc; Palm.stop(); Cam.stop();
     $('palmMsg').innerHTML = '<div class="success">Real palm hand-geometry descriptor captured (30 measures from 21 landmarks).</div>';
-    setStep('finger');
+    advanceFrom('palm');
+  });
+  $('palmSkip').addEventListener('click', function () {
+    enroll.palm = null; Palm.stop(); Cam.stop();
+    toast('Palm skipped - it will show as Not enrolled.');
+    advanceFrom('palm');
   });
 
   /* Finger enroll */
-  $('fingerStart').addEventListener('click', function () {
-    Cam.start($('fingerVideo'), 'environment').then(function () {
-      $('fingerStatus').textContent = 'Rear camera on - fingertip 5-8 cm away, filling the guide.';
+  function startFingerCamera() {
+    Cam.start($('fingerVideo'), camFacing.enrollFinger).then(function () {
+      $('fingerStatus').textContent = (camFacing.enrollFinger === 'environment' ? 'Back' : 'Front') + ' camera on - fingertip 5-8 cm away, filling the guide.';
       $('fingerCapture').disabled = false;
     }).catch(function (e) { $('fingerMsg').innerHTML = cameraErrorHTML(e); $('fingerStatus').textContent = 'Camera blocked.'; });
+  }
+  $('fingerStart').addEventListener('click', startFingerCamera);
+  camRestarters.enrollFinger = startFingerCamera;
+  $('fingerSkip').addEventListener('click', function () {
+    enroll.finger = null; Cam.stop();
+    $('fingerAccept').classList.add('hidden');
+    toast('Fingerprint skipped - it will show as Not enrolled.');
+    advanceFrom('finger');
   });
   $('fingerCapture').addEventListener('click', function () {
     try {
@@ -348,30 +461,10 @@
     } catch (e) { $('fingerMsg').innerHTML = cameraErrorHTML(e); }
   });
   $('fingerAccept').addEventListener('click', function () {
-    if (!enroll.details || !enroll.face || !enroll.palm || !enroll.finger) {
-      $('fingerMsg').innerHTML = '<div class="error">Enrollment is incomplete - face, palm and fingerprint are all required.</div>'; return;
+    if (!enroll.finger) {
+      $('fingerMsg').innerHTML = '<div class="error">No fingerprint print has been accepted yet - capture a clear print first, or Skip this step.</div>'; return;
     }
-    Cam.stop();
-    DB.nextSeq('biomSeq', 2841).then(function (seq) {
-      var person = {
-        id: 'TSG-BIO-' + seq,
-        name: enroll.details.name, phone: enroll.details.phone, type: enroll.details.type, store: enroll.details.store,
-        walletProvider: enroll.details.walletProvider, walletNumber: enroll.details.walletNumber,
-        faceDescriptor: enroll.face, palmDescriptor: enroll.palm,
-        fingerprint: { template: enroll.finger.template, texture: enroll.finger.texture, quality: enroll.finger.quality, ridgeImage: enroll.finger.ridgeImage },
-        enrolledAt: Date.now()
-      };
-      return DB.put('people', person).then(function () {
-        setStep('done');
-        $('enrollDoneBody').innerHTML =
-          '<b>Name:</b> ' + esc(person.name) + '<br><b>Biom ID:</b> ' + esc(person.id) + '<br>' +
-          '<b>Store:</b> ' + esc(person.store) + '<br><b>Face:</b> enrolled (128-d descriptor)<br>' +
-          '<b>Palm:</b> enrolled (hand geometry)<br><b>Fingerprint:</b> enrolled (camera template, quality ' + person.fingerprint.quality.sharpness.toFixed(1) + ')<br>' +
-          '<b>Wallet:</b> ' + (person.walletProvider ? esc(person.walletProvider) + ' ' + esc(B.maskWalletNumber(person.walletNumber)) : 'Not linked');
-        enroll = { details: null, face: null, palm: null, finger: null };
-        toast('Enrolled: ' + person.id);
-      });
-    }).catch(function (e) { $('fingerMsg').innerHTML = '<div class="error">Could not save enrollment on this device: ' + esc(e.message || e) + '</div>'; });
+    advanceFrom('finger');
   });
 
   /* ---------------- Terminal --------------------------------------------- */
@@ -382,21 +475,54 @@
         : '<option value="">No one enrolled on this device yet</option>';
     });
   }
+  function personHasMethod(person, method) {
+    if (!person) return false;
+    if (method === 'face') return !!person.faceDescriptor;
+    if (method === 'palm') return !!person.palmDescriptor;
+    return !!person.fingerprint;
+  }
+  function notEnrolledMessage(person, method) {
+    return 'This person has no ' + METHOD_LABEL[method] + ' enrolled - choose a method they enrolled. ' +
+      esc(person.name) + ' enrolled: ' +
+      ['face', 'palm', 'finger'].filter(function (m) { return personHasMethod(person, m); }).map(function (m) { return METHOD_LABEL[m]; }).join(', ') + '.';
+  }
+  function getTerminalPerson() {
+    var personId = $('termPerson').value;
+    return DB.all('people').then(function (people) {
+      return people.find(function (p) { return p.id === personId; }) || null;
+    });
+  }
   $('termMethod').addEventListener('change', function () {
     var m = $('termMethod').value;
     $('termGuide').className = m === 'finger' ? 'finger' : m === 'palm' ? 'hand' : 'oval';
     $('termScan').disabled = true;
+    syncCamToggle('terminal');
+    applyMirror('termVideo', camFacing[termFacingKey(m)]);
+    if (Cam.stream && Cam.video === $('termVideo')) startTermCamera();
   });
-  $('termStart').addEventListener('click', function () {
+  $('termPerson').addEventListener('change', function () { $('termScan').disabled = true; });
+  function startTermCamera() {
     var method = $('termMethod').value;
     var status = $('termStatus');
-    if (method === 'face') loadFaceModel(status).catch(function () {});
-    Cam.start($('termVideo'), method === 'finger' ? 'environment' : 'user').then(function () {
-      status.textContent = method === 'finger' ? 'Rear camera on - fingertip 5-8 cm away, filling the guide.' : 'Camera on - position for the scan, then Run Scan.';
-      $('termScan').disabled = false;
-      if (method === 'palm') Palm.startLoop($('termVideo'), status);
-    }).catch(function (e) { $('termResult').innerHTML = cameraErrorHTML(e); status.textContent = 'Camera blocked.'; });
-  });
+    getTerminalPerson().then(function (person) {
+      if (!person) { $('termResult').innerHTML = '<div class="error">Select an enrolled person first. Enroll on this device if the registry is empty.</div>'; return; }
+      if (!personHasMethod(person, method)) {
+        Cam.stop(); Palm.stop();
+        $('termScan').disabled = true;
+        status.textContent = 'Camera not started.';
+        $('termResult').innerHTML = '<div class="error">' + notEnrolledMessage(person, method) + '</div>';
+        return;
+      }
+      if (method === 'face') loadFaceModel(status).catch(function () {});
+      Cam.start($('termVideo'), camFacing[termFacingKey(method)]).then(function () {
+        status.textContent = method === 'finger' ? 'Camera on - fingertip 5-8 cm away, filling the guide.' : 'Camera on - position for the scan, then Run Scan.';
+        $('termScan').disabled = false;
+        if (method === 'palm') Palm.startLoop($('termVideo'), status);
+      }).catch(function (e) { $('termResult').innerHTML = cameraErrorHTML(e); status.textContent = 'Camera blocked.'; });
+    });
+  }
+  $('termStart').addEventListener('click', startTermCamera);
+  camRestarters.terminal = startTermCamera;
 
   function logVerification(person, method, measured, result) {
     return DB.put('logs', { ts: Date.now(), personId: person.id, personName: person.name, store: $('termStore').value, method: method, measured: measured, result: result });
@@ -410,6 +536,10 @@
     DB.all('people').then(function (people) {
       var person = people.find(function (p) { return p.id === personId; });
       if (!person) { $('termResult').innerHTML = '<div class="error">Select an enrolled person first. Enroll on this device if the registry is empty.</div>'; return null; }
+      if (!personHasMethod(person, method)) {
+        $('termResult').innerHTML = '<div class="error">' + notEnrolledMessage(person, method) + ' No scan was run and nothing was verified.</div>';
+        return null;
+      }
 
       var attempt;
       if (method === 'face') {
@@ -485,9 +615,9 @@
       }).map(function (p) {
         return '<tr><td><b>' + esc(p.name) + '</b><br><span style="color:var(--muted)">' + esc(p.phone || '') + '</span></td>' +
           '<td>' + esc(p.id) + '</td><td>' + esc(p.type) + '<br><span style="color:var(--muted)">' + esc(p.store) + '</span></td>' +
-          '<td>' + (p.faceDescriptor ? '<span class="badge ok">Enrolled</span>' : '<span class="badge bad">Missing</span>') + '</td>' +
-          '<td>' + (p.palmDescriptor ? '<span class="badge ok">Enrolled</span>' : '<span class="badge bad">Missing</span>') + '</td>' +
-          '<td>' + (p.fingerprint ? '<img class="thumb" src="' + p.fingerprint.ridgeImage + '" alt="Captured fingerprint ridges">' : '<span class="badge bad">Missing</span>') + '</td>' +
+          '<td>' + (p.faceDescriptor ? '<span class="badge ok">Enrolled</span>' : '<span class="badge bad">Not enrolled</span>') + '</td>' +
+          '<td>' + (p.palmDescriptor ? '<span class="badge ok">Enrolled</span>' : '<span class="badge bad">Not enrolled</span>') + '</td>' +
+          '<td>' + (p.fingerprint ? '<img class="thumb" src="' + p.fingerprint.ridgeImage + '" alt="Captured fingerprint ridges"><br><span class="badge ok">Enrolled</span>' : '<span class="badge bad">Not enrolled</span>') + '</td>' +
           '<td>' + (p.walletProvider ? esc(p.walletProvider) + '<br>' + esc(B.maskWalletNumber(p.walletNumber)) : '—') + '</td>' +
           '<td><button class="btn small" data-verify="' + esc(p.id) + '">Verify</button></td></tr>';
       }).join('');
@@ -525,6 +655,8 @@
 
   /* ---------------- Boot --------------------------------------------------- */
   window.TSGApp = { go: go };
+  wireCamToggles();
+  syncCamToggle('terminal');
   fillStoreSelects();
   DB.open().then(function () { renderDashboard(); fillTerminalPeople(); });
 })();
