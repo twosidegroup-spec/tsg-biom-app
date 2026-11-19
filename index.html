@@ -55,8 +55,9 @@
       <p class="sub" style="margin:0">
         Face: a real face-recognition model extracts a 128-point descriptor; verification measures the actual distance between scans.
         Palm: MediaPipe reads 21 hand landmarks and measures hand geometry.
-        Fingerprint: the rear camera photographs your fingertip and the system enhances and matches the real ridge pattern from those pixels.
+        Fingerprint: a camera photographs your fingertip and the system enhances and matches the real ridge pattern from those pixels.
         Nothing here is simulated — if no face, hand or clear print is seen, the scan fails openly.
+        Enroll any one, two, or all three - each biometric works independently.
       </p>
     </div>
   </section>
@@ -64,7 +65,7 @@
   <!-- ENROLL -->
   <section class="page" id="page-enroll">
     <h1>Enroll a person</h1>
-    <p class="sub">One enrollment creates one TSG Biom ID with face, palm and camera-fingerprint, plus an optional linked bKash / Nagad wallet for Biom Pay.</p>
+    <p class="sub">One enrollment creates one TSG Biom ID. Enroll any one, two, or all three - each biometric works independently. Face, palm and camera-fingerprint are each optional: tick the ones to enroll below, or Skip a step during capture. At least one biometric must actually be captured to issue a Biom ID. Plus an optional linked bKash / Nagad wallet for Biom Pay.</p>
     <div class="steps" id="enrollSteps">
       <span data-step="details" class="on">1. Details + Wallet</span>
       <span data-step="face">2. Face</span>
@@ -91,19 +92,32 @@
         <div><label>Wallet number</label><input id="enWalletNumber" placeholder="01XXXXXXXXX" inputmode="tel"></div>
       </div>
       <p class="sub" style="margin-top:10px">The wallet number is normalised (+880 / 880 become 01…) and only ever shown masked, e.g. 01933-***706.</p>
+      <h2 style="margin-top:18px">Biometrics to enroll — each one is optional</h2>
+      <p class="sub" style="margin:0">Enroll any one, two, or all three - each biometric works independently. Unchecked types are skipped entirely; you can also Skip a step during capture. At least one type must be captured to issue a Biom ID.</p>
+      <div class="checkrow">
+        <label class="check"><input type="checkbox" id="enOptFace" checked> Enroll: Face</label>
+        <label class="check"><input type="checkbox" id="enOptPalm" checked> Enroll: Palm</label>
+        <label class="check"><input type="checkbox" id="enOptFinger" checked> Enroll: Fingerprint</label>
+      </div>
       <div id="enrollDetailsError"></div>
-      <button class="btn primary" id="enrollDetailsNext">Continue to Face Scan</button>
+      <button class="btn primary" id="enrollDetailsNext">Continue to First Selected Scan</button>
     </div>
 
     <div id="enroll-face" class="card hidden">
       <h2>Step 2 — Face scan (real)</h2>
       <p class="sub">Look straight at the camera, face inside the oval, good light. The model must really detect your face before capture is enabled.</p>
+      <div class="camtoggle" data-cam-toggle="enrollFace" role="group" aria-label="Face camera choice">
+        <button type="button" data-facing="user" class="on">Front camera</button>
+        <button type="button" data-facing="environment">Back camera</button>
+      </div>
+      <p class="camnote">Front camera = self-scan. Back camera = a cashier scans a customer across the counter. This choice applies to this step only.</p>
       <div class="camwrap"><video id="faceVideo" autoplay playsinline muted></video>
         <div class="guide"><div class="oval"></div></div>
         <div class="camstatus" id="faceStatus">Camera not started.</div></div>
       <div class="row" style="margin-top:12px">
         <div><button class="btn" id="faceStart">Start Camera</button></div>
         <div><button class="btn primary" id="faceCapture" disabled>Capture Face</button></div>
+        <div><button class="btn danger" id="faceSkip" type="button">Skip Face</button></div>
       </div>
       <div id="faceMsg" style="margin-top:12px"></div>
     </div>
@@ -111,25 +125,37 @@
     <div id="enroll-palm" class="card hidden">
       <h2>Step 3 — Palm scan (real hand geometry)</h2>
       <p class="sub">Show one open palm to the camera, fingers spread, palm filling the guide. Labelled honestly: this is <b>Palm — Hand Geometry</b> from 21 landmarks. Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.</p>
+      <div class="camtoggle" data-cam-toggle="enrollPalm" role="group" aria-label="Palm camera choice">
+        <button type="button" data-facing="user" class="on">Front camera</button>
+        <button type="button" data-facing="environment">Back camera</button>
+      </div>
+      <p class="camnote">Front camera = self-scan. Back camera = a cashier scans a customer across the counter. This choice applies to this step only.</p>
       <div class="camwrap"><video id="palmVideo" autoplay playsinline muted></video>
         <div class="guide"><div class="hand"></div></div>
         <div class="camstatus" id="palmStatus">Camera not started.</div></div>
       <div class="row" style="margin-top:12px">
         <div><button class="btn" id="palmStart">Start Camera</button></div>
         <div><button class="btn primary" id="palmCapture" disabled>Capture Palm</button></div>
+        <div><button class="btn danger" id="palmSkip" type="button">Skip Palm</button></div>
       </div>
       <div id="palmMsg" style="margin-top:12px"></div>
     </div>
 
     <div id="enroll-finger" class="card hidden">
       <h2>Step 4 — Fingerprint through the camera (real)</h2>
-      <p class="sub">Use the <b>rear camera</b>. Hold your fingertip facing the camera, <b>5–8 cm away</b>, filling the guide, in good light, and keep still. You will see your original photo and the enhanced ridge image taken from its real pixels. Blurry prints are rejected — never invented.</p>
+      <p class="sub">Defaults to the <b>back camera</b> — you can switch to the front camera with the toggle below. Hold your fingertip facing the camera, <b>5–8 cm away</b>, filling the guide, in good light, and keep still. You will see your original photo and the enhanced ridge image taken from its real pixels. Blurry prints are rejected — never invented.</p>
+      <div class="camtoggle" data-cam-toggle="enrollFinger" role="group" aria-label="Fingerprint camera choice">
+        <button type="button" data-facing="user">Front camera</button>
+        <button type="button" data-facing="environment" class="on">Back camera</button>
+      </div>
+      <p class="camnote">Back camera = a cashier scans a customer's fingertip across the counter (default for fingerprint). Front camera = self-scan. This choice applies to this step only.</p>
       <div class="camwrap"><video id="fingerVideo" autoplay playsinline muted></video>
         <div class="guide"><div class="finger"></div></div>
         <div class="camstatus" id="fingerStatus">Camera not started.</div></div>
       <div class="row" style="margin-top:12px">
-        <div><button class="btn" id="fingerStart">Start Rear Camera</button></div>
+        <div><button class="btn" id="fingerStart">Start Camera</button></div>
         <div><button class="btn primary" id="fingerCapture" disabled>Capture Fingerprint</button></div>
+        <div><button class="btn danger" id="fingerSkip" type="button">Skip Fingerprint</button></div>
       </div>
       <div class="row" style="margin-top:14px">
         <div><p class="sub" style="margin:0 0 6px">Original crop</p><canvas class="preview" id="fingerOriginal" width="240" height="240"></canvas></div>
@@ -161,6 +187,11 @@
       <div class="row">
         <div><label>Biom Pay amount (BDT) — optional</label><input id="termAmount" type="number" min="1" placeholder="Leave empty for entry / check only"></div>
       </div>
+      <div class="camtoggle" data-cam-toggle="terminal" role="group" aria-label="Terminal camera choice">
+        <button type="button" data-facing="user" class="on">Front camera</button>
+        <button type="button" data-facing="environment">Back camera</button>
+      </div>
+      <p class="camnote">Front camera = self-scan. Back camera = a cashier scans a customer across the counter. The terminal remembers a separate choice for each method (Face / Palm / Fingerprint).</p>
       <div class="camwrap" style="margin-top:14px"><video id="termVideo" autoplay playsinline muted></video>
         <div class="guide"><div class="oval" id="termGuide"></div></div>
         <div class="camstatus" id="termStatus">Camera not started.</div></div>
