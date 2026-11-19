@@ -82,6 +82,8 @@ const openOp = B.palmOpenness(openHand), fistOp = B.palmOpenness(fistHand);
 check('OPENNESS open hand above open minimum', openOp >= B.PALM_OPEN_MIN, 'open=' + openOp.toFixed(2));
 check('OPENNESS fist below closed maximum', fistOp <= B.PALM_CLOSED_MAX, 'fist=' + fistOp.toFixed(2));
 check('OPENNESS garbage landmarks -> null', B.palmOpenness([{ x: 0, y: 0 }]) === null && B.palmOpenness(null) === null);
+check('MIXED-FRAME TRAP open hand alone describes', !!B.palmDescriptorFromLandmarks(openHand));
+check('MIXED-FRAME TRAP averaged open+fist landmarks are rejected (why capture falls back to per-frame descriptors)', B.palmDescriptorFromLandmarks(avgLm([openHand, fistHand])) === null);
 let ev = B.evaluatePalmMovement([2.08, 2.05, 2.09, 2.07, 2.06, 2.08, 2.05, 2.09]); // a photo: constant
 check('MOVEMENT static series (photo) FAILS', !ev.pass, 'range=' + ev.range.toFixed(3));
 ev = B.evaluatePalmMovement([openOp, openOp, fistOp, fistOp, openOp, openOp, openOp]);
