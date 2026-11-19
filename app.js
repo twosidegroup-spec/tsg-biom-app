@@ -84,8 +84,15 @@
 
   /* ---------------- Camera manager --------------------------------------- */
   var Cam = {
-    stream: null, video: null, viewKey: null,
+    stream: null, video: null, viewKey: null, _token: 0, _starting: null, _startVideo: null, _startKey: null,
     start: function (video, facingMode, viewKey) {
+      // A second start for the same view while one is already in flight
+      // (double tap, or a camera/flash toggle restarting the view) joins
+      // the in-flight start instead of racing it - racing starts are
+      // what produced "The play() request was interrupted by a new load
+      // request" on the phone (2026-11-20).
+      if (this._starting && this._startVideo === video && this._startKey === (viewKey || null)) return this._starting;
+      var token = ++this._token;
       this.stop();
       this.video = video;
       this.viewKey = viewKey || null;
@@ -97,12 +104,27 @@
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         return Promise.reject(new Error('This browser does not expose a camera (getUserMedia unavailable). Open TSG Biom over HTTPS in Chrome or Safari.'));
       }
-      return navigator.mediaDevices.getUserMedia({
+      function playWithRetry() {
+        return video.play().catch(function (err) {
+          // AbortError = play() was interrupted by a load/srcObject
+          // change. If this start is still the current one and the
+          // stream is still attached, one short-delay retry recovers it.
+          if (err && err.name === 'AbortError' && token === Cam._token && video.srcObject) {
+            return new Promise(function (res) { setTimeout(res, 300); }).then(function () { return video.play(); });
+          }
+          throw err;
+        });
+      }
+      var p = navigator.mediaDevices.getUserMedia({
         video: { facingMode: facingMode, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false
       }).then(function (stream) {
+        if (token !== Cam._token) { // a newer start superseded this one
+          stream.getTracks().forEach(function (t) { t.stop(); });
+          return null;
+        }
         Cam.stream = stream;
         video.srcObject = stream;
-        return video.play().then(function () {
+        return playWithRetry().then(function () {
           // Flash is MANUAL only - it is never turned on automatically.
           // The one exception to "only from the toggle": if the user had
           // already chosen Flash On for this view before the camera
@@ -114,6 +136,12 @@
           return stream;
         });
       });
+      this._starting = p;
+      this._startVideo = video;
+      this._startKey = viewKey || null;
+      var clear = function () { if (Cam._starting === p) { Cam._starting = null; Cam._startVideo = null; Cam._startKey = null; } };
+      p.then(clear, clear);
+      return p;
     },
     stop: function () {
       if (this.stream) {
@@ -311,7 +339,18 @@
               self.movement.samples.push(op);
               if (self.movement.samples.length > 90) self.movement.samples.shift();
               var ev = B.evaluatePalmMovement(self.movement.samples);
-              if (self.movement.statusEl) self.movement.statusEl.textContent = ev.pass ? 'Movement confirmed - live hand. Hold your open palm still to capture.' : ev.reason;
+              if (self.movement.statusEl) {
+                if (ev.pass) {
+                  self.movement.statusEl.textContent = 'Movement confirmed - live hand. Hold your open palm still to capture.';
+                } else {
+                  // Step-by-step progress, so the person always sees
+                  // which part of the movement the system is waiting for.
+                  var stOpen = (ev.max !== null && ev.max >= B.PALM_OPEN_MIN) ? 'done' : 'waiting';
+                  var stClose = (ev.min !== null && ev.min <= B.PALM_CLOSED_MAX) ? 'done' : 'waiting';
+                  var stAgain = (stClose === 'done' && ev.last !== null && ev.last >= B.PALM_OPEN_MIN) ? 'done' : 'waiting';
+                  self.movement.statusEl.textContent = 'Movement check - Open: ' + stOpen + ' / Close: ' + stClose + ' / Open again: ' + stAgain + '. ' + ev.reason;
+                }
+              }
               if (ev.pass) {
                 self.movement.passed = true;
                 self.movement.watching = false;
@@ -319,6 +358,8 @@
               }
             }
           }
+        } else if (self.movement.watching && self.movement.statusEl && self.movement.samples.length === 0) {
+          self.movement.statusEl.textContent = 'No hand detected yet - hold one open palm fully inside the guide, in good light.';
         }
       });
     },
@@ -381,10 +422,15 @@
       var self = this;
       (function loop() {
         if (!self.running) return;
-        if (video.readyState >= 2) {
+        // One inference at a time: on a phone each Hands inference can
+        // take longer than the 120ms tick, and unthrottled sends queue
+        // up until the movement samples lag seconds behind the real hand.
+        if (video.readyState >= 2 && !self._sending) {
+          self._sending = true;
           self.hands.send({ image: video }).then(function () {
+            self._sending = false;
             if (statusEl && !self.movement.watching) statusEl.textContent = self.latest ? 'Hand detected - hold still and capture.' : 'Show one open palm to the camera...';
-          }).catch(function () {});
+          }, function () { self._sending = false; });
         }
         setTimeout(loop, 120);
       })();

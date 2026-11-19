@@ -237,10 +237,16 @@
         This is the primary anti-photo defence. */
 
   var PALM_TEXTURE_MIN = 0.35;    // realness floor - see calibration note above
-  var PALM_OPEN_MIN = 1.75;       // openness at/above this = open hand (open synthetic: 2.08)
-  var PALM_CLOSED_MAX = 1.45;     // openness at/below this = closed hand (fist synthetic: 1.15)
-  var PALM_MOVE_MIN_RANGE = 0.45; // openness must swing at least this far during the scan
+  var PALM_OPEN_MIN = 1.65;       // openness at/above this = open hand (open synthetic: 2.08)
+  var PALM_CLOSED_MAX = 1.55;     // openness at/below this = closed hand (fist synthetic: 1.15)
+  var PALM_MOVE_MIN_RANGE = 0.35; // openness must swing at least this far during the scan
   var PALM_MOVE_MIN_SAMPLES = 6;  // and be observed over at least this many samples
+  // Thresholds were loosened once, after the first real-phone test
+  // (2026-11-20, "nothing is happening"): a real loose fist on real
+  // MediaPipe landmarks does not curl as far as the synthetic fist, so
+  // the closed/range bars were set too strict. The anti-photo margin is
+  // untouched: a static image's openness range measures ~0.04, ten times
+  // below the 0.35 swing still required.
 
   /* A usable palm texture: a real 256-bin LBP histogram (sums to ~1,
      not concentrated in one bin - a uniform image lands in one bin). */
