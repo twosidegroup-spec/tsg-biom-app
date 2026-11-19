@@ -384,7 +384,30 @@
     },
     captureDescriptor: function () {
       var avg = this.averagedLandmarks();
-      return avg ? B.palmDescriptorFromLandmarks(avg) : null;
+      if (avg) { var d0 = B.palmDescriptorFromLandmarks(avg); if (d0) return d0; }
+      // Fallback: per-frame descriptors, most recent first, averaged over
+      // the frames that individually pass the plausibility gates. This
+      // matters right after the movement check: the buffer then holds a
+      // mix of open, fist and re-opening frames, and averaging those
+      // LANDMARK sets produces a half-curled "hand" the gates rightly
+      // reject - even though the same buffer holds perfectly good
+      // open-palm frames from seconds earlier. (Found on the first real
+      // phone verification attempt, 2026-11-20: movement passed, then
+      // "No usable open palm detected in the live frames.")
+      var valid = [];
+      for (var i = this.buffer.length - 1; i >= 0 && valid.length < 5; i--) {
+        var d = B.palmDescriptorFromLandmarks(this.buffer[i]);
+        if (d) valid.push(d);
+      }
+      if (!valid.length) return null;
+      if (valid.length === 1) return valid[0];
+      var out = [];
+      for (var j = 0; j < valid[0].length; j++) {
+        var s = 0;
+        valid.forEach(function (v) { s += v[j]; });
+        out.push(s / valid.length);
+      }
+      return B.palmDescriptorSane(out) ? out : valid[0];
     },
     /* Palm texture: LBP histogram of the palm region of the live frame,
        cropped around the detected hand so it is the palm's own texture.
