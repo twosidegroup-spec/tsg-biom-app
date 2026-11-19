@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TSG Biom — Face, Palm &amp; Camera Fingerprint for Stores</title>
+<meta name="description" content="TSG Biom by TwoSide Group: hardware-free biometric enrollment and verification — real face recognition, palm hand-geometry and fingerprint through the camera, with bKash / Nagad Biom Pay for CVS, retail, supermarkets and malls.">
+<meta name="theme-color" content="#070d1a">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="stylesheet" href="styles.css">
+<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.14/dist/face-api.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"></script>
+<script src="biometrics.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <img src="icons/icon-192.png" alt="TSG Biom icon">
+    <div>TSG BIOM<small>TWOSIDE GROUP</small></div>
+  </div>
+  <div class="spacer"></div>
+  <button class="btn small" id="installBtn">Install App</button>
+</header>
+
+<nav class="nav" id="mainNav">
+  <button data-page="dashboard" class="active">Dashboard</button>
+  <button data-page="enroll">Enroll</button>
+  <button data-page="terminal">Scan Terminal</button>
+  <button data-page="stores">Store Modes</button>
+  <button data-page="registry">People Registry</button>
+  <button data-page="logs">Transactions / Logs</button>
+  <button data-page="partner">Partner Integration</button>
+</nav>
+
+<main>
+  <!-- DASHBOARD -->
+  <section class="page active" id="page-dashboard">
+    <h1>Control Center</h1>
+    <p class="sub">Hardware-free biometrics for CVS / pharmacy, retail stores, supermarkets and malls. Any phone, tablet or laptop camera is the scanner — no extra hardware to buy. Enrollments, logs and transactions on this terminal are stored <b>on this device</b> (IndexedDB) — this is a store-terminal model: enroll and verify on the same store device.</p>
+    <div class="grid">
+      <div class="card stat"><div class="num" id="statPeople">0</div><div class="lbl">Enrolled people (this device)</div></div>
+      <div class="card stat"><div class="num" id="statVerifs">0</div><div class="lbl">Verifications today</div></div>
+      <div class="card stat"><div class="num" id="statRate">—</div><div class="lbl">Verification success rate</div></div>
+      <div class="card stat"><div class="num" id="statWallets">0</div><div class="lbl">Linked bKash / Nagad wallets</div></div>
+      <div class="card stat"><div class="num" id="statVolume">BDT 0</div><div class="lbl">Biom Pay authorized volume today</div></div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h2>Live activity</h2>
+      <div id="liveFeed" class="kv">No activity yet on this device.</div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h2>How the real scanning works</h2>
+      <p class="sub" style="margin:0">
+        Face: a real face-recognition model extracts a 128-point descriptor; verification measures the actual distance between scans.
+        Palm: MediaPipe reads 21 hand landmarks and measures hand geometry.
+        Fingerprint: the rear camera photographs your fingertip and the system enhances and matches the real ridge pattern from those pixels.
+        Nothing here is simulated — if no face, hand or clear print is seen, the scan fails openly.
+      </p>
+    </div>
+  </section>
+
+  <!-- ENROLL -->
+  <section class="page" id="page-enroll">
+    <h1>Enroll a person</h1>
+    <p class="sub">One enrollment creates one TSG Biom ID with face, palm and camera-fingerprint, plus an optional linked bKash / Nagad wallet for Biom Pay.</p>
+    <div class="steps" id="enrollSteps">
+      <span data-step="details" class="on">1. Details + Wallet</span>
+      <span data-step="face">2. Face</span>
+      <span data-step="palm">3. Palm</span>
+      <span data-step="finger">4. Fingerprint (camera)</span>
+      <span data-step="done">5. Biom ID</span>
+    </div>
+
+    <div id="enroll-details" class="card">
+      <div class="row">
+        <div><label>Full name</label><input id="enName" placeholder="e.g. Rahim Uddin"></div>
+        <div><label>Phone</label><input id="enPhone" placeholder="01XXXXXXXXX" inputmode="tel"></div>
+      </div>
+      <div class="row">
+        <div><label>Person type</label>
+          <select id="enType"><option>Customer</option><option>Staff</option><option>VIP</option><option>Visitor</option></select></div>
+        <div><label>Home store</label>
+          <select id="enStore"></select></div>
+      </div>
+      <h2 style="margin-top:18px">Linked wallet — Biom Pay</h2>
+      <div class="row">
+        <div><label>Wallet provider</label>
+          <select id="enWalletProvider"><option value="">None</option><option>bKash</option><option>Nagad</option></select></div>
+        <div><label>Wallet number</label><input id="enWalletNumber" placeholder="01XXXXXXXXX" inputmode="tel"></div>
+      </div>
+      <p class="sub" style="margin-top:10px">The wallet number is normalised (+880 / 880 become 01…) and only ever shown masked, e.g. 01933-***706.</p>
+      <div id="enrollDetailsError"></div>
+      <button class="btn primary" id="enrollDetailsNext">Continue to Face Scan</button>
+    </div>
+
+    <div id="enroll-face" class="card hidden">
+      <h2>Step 2 — Face scan (real)</h2>
+      <p class="sub">Look straight at the camera, face inside the oval, good light. The model must really detect your face before capture is enabled.</p>
+      <div class="camwrap"><video id="faceVideo" autoplay playsinline muted></video>
+        <div class="guide"><div class="oval"></div></div>
+        <div class="camstatus" id="faceStatus">Camera not started.</div></div>
+      <div class="row" style="margin-top:12px">
+        <div><button class="btn" id="faceStart">Start Camera</button></div>
+        <div><button class="btn primary" id="faceCapture" disabled>Capture Face</button></div>
+      </div>
+      <div id="faceMsg" style="margin-top:12px"></div>
+    </div>
+
+    <div id="enroll-palm" class="card hidden">
+      <h2>Step 3 — Palm scan (real hand geometry)</h2>
+      <p class="sub">Show one open palm to the camera, fingers spread, palm filling the guide. Labelled honestly: this is <b>Palm — Hand Geometry</b> from 21 landmarks. Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.</p>
+      <div class="camwrap"><video id="palmVideo" autoplay playsinline muted></video>
+        <div class="guide"><div class="hand"></div></div>
+        <div class="camstatus" id="palmStatus">Camera not started.</div></div>
+      <div class="row" style="margin-top:12px">
+        <div><button class="btn" id="palmStart">Start Camera</button></div>
+        <div><button class="btn primary" id="palmCapture" disabled>Capture Palm</button></div>
+      </div>
+      <div id="palmMsg" style="margin-top:12px"></div>
+    </div>
+
+    <div id="enroll-finger" class="card hidden">
+      <h2>Step 4 — Fingerprint through the camera (real)</h2>
+      <p class="sub">Use the <b>rear camera</b>. Hold your fingertip facing the camera, <b>5–8 cm away</b>, filling the guide, in good light, and keep still. You will see your original photo and the enhanced ridge image taken from its real pixels. Blurry prints are rejected — never invented.</p>
+      <div class="camwrap"><video id="fingerVideo" autoplay playsinline muted></video>
+        <div class="guide"><div class="finger"></div></div>
+        <div class="camstatus" id="fingerStatus">Camera not started.</div></div>
+      <div class="row" style="margin-top:12px">
+        <div><button class="btn" id="fingerStart">Start Rear Camera</button></div>
+        <div><button class="btn primary" id="fingerCapture" disabled>Capture Fingerprint</button></div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <div><p class="sub" style="margin:0 0 6px">Original crop</p><canvas class="preview" id="fingerOriginal" width="240" height="240"></canvas></div>
+        <div><p class="sub" style="margin:0 0 6px">Enhanced ridges (real pixels)</p><canvas class="preview" id="fingerRidge" width="240" height="240"></canvas></div>
+      </div>
+      <div id="fingerMsg" style="margin-top:12px"></div>
+      <button class="btn primary hidden" id="fingerAccept">Accept Print &amp; Finish Enrollment</button>
+    </div>
+
+    <div id="enroll-done" class="card hidden">
+      <h2>Enrollment complete</h2>
+      <div id="enrollDoneBody" class="kv"></div>
+      <button class="btn" onclick="TSGApp.go('registry')">Open People Registry</button>
+      <button class="btn primary" onclick="TSGApp.go('terminal')">Verify This Person</button>
+    </div>
+  </section>
+
+  <!-- TERMINAL -->
+  <section class="page" id="page-terminal">
+    <h1>Scan Terminal</h1>
+    <p class="sub">Pick the person, store and method, then run a real scan. The result is computed only from the comparison — the actual distance or score is always shown.</p>
+    <div class="card">
+      <div class="row">
+        <div><label>Person</label><select id="termPerson"></select></div>
+        <div><label>Store</label><select id="termStore"></select></div>
+        <div><label>Method</label>
+          <select id="termMethod"><option value="face">Face</option><option value="palm">Palm — Hand Geometry</option><option value="finger">Fingerprint (camera)</option></select></div>
+      </div>
+      <div class="row">
+        <div><label>Biom Pay amount (BDT) — optional</label><input id="termAmount" type="number" min="1" placeholder="Leave empty for entry / check only"></div>
+      </div>
+      <div class="camwrap" style="margin-top:14px"><video id="termVideo" autoplay playsinline muted></video>
+        <div class="guide"><div class="oval" id="termGuide"></div></div>
+        <div class="camstatus" id="termStatus">Camera not started.</div></div>
+      <div class="row" style="margin-top:12px">
+        <div><button class="btn" id="termStart">Start Camera</button></div>
+        <div><button class="btn primary" id="termScan" disabled>Run Scan</button></div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <div><p class="sub" style="margin:0 0 6px">Fingerprint — original crop</p><canvas class="preview" id="termFingerOriginal" width="240" height="240"></canvas></div>
+        <div><p class="sub" style="margin:0 0 6px">Fingerprint — enhanced ridges</p><canvas class="preview" id="termFingerRidge" width="240" height="240"></canvas></div>
+      </div>
+      <div id="termResult" style="margin-top:14px"></div>
+    </div>
+  </section>
+
+  <!-- STORE MODES -->
+  <section class="page" id="page-stores">
+    <h1>Store Modes</h1>
+    <p class="sub">The same Biom ID and the same real scans, shaped for each kind of store. Launch opens the terminal with that store selected.</p>
+    <div class="modegrid">
+      <div class="card modecard"><h3>CVS / Pharmacy</h3>
+        <p>Prescription pickup identity check, age verification for restricted items, loyalty at the counter, and Biom Pay against a linked bKash / Nagad wallet.</p>
+        <button class="btn primary" data-launch="GreenCare Pharmacy (CVS)">Launch Terminal</button></div>
+      <div class="card modecard"><h3>Supermarket</h3>
+        <p>Biom Pay checkout — the customer pays with face, palm or camera fingerprint, no card, phone or cash in hand. Wallet: bKash / Nagad.</p>
+        <button class="btn primary" data-launch="FreshMart Supermarket">Launch Terminal</button></div>
+      <div class="card modecard"><h3>Retail Store</h3>
+        <p>Loyalty identification at till, staff attendance clock-in by face, and Biom Pay checkout with bKash / Nagad.</p>
+        <button class="btn primary" data-launch="UrbanStyle Retail">Launch Terminal</button></div>
+      <div class="card modecard"><h3>Mall</h3>
+        <p>Entry verification, VIP lounge access, parking charges and visitor flow — one Biom ID across the whole mall, with Biom Pay where a charge applies.</p>
+        <button class="btn primary" data-launch="City Centre Mall">Launch Terminal</button></div>
+    </div>
+  </section>
+
+  <!-- REGISTRY -->
+  <section class="page" id="page-registry">
+    <h1>People Registry</h1>
+    <p class="sub">Everyone enrolled on this device. Wallet numbers are masked. The ridge thumbnail is the person's real captured print image.</p>
+    <input id="registrySearch" placeholder="Search by name, Biom ID or phone">
+    <div class="card" style="margin-top:14px;overflow-x:auto"><table>
+      <thead><tr><th>Person</th><th>Biom ID</th><th>Type / Store</th><th>Face</th><th>Palm</th><th>Finger</th><th>Wallet</th><th></th></tr></thead>
+      <tbody id="registryBody"></tbody>
+    </table></div>
+  </section>
+
+  <!-- LOGS -->
+  <section class="page" id="page-logs">
+    <h1>Transactions / Logs</h1>
+    <p class="sub">Every verification attempt and every Biom Pay authorization recorded on this device, with its real measured distance or score.</p>
+    <div class="card" style="overflow-x:auto"><h2>Biom Pay transactions</h2><table>
+      <thead><tr><th>Record ID</th><th>Time</th><th>Person</th><th>Provider</th><th>Wallet</th><th>Store</th><th>Amount</th><th>Status</th></tr></thead>
+      <tbody id="txBody"></tbody>
+    </table></div>
+    <div class="card" style="margin-top:14px;overflow-x:auto"><h2>Verification logs</h2><table>
+      <thead><tr><th>Time</th><th>Person</th><th>Store</th><th>Method</th><th>Measured</th><th>Result</th></tr></thead>
+      <tbody id="logBody"></tbody>
+    </table></div>
+  </section>
+
+  <!-- PARTNER -->
+  <section class="page" id="page-partner">
+    <h1>Partner Integration</h1>
+    <p class="sub">Biom Pay authorizes a payment biometrically on this terminal. Real money moves only through the official bKash / Nagad merchant APIs, after TwoSide Group signs the collaboration and the store adds its merchant credentials here. Until then, transactions are recorded truthfully as biometric-authorized, pending partner settlement — TSG Biom never invents a bKash / Nagad transaction ID.</p>
+    <div class="grid">
+      <div class="card"><h2>bKash — Tokenized Checkout API</h2>
+        <p><span class="badge warn">Not connected — merchant credentials required</span></p>
+        <label>Merchant number</label><input disabled placeholder="Added after partnership approval">
+        <label>API credentials</label><input disabled placeholder="App key / secret are entered in the connected version">
+      </div>
+      <div class="card"><h2>Nagad — Payment Gateway API</h2>
+        <p><span class="badge warn">Not connected — merchant credentials required</span></p>
+        <label>Merchant number</label><input disabled placeholder="Added after partnership approval">
+        <label>API credentials</label><input disabled placeholder="Merchant keys are entered in the connected version">
+      </div>
+    </div>
+    <div class="card" style="margin-top:14px"><h2>Install TSG Biom as an app</h2>
+      <p class="sub" style="margin:0 0 10px">Android Chrome: tap <b>Install App</b> above, or open the browser menu and choose <b>Add to Home screen / Install app</b>. iPhone Safari: tap <b>Share</b>, then <b>Add to Home Screen</b>. The app then opens full-screen from its own home-screen icon, like a normal store app.</p>
+      <button class="btn primary" id="installBtn2">Install App</button>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  TSG Biom — TwoSide Group (TS Technologies / TS Intelligence). Real scanning only: no simulated results.<br>
+  Camera access needs a secure (HTTPS) page and your permission. Biometric descriptors on this terminal stay on this device.
+</footer>
+
+<div id="toast" class="hidden" style="position:fixed;left:50%;transform:translateX(-50%);bottom:22px;background:var(--surface2);border:1px solid var(--accent);color:var(--text);padding:12px 18px;border-radius:12px;z-index:99;font-size:14px;max-width:92vw"></div>
+
+<script src="app.js"></script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('sw.js').catch(function (e) { console.warn('SW registration failed', e); });
+  });
+}
+</script>
+</body>
+</html>
