@@ -210,6 +210,149 @@
     };
   }
 
+  /* ---------------- Palm strengthening (2026-11-20) ----------------
+     Three layers added on top of the geometry match, after calibration
+     probes (synthetic hands + synthetic palm images, 2026-11-20):
+
+     1) MULTI-CAPTURE PROFILE. Enrollment stores up to 5 geometry captures
+        of the same hand (slightly different angles). Verification takes
+        the BEST (smallest) distance - angle variation at enrollment is
+        the main cause of genuine palm rejections.
+
+     2) TEXTURE REALNESS GATE. A global LBP histogram of the palm crop.
+        Calibration was blunt: LBP similarity for the same palm re-rendered
+        was 0.892 and for a DIFFERENT palm 0.895 - global LBP does NOT
+        identify a palm, and grid LBP / coarse-template correlation did
+        not separate either (same 0.44-0.60 vs different 0.50-0.76). So
+        texture is never used as identity here. What it provably does:
+        a flat / blank / uniform frame scores ~0.07 against a real palm
+        texture, real palms score ~0.89. The gate floor (0.35) therefore
+        rejects flat, blank and texture-less captures - a realness check,
+        scored alongside geometry, exactly as labelled in the UI.
+
+     3) MOVEMENT LIVENESS. A photograph or screen image of a palm cannot
+        open and close. palmOpenness (mean wrist->tip / wrist->MCP ratio,
+        index..pinky) measured on synthetic hands: open 2.08, fist 1.15.
+        A passing scan must show a real open -> close -> open sequence.
+        This is the primary anti-photo defence. */
+
+  var PALM_TEXTURE_MIN = 0.35;    // realness floor - see calibration note above
+  var PALM_OPEN_MIN = 1.75;       // openness at/above this = open hand (open synthetic: 2.08)
+  var PALM_CLOSED_MAX = 1.45;     // openness at/below this = closed hand (fist synthetic: 1.15)
+  var PALM_MOVE_MIN_RANGE = 0.45; // openness must swing at least this far during the scan
+  var PALM_MOVE_MIN_SAMPLES = 6;  // and be observed over at least this many samples
+
+  /* A usable palm texture: a real 256-bin LBP histogram (sums to ~1,
+     not concentrated in one bin - a uniform image lands in one bin). */
+  function palmTextureSane(t) {
+    if (!t || t.length !== 256) return false;
+    if (!allFinite(t)) return false;
+    var sum = 0, maxBin = 0;
+    for (var i = 0; i < 256; i++) {
+      var v = Number(t[i]);
+      if (v < 0) return false;
+      sum += v; if (v > maxBin) maxBin = v;
+    }
+    if (Math.abs(sum - 1) > 0.05) return false;
+    if (maxBin > 0.9) return false;
+    if (vecStd(t) < 0.001) return false;
+    return true;
+  }
+
+  /* A palm profile is either a legacy single geometry descriptor (plain
+     array, pre-strengthening enrollments) or the strengthened record:
+     { v: 2, geometry: [descriptor, ...], texture: [256] | null }. */
+  function normalisePalmProfile(stored) {
+    if (!stored) return null;
+    if (Array.isArray(stored)) {
+      return palmDescriptorSane(stored) ? { geometry: [stored], texture: null, legacy: true } : null;
+    }
+    if (typeof stored === 'object' && Array.isArray(stored.geometry)) {
+      var geo = stored.geometry.filter(function (d) { return palmDescriptorSane(d); });
+      if (!geo.length || geo.length !== stored.geometry.length) return null;
+      if (stored.texture != null && !palmTextureSane(stored.texture)) return null;
+      return { geometry: geo, texture: stored.texture || null, legacy: false };
+    }
+    return null;
+  }
+
+  function palmProfileSane(stored) { return normalisePalmProfile(stored) !== null; }
+
+  /* Strengthened palm verification. Geometry is the identity check and
+     uses the best of the enrolled captures; when a texture was enrolled,
+     the live texture MUST be present and clear the realness floor -
+     missing texture fails closed, it never silently skips the gate.
+     Legacy enrollments (no texture) verify on geometry alone and say so. */
+  function verifyPalmProfile(stored, live) {
+    var fail = function (reason, distance, textureSimilarity) {
+      return { ok: false, verified: false, distance: distance, threshold: PALM_THRESHOLD, textureSimilarity: textureSimilarity, textureThreshold: PALM_TEXTURE_MIN, reason: reason };
+    };
+    var profile = normalisePalmProfile(stored);
+    if (!profile) return fail('No usable palm enrolled for this person - the stored palm data is missing or invalid.', null, null);
+    if (!live || !palmDescriptorSane(live.geometry)) return fail('No real open palm was detected in this scan.', null, null);
+    var best = null;
+    for (var i = 0; i < profile.geometry.length; i++) {
+      var d = euclidean(profile.geometry[i], live.geometry);
+      if (d === null || !isFinite(d)) return fail('Palm comparison failed.', null, null);
+      if (best === null || d < best) best = d;
+    }
+    var geometryOk = best < PALM_THRESHOLD;
+    var textureSimilarity = null, textureOk = true;
+    if (profile.texture) {
+      if (!palmTextureSane(live.texture)) return fail('Palm texture was not captured in this scan - hold the palm steady in good light and scan again.', best, null);
+      textureSimilarity = histogramSimilarity(profile.texture, live.texture);
+      if (textureSimilarity === null || !isFinite(textureSimilarity)) return fail('Palm texture comparison failed.', best, null);
+      textureOk = textureSimilarity >= PALM_TEXTURE_MIN;
+    }
+    var verified = geometryOk && textureOk;
+    var reason;
+    if (verified) reason = profile.texture ? 'Palm geometry matches the enrolled hand and the palm texture is real.' : 'Palm geometry matches the enrolled hand (legacy enrollment - no texture gate).';
+    else if (!geometryOk) reason = 'Palm geometry distance above threshold - not the enrolled hand.';
+    else reason = 'Palm texture does not look like a real palm capture - scan a real, open palm in good light.';
+    return { ok: true, verified: verified, distance: best, threshold: PALM_THRESHOLD, textureSimilarity: textureSimilarity, textureThreshold: PALM_TEXTURE_MIN, reason: reason };
+  }
+
+  /* Openness of a hand from its 21 landmarks: mean over index..pinky of
+     wrist->tip distance divided by wrist->MCP distance. Scale-free.
+     Open synthetic hand: 2.08. Fist: 1.15. Returns null for bad input. */
+  function palmOpenness(landmarks) {
+    if (!landmarks || landmarks.length !== 21) return null;
+    for (var i = 0; i < 21; i++) {
+      var p = landmarks[i];
+      if (!p || !isFinite(Number(p.x)) || !isFinite(Number(p.y))) return null;
+    }
+    function dist(a, b) { return Math.hypot(landmarks[a].x - landmarks[b].x, landmarks[a].y - landmarks[b].y); }
+    if (dist(0, 9) < 0.02) return null; // collapsed / degenerate detection
+    var fingers = [[8, 5], [12, 9], [16, 13], [20, 17]];
+    var sum = 0;
+    for (i = 0; i < fingers.length; i++) {
+      var mcp = dist(0, fingers[i][1]);
+      if (mcp < 0.01) return null;
+      sum += dist(0, fingers[i][0]) / mcp;
+    }
+    var v = sum / fingers.length;
+    return isFinite(v) ? v : null;
+  }
+
+  /* Movement liveness verdict over a time series of openness samples.
+     Pass requires ALL of: enough samples, the hand was seen open, the
+     hand was seen closed, the openness swung by at least the minimum
+     range, and the hand ENDS open (the capture that follows is an open
+     palm). A static image produces a near-constant series and fails. */
+  function evaluatePalmMovement(samples) {
+    var vals = (samples || []).filter(function (v) { return typeof v === 'number' && isFinite(v); });
+    var out = { ok: false, pass: false, samples: vals.length, min: null, max: null, last: null, range: null, reason: 'Not enough hand movement observed.' };
+    if (vals.length < PALM_MOVE_MIN_SAMPLES) { out.reason = 'Movement check needs a few seconds of hand movement - open, close, then open your palm.'; return out; }
+    var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals), last = vals[vals.length - 1];
+    out.min = min; out.max = max; out.last = last; out.range = max - min;
+    if (max < PALM_OPEN_MIN) out.reason = 'Open your palm wide, fingers spread, so the camera can see it fully.';
+    else if (min > PALM_CLOSED_MAX) out.reason = 'Now close your hand into a loose fist, then open it again - a still image cannot pass this check.';
+    else if (out.range < PALM_MOVE_MIN_RANGE) out.reason = 'The open-close movement was too small - close fully into a loose fist, then open wide.';
+    else if (last < PALM_OPEN_MIN) out.reason = 'Finish with your palm open wide.';
+    else { out.ok = true; out.pass = true; out.reason = 'Live hand movement confirmed (open - close - open).'; }
+    return out;
+  }
+
   /* ---- Fingerprint through camera: image processing on real pixels ---- */
 
   // gray: array of 0..255, width w, height h (row-major)
@@ -443,6 +586,15 @@
     verifyFace: verifyFace,
     palmDescriptorFromLandmarks: palmDescriptorFromLandmarks,
     verifyPalm: verifyPalm,
+    PALM_TEXTURE_MIN: PALM_TEXTURE_MIN,
+    PALM_OPEN_MIN: PALM_OPEN_MIN,
+    PALM_CLOSED_MAX: PALM_CLOSED_MAX,
+    PALM_MOVE_MIN_RANGE: PALM_MOVE_MIN_RANGE,
+    palmTextureSane: palmTextureSane,
+    palmProfileSane: palmProfileSane,
+    verifyPalmProfile: verifyPalmProfile,
+    palmOpenness: palmOpenness,
+    evaluatePalmMovement: evaluatePalmMovement,
     laplacianVariance: laplacianVariance,
     contrastStretch: contrastStretch,
     sharpen: sharpen,
