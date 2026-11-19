@@ -149,7 +149,7 @@
 
     <div id="enroll-palm" class="card hidden">
       <h2>Step 3 — Palm scan (real hand geometry + texture)</h2>
-      <p class="sub">Strengthened palm enrollment: first a live movement check (open the palm, close it into a loose fist, open again — a photo cannot do this), then <b>three captures</b> at slightly different angles, with the palm's own texture read from the same frames. Labelled honestly: this is <b>Palm — Hand Geometry + Texture</b> from 21 landmarks. Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.</p>
+      <p class="sub">Strengthened palm enrollment from a short recorded clip: tap Record and, during the 4 seconds, open the palm wide, close it into a loose fist, then open it wide again — a photo cannot do this, and a single photo is never accepted. The clip is analysed frame by frame: the movement is checked, <b>three geometry captures</b> are selected from the best open-palm frames, and the palm's own texture is read from the sharpest one. Labelled honestly: this is <b>Palm — Hand Geometry + Texture</b> from 21 landmarks. Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.</p>
       <div class="camtoggle" data-cam-toggle="enrollPalm" role="group" aria-label="Palm camera choice">
         <button type="button" data-facing="user" class="on">Front camera</button>
         <button type="button" data-facing="environment">Back camera</button>
@@ -165,7 +165,7 @@
         <div class="camstatus" id="palmStatus">Camera not started.</div></div>
       <div class="row" style="margin-top:12px">
         <div><button class="btn" id="palmStart">Start Camera</button></div>
-        <div><button class="btn primary" id="palmCapture" disabled>Capture Palm</button></div>
+        <div><button class="btn primary" id="palmCapture" disabled>Record Palm Clip</button></div>
         <div><button class="btn danger" id="palmSkip" type="button">Skip Palm</button></div>
       </div>
       <div id="palmMsg" style="margin-top:12px"></div>

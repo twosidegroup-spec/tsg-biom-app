@@ -359,6 +359,60 @@
     return out;
   }
 
+  /* ---- Clip frame selection (recorded palm clip path) ----
+     A recorded palm clip is analysed frame by frame; each analysed
+     frame yields { openness, descriptor, sharpness, texture } with any
+     field possibly null. These selectors are the pure decision layer
+     over that list. A frame counts as a usable open palm only when its
+     openness is at/above PALM_OPEN_MIN AND its descriptor passed every
+     plausibility gate - a fist frame or a garbage frame never counts,
+     no matter how sharp it is. */
+  function palmUsableOpenFrames(frames) {
+    var out = [];
+    (frames || []).forEach(function (f, i) {
+      if (f && typeof f.openness === 'number' && isFinite(f.openness) && f.openness >= PALM_OPEN_MIN && palmDescriptorSane(f.descriptor)) {
+        out.push({ index: i, openness: f.openness, descriptor: f.descriptor, sharpness: f.sharpness || 0, texture: f.texture || null });
+      }
+    });
+    return out;
+  }
+  function averageDescriptorList(list) {
+    if (!list.length) return null;
+    if (list.length === 1) return list[0].slice();
+    var out = [];
+    for (var j = 0; j < list[0].length; j++) {
+      var s = 0;
+      list.forEach(function (d) { s += d[j]; });
+      out.push(s / list.length);
+    }
+    return palmDescriptorSane(out) ? out : list[0].slice();
+  }
+  // Verification: one descriptor averaged (in descriptor space) from
+  // the sharpest usable open frames, up to 3. Null when the clip holds
+  // no usable open palm at all.
+  function selectPalmDescriptor(frames) {
+    var usable = palmUsableOpenFrames(frames);
+    if (!usable.length) return null;
+    usable.sort(function (a, b) { return b.sharpness - a.sharpness; });
+    return averageDescriptorList(usable.slice(0, 3).map(function (u) { return u.descriptor; }));
+  }
+  // Enrolment: up to 3 descriptors spread across the clip - the
+  // sharpest usable frame in each third of the usable sequence - so
+  // the stored profile keeps natural pose variation, the same role the
+  // old straight/tilt-left/tilt-right captures played.
+  function selectPalmProfile(frames) {
+    var usable = palmUsableOpenFrames(frames);
+    if (!usable.length) return null;
+    if (usable.length <= 3) return usable.map(function (u) { return u.descriptor; });
+    var picks = [];
+    for (var t = 0; t < 3; t++) {
+      var bucket = usable.slice(Math.floor(t * usable.length / 3), Math.floor((t + 1) * usable.length / 3));
+      bucket.sort(function (a, b) { return b.sharpness - a.sharpness; });
+      if (bucket.length) picks.push(bucket[0].descriptor);
+    }
+    return picks.length ? picks : null;
+  }
+
   /* ---- Fingerprint through camera: image processing on real pixels ---- */
 
   // gray: array of 0..255, width w, height h (row-major)
@@ -601,6 +655,9 @@
     verifyPalmProfile: verifyPalmProfile,
     palmOpenness: palmOpenness,
     evaluatePalmMovement: evaluatePalmMovement,
+    palmUsableOpenFrames: palmUsableOpenFrames,
+    selectPalmDescriptor: selectPalmDescriptor,
+    selectPalmProfile: selectPalmProfile,
     laplacianVariance: laplacianVariance,
     contrastStretch: contrastStretch,
     sharpen: sharpen,

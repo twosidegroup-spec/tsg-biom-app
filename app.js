@@ -461,6 +461,120 @@
     stop: function () { this.running = false; this.latest = null; this.buffer = []; this.resetMovement(); }
   };
 
+  /* ---------------- Palm CLIP capture (recorded-clip path) --------------
+     Why this exists: the live-stream palm path kept failing on a real
+     phone (camera start races, inference lag behind the real hand, and
+     the mixed-frame averaging trap after the movement check). The clip
+     path records a few seconds of real frames first, then analyses
+     them one by one with a dedicated Hands processor: movement
+     liveness from the openness series, geometry from the best genuine
+     open-palm frames, texture from the sharpest one. Same gates, same
+     stored profile format - only the capture mechanics changed.
+     A single still photo is NOT accepted anywhere: with no movement
+     series there is no liveness, so there is no scan. */
+  var PalmProc = {
+    hands: null, pending: null,
+    init: function () {
+      if (this.hands) return;
+      var self = this;
+      this.hands = new Hands({ locateFile: function (f) { return 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/' + f; } });
+      this.hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.5 });
+      this.hands.onResults(function (res) {
+        var p = self.pending; self.pending = null;
+        if (p) p((res.multiHandLandmarks && res.multiHandLandmarks[0]) ? res.multiHandLandmarks[0] : null);
+      });
+    },
+    landmarks: function (image) {
+      var self = this;
+      this.init();
+      return new Promise(function (resolve) {
+        self.pending = resolve;
+        self.hands.send({ image: image }).catch(function () {
+          if (self.pending === resolve) { self.pending = null; resolve(null); }
+        });
+      });
+    }
+  };
+
+  function grabVideoFrame(video) {
+    var w = video.videoWidth, h = video.videoHeight;
+    if (!w || !h) return null;
+    var scale = Math.min(1, 960 / Math.max(w, h));
+    var canvas = document.createElement('canvas');
+    canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
+    canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas;
+  }
+
+  /* Palm texture + sharpness from any image source (a recorded frame
+     here; the same maths the live captureTexture used), cropped around
+     the detected hand so it is the palm's own texture. */
+  function palmFrameMeasures(source, sw, sh, lm) {
+    try {
+      if (!lm || !sw || !sh) return { texture: null, sharpness: 0 };
+      var minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+      lm.forEach(function (p) {
+        if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+      });
+      var cx = (minX + maxX) / 2 * sw, cy = (minY + maxY) / 2 * sh;
+      var side = Math.max(maxX - minX, maxY - minY) * 1.15 * Math.max(sw, sh);
+      side = Math.min(side, sw, sh);
+      if (!(side >= 40)) return { texture: null, sharpness: 0 };
+      var sx = Math.max(0, Math.min(sw - side, cx - side / 2));
+      var sy = Math.max(0, Math.min(sh - side, cy - side / 2));
+      var size = 128;
+      var canvas = document.createElement('canvas'); canvas.width = size; canvas.height = size;
+      var ctx = canvas.getContext('2d');
+      ctx.drawImage(source, sx, sy, side, side, 0, 0, size, size);
+      var img = ctx.getImageData(0, 0, size, size).data;
+      var gray = new Array(size * size);
+      for (var i = 0; i < size * size; i++) gray[i] = Math.round(0.299 * img[i * 4] + 0.587 * img[i * 4 + 1] + 0.114 * img[i * 4 + 2]);
+      var tex = B.lbpHistogram(gray, size, size);
+      return { texture: B.palmTextureSane(tex) ? tex : null, sharpness: B.laplacianVariance(gray, size, size) };
+    } catch (e) { return { texture: null, sharpness: 0 }; }
+  }
+
+  function recordPalmClip(video, statusEl, durationMs) {
+    var frames = [];
+    var t0 = Date.now();
+    return new Promise(function (resolve) {
+      var iv = setInterval(function () {
+        var el = Date.now() - t0;
+        var f = grabVideoFrame(video);
+        if (f) frames.push(f);
+        if (statusEl) statusEl.textContent = 'Recording palm clip... ' + Math.max(0, Math.ceil((durationMs - el) / 1000)) + 's - open the palm wide, close it into a loose fist, then open it wide again and hold.';
+        if (el >= durationMs) { clearInterval(iv); resolve(frames); }
+      }, 250);
+    });
+  }
+
+  function processPalmClip(frames, statusEl) {
+    var results = [];
+    var chain = Promise.resolve();
+    frames.forEach(function (frame, idx) {
+      chain = chain.then(function () {
+        if (statusEl) statusEl.textContent = 'Analysing palm clip... frame ' + (idx + 1) + ' of ' + frames.length + '.';
+        return PalmProc.landmarks(frame).then(function (lm) {
+          if (!lm) { results.push({ openness: null, descriptor: null, sharpness: 0, texture: null }); return; }
+          var openness = B.palmOpenness(lm);
+          var descriptor = B.palmDescriptorFromLandmarks(lm);
+          var meas = descriptor ? palmFrameMeasures(frame, frame.width, frame.height, lm) : { texture: null, sharpness: 0 };
+          results.push({ openness: openness, descriptor: descriptor, sharpness: meas.sharpness, texture: meas.texture });
+        });
+      });
+    });
+    return chain.then(function () {
+      var series = [];
+      results.forEach(function (r) { if (typeof r.openness === 'number' && isFinite(r.openness)) series.push(r.openness); });
+      var usable = B.palmUsableOpenFrames(results);
+      var bestTexture = null, bestSharp = -1;
+      usable.forEach(function (u) { if (u.texture && u.sharpness > bestSharp) { bestSharp = u.sharpness; bestTexture = u.texture; } });
+      return { results: results, movement: B.evaluatePalmMovement(series), bestTexture: bestTexture, usableCount: usable.length };
+    });
+  }
+  var palmScanBusy = false;
+
   /* ---------------- Fingerprint through camera --------------------------- */
   function captureFinger(video, origCanvas, ridgeCanvas) {
     var size = 480;
@@ -673,50 +787,56 @@
     advanceFrom('face');
   });
 
-  /* Palm enroll - strengthened: movement liveness once, then THREE
-     captures at slightly different angles + palm texture. */
-  var palmEnroll = { captures: [], textures: [] };
-  var PALM_CAPTURE_HINTS = [
-    'Capture 1 of 3: hold your palm straight, facing the camera.',
-    'Capture 2 of 3: tilt your hand slightly to the left.',
-    'Capture 3 of 3: tilt your hand slightly to the right.'
-  ];
-  function resetPalmEnroll() { palmEnroll = { captures: [], textures: [] }; }
+  /* Palm enroll - recorded-clip path: one 4-second clip carries the
+     whole strengthened enrolment. The movement check runs on the
+     clip's openness series (a photo has no series), the profile keeps
+     3 geometry captures selected from the clip's best open-palm
+     frames spread across the recording, and the texture comes from
+     the sharpest usable frame. */
+  function resetPalmEnroll() { /* clip enrolment keeps no partial state */ }
   function startPalmCamera() {
     Cam.start($('palmVideo'), camFacing.enrollPalm, 'enrollPalm').then(function () {
-      Palm.startLoop($('palmVideo'), $('palmStatus'));
-      Palm.beginMovement($('palmStatus'));
-      var iv = setInterval(function () {
-        $('palmCapture').disabled = !(Palm.movement.passed && Palm.buffer.length >= 3);
-        if (!Palm.running) clearInterval(iv);
-      }, 300);
+      $('palmStatus').textContent = 'Camera on - tap Record Palm Clip, then open the palm wide, close it into a loose fist, and open it wide again during the recording.';
+      $('palmCapture').disabled = false;
     }).catch(function (e) { $('palmMsg').innerHTML = cameraErrorHTML(e); $('palmStatus').textContent = 'Camera blocked.'; });
   }
   $('palmStart').addEventListener('click', startPalmCamera);
   camRestarters.enrollPalm = startPalmCamera;
   $('palmCapture').addEventListener('click', function () {
-    var desc = Palm.captureDescriptor();
-    if (!desc) { $('palmMsg').innerHTML = '<div class="error">No usable open palm detected. Nothing was stored. Hold one open palm still, fingers spread, filling the guide, and retry.</div>'; return; }
-    var tex = Palm.captureTexture();
-    if (!tex) { $('palmMsg').innerHTML = '<div class="error">The palm texture could not be read from this frame. Nothing was stored. Hold the palm steady in good light and capture again.</div>'; return; }
-    palmEnroll.captures.push(desc);
-    palmEnroll.textures.push(tex);
-    Palm.buffer = []; // fresh frames for the next angle
-    if (palmEnroll.captures.length < 3) {
-      $('palmMsg').innerHTML = '<div class="success">Capture ' + palmEnroll.captures.length + ' of 3 saved. ' + esc(PALM_CAPTURE_HINTS[palmEnroll.captures.length]) + '</div>';
-      return;
-    }
-    // Combine: geometry keeps all 3 captures (verification takes the best
-    // match); texture is the element-wise average, renormalised to sum 1.
-    var avgTex = new Array(256).fill(0);
-    palmEnroll.textures.forEach(function (t) { for (var i = 0; i < 256; i++) avgTex[i] += t[i] / palmEnroll.textures.length; });
-    var sum = avgTex.reduce(function (a, b) { return a + b; }, 0);
-    if (sum > 0) avgTex = avgTex.map(function (v) { return v / sum; });
-    enroll.palm = { v: 2, geometry: palmEnroll.captures.slice(), texture: avgTex };
-    resetPalmEnroll();
-    Palm.stop(); Cam.stop();
-    $('palmMsg').innerHTML = '<div class="success">Palm enrolled the strong way: live movement check passed, 3 hand-geometry captures (30 measures each) and palm texture stored.</div>';
-    advanceFrom('palm');
+    if (palmScanBusy) return;
+    palmScanBusy = true;
+    $('palmCapture').disabled = true;
+    $('palmMsg').innerHTML = '';
+    recordPalmClip($('palmVideo'), $('palmStatus'), 4500).then(function (frames) {
+      return processPalmClip(frames, $('palmStatus'));
+    }).then(function (res) {
+      palmScanBusy = false;
+      if (!res.movement.pass) {
+        $('palmMsg').innerHTML = '<div class="error">Movement check failed in the clip: ' + esc(res.movement.reason) + ' Nothing was stored. Record again and make the full open - close - open movement inside the recording.</div>';
+        $('palmCapture').disabled = false;
+        return;
+      }
+      var geometry = B.selectPalmProfile(res.results);
+      if (!geometry) {
+        $('palmMsg').innerHTML = '<div class="error">No usable open palm found in the clip. Nothing was stored. Hold one open palm still, fingers spread, filling the guide, and record again.</div>';
+        $('palmCapture').disabled = false;
+        return;
+      }
+      if (!res.bestTexture) {
+        $('palmMsg').innerHTML = '<div class="error">The palm texture could not be read from the clip. Nothing was stored. Record again in good light, ending with the palm held steady and open.</div>';
+        $('palmCapture').disabled = false;
+        return;
+      }
+      enroll.palm = { v: 2, geometry: geometry, texture: res.bestTexture };
+      Cam.stop();
+      $('palmStatus').textContent = 'Palm clip analysed.';
+      $('palmMsg').innerHTML = '<div class="success">Palm enrolled from a live recorded clip: movement check passed, ' + geometry.length + ' hand-geometry captures (30 measures each) selected from the clip\'s best open-palm frames, and palm texture stored.</div>';
+      advanceFrom('palm');
+    }).catch(function (e) {
+      palmScanBusy = false;
+      $('palmCapture').disabled = false;
+      $('palmMsg').innerHTML = '<div class="error">Palm clip failed: ' + esc(e && e.message ? e.message : e) + ' Nothing was stored.</div>';
+    });
   });
   $('palmSkip').addEventListener('click', function () {
     enroll.palm = null; resetPalmEnroll(); Palm.stop(); Cam.stop();
@@ -840,7 +960,7 @@
       Cam.start($('termVideo'), camFacing[termFacingKey(method)], termFacingKey(method)).then(function () {
         status.textContent = method === 'finger' ? 'Camera on - fingertip 5-8 cm away, filling the guide.' : 'Camera on - position for the scan, then Run Scan.';
         $('termScan').disabled = false;
-        if (method === 'palm') { Palm.startLoop($('termVideo'), status); Palm.beginMovement(status); }
+        if (method === 'palm') status.textContent = 'Camera on - tap SCAN, then open the palm wide, close it into a loose fist, and open it wide again during the 4-second recording.';
       }).catch(function (e) { $('termResult').innerHTML = cameraErrorHTML(e); status.textContent = 'Camera blocked.'; });
     });
   }
@@ -872,16 +992,29 @@
           return { r: r, measured: 'Euclidean distance ' + (r.distance === null ? 'n/a' : r.distance.toFixed(3)) + ' (threshold ' + r.threshold + ')' };
         });
       } else if (method === 'palm') {
-        if (!Palm.movement.passed) { $('termResult').innerHTML = '<div class="error">Movement check not completed - nothing was verified. The customer must open the palm, close it into a loose fist, then open it again in front of the camera. A still photo cannot pass.</div>'; return null; }
-        var livePalm = Palm.captureDescriptor();
-        if (!livePalm) { $('termResult').innerHTML = '<div class="error">No usable open palm detected in the live frames. Nothing was verified. Hold one open palm still, fingers spread, and run the scan again.</div>'; return null; }
-        var liveTex = Palm.captureTexture();
-        var storedPalm = person.palmProfile || person.palmDescriptor;
-        var rp = B.verifyPalmProfile(storedPalm, { geometry: livePalm, texture: liveTex });
-        var palmMeasured = 'Geometry distance ' + (rp.distance === null ? 'n/a' : rp.distance.toFixed(3)) + ' (threshold ' + rp.threshold + ', best of ' + (person.palmProfile ? person.palmProfile.geometry.length : 1) + ' enrolled captures)' +
-          (rp.textureSimilarity !== null && rp.textureSimilarity !== undefined ? ', palm texture similarity ' + rp.textureSimilarity.toFixed(3) + ' (realness floor ' + rp.textureThreshold + ')' : ', no texture gate (legacy enrollment)') +
-          ', live movement check passed';
-        attempt = Promise.resolve({ r: rp, measured: palmMeasured });
+        if (palmScanBusy) return null;
+        palmScanBusy = true;
+        $('termScan').disabled = true;
+        $('termResult').innerHTML = '<div class="notice">Recording palm clip - open the palm wide, close it into a loose fist, then open it wide again and hold...</div>';
+        attempt = recordPalmClip($('termVideo'), $('termStatus'), 4500).then(function (frames) {
+          return processPalmClip(frames, $('termStatus'));
+        }).then(function (res) {
+          palmScanBusy = false;
+          $('termScan').disabled = false;
+          if (!res.movement.pass) return { fail: 'Movement check not completed in the recorded clip - nothing was verified. During the recording the customer must open the palm wide, close it into a loose fist, then open it wide again. A still photo cannot pass. (' + res.movement.reason + ')' };
+          var livePalm = B.selectPalmDescriptor(res.results);
+          if (!livePalm) return { fail: 'No usable open palm found in the recorded clip. Nothing was verified. Hold one open palm still, fingers spread, filling the guide, and run the scan again.' };
+          var storedPalm = person.palmProfile || person.palmDescriptor;
+          var rp = B.verifyPalmProfile(storedPalm, { geometry: livePalm, texture: res.bestTexture });
+          var palmMeasured = 'Geometry distance ' + (rp.distance === null ? 'n/a' : rp.distance.toFixed(3)) + ' (threshold ' + rp.threshold + ', best of ' + (person.palmProfile ? person.palmProfile.geometry.length : 1) + ' enrolled captures)' +
+            (rp.textureSimilarity !== null && rp.textureSimilarity !== undefined ? ', palm texture similarity ' + rp.textureSimilarity.toFixed(3) + ' (realness floor ' + rp.textureThreshold + ')' : ', no texture gate (legacy enrollment)') +
+            ', live movement check passed in recorded clip';
+          return { r: rp, measured: palmMeasured };
+        }).catch(function (e) {
+          palmScanBusy = false;
+          $('termScan').disabled = false;
+          return { fail: 'Palm clip failed: ' + (e && e.message ? e.message : e) + ' Nothing was verified.' };
+        });
       } else {
         var cap;
         try { cap = captureFinger($('termVideo'), $('termFingerOriginal'), $('termFingerRidge')); }
