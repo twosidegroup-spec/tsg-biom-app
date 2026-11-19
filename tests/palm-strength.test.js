@@ -133,5 +133,28 @@ check('TEXTURE real palm texture is sane', B.palmTextureSane(texA));
 check('TEXTURE flat histogram rejected', !B.palmTextureSane(texFlat));
 check('TEXTURE zero histogram rejected', !B.palmTextureSane(new Array(256).fill(0)));
 
+/* ---------------- CLIP FRAME SELECTION ----------------
+   The recorded-clip path analyses frames into
+   { openness, descriptor, sharpness, texture } and the selectors
+   decide. A fist frame (low openness) or a gateless descriptor must
+   never be selected, however sharp. */
+const clipFrames = [
+  { openness: openOp, descriptor: captureFrom(hand(null), 600), sharpness: 50, texture: texA },
+  { openness: fistOp, descriptor: captureFrom(hand(null), 700), sharpness: 999, texture: texA },
+  { openness: openOp, descriptor: captureFrom(hand(null), 800), sharpness: 80, texture: texA },
+  { openness: null, descriptor: null, sharpness: 500, texture: null },
+  { openness: openOp, descriptor: captureFrom(hand(null), 900), sharpness: 60, texture: texA },
+  { openness: openOp, descriptor: null, sharpness: 700, texture: texA }
+];
+check('CLIP usable frames exclude fist, missing and gateless frames', B.palmUsableOpenFrames(clipFrames).length === 3, 'usable=' + B.palmUsableOpenFrames(clipFrames).length);
+const clipDesc = B.selectPalmDescriptor(clipFrames);
+check('CLIP selectPalmDescriptor returns a sane descriptor', B.palmDescriptorSane(clipDesc));
+r = B.verifyPalmProfile(profile, { geometry: clipDesc, texture: texA2 });
+check('CLIP selected descriptor verifies against the same hand profile', r.verified, 'distance=' + (r.distance === null ? 'n/a' : r.distance.toFixed(4)));
+const clipProfile = B.selectPalmProfile(clipFrames);
+check('CLIP selectPalmProfile returns 3 spread descriptors', Array.isArray(clipProfile) && clipProfile.length === 3 && clipProfile.every(d => B.palmDescriptorSane(d)));
+check('CLIP all-fist clip selects nothing', B.selectPalmDescriptor([{ openness: fistOp, descriptor: captureFrom(hand(null), 1000), sharpness: 10, texture: texA }]) === null && B.selectPalmProfile([{ openness: fistOp, descriptor: captureFrom(hand(null), 1100), sharpness: 10, texture: texA }]) === null);
+check('CLIP empty clip selects nothing', B.selectPalmDescriptor([]) === null && B.selectPalmProfile([]) === null);
+
 console.log(failures === 0 ? '\nALL PALM-STRENGTH TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
 process.exit(failures === 0 ? 0 : 1);
