@@ -602,6 +602,31 @@
     for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) out[y * w + (w - 1 - x)] = gray[y * w + x];
     return out;
   }
+  /* Rotate a grayscale image by a few degrees around its centre
+     (bilinear sampling, corners filled with the image mean). Used to
+     encode small-rotation twins of a palm ROI: between two sessions a
+     real hand is presented a few degrees rotated, the landmark warp
+     cannot fully undo that, and an EDCC code is not rotation-tolerant
+     on its own. */
+  function rotateGray(gray, w, h, degrees) {
+    if (!gray || !w || !h || gray.length < w * h || !isFinite(degrees)) return null;
+    var rad = degrees * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+    var cx = (w - 1) / 2, cy = (h - 1) / 2, mean = 0, i;
+    for (i = 0; i < w * h; i++) mean += gray[i];
+    mean /= (w * h);
+    var out = new Array(w * h);
+    for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) {
+      var dx = x - cx, dy = y - cy;
+      var sx = cx + dx * cos + dy * sin, sy = cy - dx * sin + dy * cos;
+      var x0 = Math.floor(sx), y0 = Math.floor(sy), fx = sx - x0, fy = sy - y0;
+      var v00 = (x0 >= 0 && x0 < w && y0 >= 0 && y0 < h) ? gray[y0 * w + x0] : mean;
+      var v10 = (x0 + 1 >= 0 && x0 + 1 < w && y0 >= 0 && y0 < h) ? gray[y0 * w + x0 + 1] : mean;
+      var v01 = (x0 >= 0 && x0 < w && y0 + 1 >= 0 && y0 + 1 < h) ? gray[(y0 + 1) * w + x0] : mean;
+      var v11 = (x0 + 1 >= 0 && x0 + 1 < w && y0 + 1 >= 0 && y0 + 1 < h) ? gray[(y0 + 1) * w + x0 + 1] : mean;
+      out[y * w + x] = Math.round((v00 * (1 - fx) + v10 * fx) * (1 - fy) + (v01 * (1 - fx) + v11 * fx) * fy);
+    }
+    return out;
+  }
   function palmprintEncode(gray, w, h, size) {
     size = size || PALMPRINT_SIZE;
     if (!gray || !w || !h || gray.length < w * h) return null;
@@ -834,7 +859,7 @@
     var out = [];
     (frames || []).forEach(function (f, i) {
       if (f && typeof f.openness === 'number' && isFinite(f.openness) && f.openness >= PALM_OPEN_MIN && palmprintCodeSane(f.code)) {
-        out.push({ index: i, openness: f.openness, code: palmprintCodeBytes(f.code), codeM: (f.codeM && palmprintCodeSane(f.codeM)) ? palmprintCodeBytes(f.codeM) : null, sharpness: f.sharpness || 0 });
+        out.push({ index: i, openness: f.openness, code: palmprintCodeBytes(f.code), codeM: (f.codeM && palmprintCodeSane(f.codeM)) ? palmprintCodeBytes(f.codeM) : null, roi: (f.roi && f.roi.length === PALMPRINT_ROI_SIZE * PALMPRINT_ROI_SIZE) ? f.roi : null, sharpness: f.sharpness || 0 });
       }
     });
     return out;
@@ -857,7 +882,7 @@
     var full = usable.filter(function (u) { return u.openness >= maxOpen - 0.15; });
     if (full.length >= 2) {
       full.sort(function (a, b) { return b.sharpness - a.sharpness; });
-      picks = full.slice(0, 3);
+      picks = full.slice(0, 6); // v16: up to 6 codes — enrolment records two clips, and a wider enrolled pose set lifts genuine scores
     } else if (usable.length <= 3) picks = usable.slice();
     else {
       for (var t = 0; t < 3; t++) {
@@ -875,17 +900,33 @@
     var usable = palmprintUsableOpenFrames(frames);
     if (!usable.length) return null;
     usable.sort(function (a, b) { return b.sharpness - a.sharpness; });
-    // Top 3 live frames (v13 raised this from 2 after E2E score swings),
-    // each contributing TWO codes in v15: the frame's own code and its
-    // mirror twin. A front-camera enrolment and a back-camera
-    // verification (or the reverse) capture mirror images of the same
-    // palm; without the twin those can never match. Best-of over the
-    // doubled set keeps the impostor cost bounded — re-verified on the
-    // E2E battery before v15 shipped.
+    // Top 3 live frames (v13 raised this from 2 after E2E score swings).
+    // Each frame contributes, in order (v15/v16):
+    //   1-2. its own code and its mirror twin — a front-camera enrolment
+    //        and a back-camera verification (or the reverse) capture
+    //        mirror images of the same palm, which can never match
+    //        without the twin;
+    //   3-6. small-rotation twins (+/-5 degrees, plain and mirrored),
+    //        encoded from the frame's retained ROI — a real hand is
+    //        presented a few degrees rotated between sessions and the
+    //        EDCC code alone is not rotation-tolerant.
+    // Best-of over the widened set is bounded by the impostor checks in
+    // the test suites and the E2E battery, re-run before v16 shipped.
     var out = [];
     usable.slice(0, 3).forEach(function (u) {
       out.push(u.code);
       if (u.codeM) out.push(u.codeM);
+      if (u.roi) {
+        var flipped = flipGrayHorizontal(u.roi, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
+        [5, -5].forEach(function (deg) {
+          var rc = palmprintEncode(rotateGray(u.roi, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE, deg), PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
+          if (rc && palmprintCodeSane(rc)) out.push(rc);
+          if (flipped) {
+            var rm = palmprintEncode(rotateGray(flipped, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE, deg), PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
+            if (rm && palmprintCodeSane(rm)) out.push(rm);
+          }
+        });
+      }
     });
     return out;
   }
@@ -1139,6 +1180,7 @@
     PALMPRINT_ROI_SIZE: PALMPRINT_ROI_SIZE,
     palmprintEncode: palmprintEncode,
     flipGrayHorizontal: flipGrayHorizontal,
+    rotateGray: rotateGray,
     palmprintCodeSane: palmprintCodeSane,
     palmprintSimilarity: palmprintSimilarity,
     palmRoiFromLandmarks: palmRoiFromLandmarks,

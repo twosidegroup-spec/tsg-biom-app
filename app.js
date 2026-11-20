@@ -545,7 +545,14 @@
         var el = Date.now() - t0;
         var f = grabVideoFrame(video);
         if (f) frames.push(f);
-        if (statusEl) statusEl.textContent = 'Recording palm clip... ' + Math.max(0, Math.ceil((durationMs - el) / 1000)) + 's - keep the whole hand inside the frame, about 30 cm away: open the palm wide, close it into a loose fist, then open it wide again.';
+        // Timed stage prompts (v16): coach the movement in step with the
+        // recording instead of one long instruction — open, then close,
+        // then open again, each while its stage is on screen.
+        if (statusEl) {
+          var frac = durationMs ? el / durationMs : 1;
+          var stage = frac < 0.4 ? 'Open your palm wide, fingers spread.' : frac < 0.7 ? 'Now close it into a loose fist.' : 'Now open it wide again.';
+          statusEl.textContent = 'Recording palm clip... ' + Math.max(0, Math.ceil((durationMs - el) / 1000)) + 's - keep the whole hand inside the frame, about 30 cm away. ' + stage;
+        }
         if (el >= durationMs) { clearInterval(iv); resolve(frames); }
       }, 250);
     });
@@ -568,7 +575,7 @@
       var code = B.palmprintEncode(roi, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE);
       var flipped = B.flipGrayHorizontal(roi, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE);
       var codeM = flipped ? B.palmprintEncode(flipped, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE) : null;
-      return { code: code, codeM: codeM };
+      return { code: code, codeM: codeM, roi: roi };
     } catch (e) { return null; }
   }
 
@@ -579,12 +586,12 @@
       chain = chain.then(function () {
         if (statusEl) statusEl.textContent = 'Analysing palm clip... frame ' + (idx + 1) + ' of ' + frames.length + '.';
         return PalmProc.landmarks(frame).then(function (lm) {
-          if (!lm) { results.push({ openness: null, descriptor: null, code: null, codeM: null, sharpness: 0, texture: null }); return; }
+          if (!lm) { results.push({ openness: null, descriptor: null, code: null, codeM: null, roi: null, sharpness: 0, texture: null }); return; }
           var openness = B.palmOpenness(lm);
           var descriptor = B.palmDescriptorFromLandmarks(lm);
           var meas = descriptor ? palmFrameMeasures(frame, frame.width, frame.height, lm) : { texture: null, sharpness: 0 };
           var codes = (descriptor && typeof openness === 'number' && openness >= B.PALM_OPEN_MIN) ? palmCodesFromFrame(frame, lm) : null;
-          results.push({ openness: openness, descriptor: descriptor, code: codes ? codes.code : null, codeM: codes ? codes.codeM : null, sharpness: meas.sharpness, texture: meas.texture });
+          results.push({ openness: openness, descriptor: descriptor, code: codes ? codes.code : null, codeM: codes ? codes.codeM : null, roi: codes ? codes.roi : null, sharpness: meas.sharpness, texture: meas.texture });
         });
       });
     });
@@ -598,6 +605,34 @@
     });
   }
   var palmScanBusy = false;
+
+  /* Record + analyse palm clips with the v16 toughness fixes:
+     enrolment always takes TWO clips (a wider enrolled pose set lifts
+     genuine match scores, and enrolment is a one-time step); the
+     terminal takes a second clip automatically when the first one's
+     movement check failed or it produced no usable open-palm frames,
+     so a slow or imperfect first attempt is not a dead end. Movement
+     passes when either clip completes the open - close - open cycle. */
+  function capturePalmResults(video, statusEl, twoClips) {
+    function oneClip() {
+      return recordPalmClip(video, statusEl, 4500).then(function (frames) {
+        return processPalmClip(frames, statusEl);
+      });
+    }
+    return oneClip().then(function (r1) {
+      var needSecond = twoClips || !r1.movement.pass || !r1.usableCount;
+      if (!needSecond) return r1;
+      if (statusEl) statusEl.textContent = twoClips ? 'Clip 1 done - once more, same movement: open, close, open.' : 'One more try - open the palm wide, close it into a loose fist, then open it wide again.';
+      return new Promise(function (resolve) { setTimeout(resolve, 1200); }).then(oneClip).then(function (r2) {
+        return {
+          results: r1.results.concat(r2.results),
+          movement: r1.movement.pass ? r1.movement : r2.movement,
+          bestTexture: r1.bestTexture || r2.bestTexture,
+          usableCount: r1.usableCount + r2.usableCount
+        };
+      });
+    });
+  }
 
   /* ---------------- Fingerprint through camera --------------------------- */
   function captureFinger(video, origCanvas, ridgeCanvas) {
@@ -819,7 +854,7 @@
   function resetPalmEnroll() { /* clip enrolment keeps no partial state */ }
   function startPalmCamera() {
     Cam.start($('palmVideo'), camFacing.enrollPalm, 'enrollPalm').then(function () {
-      $('palmStatus').textContent = 'Camera on - tap Record Palm Clip, hold the phone about 30 cm away so your whole hand fits inside the frame, then open the palm wide, close it into a loose fist, and open it wide again during the recording.';
+      $('palmStatus').textContent = 'Camera on - tap Record Palm Clip, hold the phone about 30 cm away so your whole hand fits inside the frame. The app records two short clips; in each one, open the palm wide, close it into a loose fist, and open it wide again - just follow the prompts on screen.';
       $('palmCapture').disabled = false;
     }).catch(function (e) { $('palmMsg').innerHTML = cameraErrorHTML(e); $('palmStatus').textContent = 'Camera blocked.'; });
   }
@@ -830,12 +865,10 @@
     palmScanBusy = true;
     $('palmCapture').disabled = true;
     $('palmMsg').innerHTML = '';
-    recordPalmClip($('palmVideo'), $('palmStatus'), 4500).then(function (frames) {
-      return processPalmClip(frames, $('palmStatus'));
-    }).then(function (res) {
+    capturePalmResults($('palmVideo'), $('palmStatus'), true).then(function (res) {
       palmScanBusy = false;
       if (!res.movement.pass) {
-        $('palmMsg').innerHTML = '<div class="error">Movement check failed in the clip: ' + esc(res.movement.reason) + ' Nothing was stored. Record again and make the full open - close - open movement inside the recording.</div>';
+        $('palmMsg').innerHTML = '<div class="error">Movement check failed in both clips: ' + esc(res.movement.reason) + ' Nothing was stored. Record again and make the full open - close - open movement inside each recording.</div>';
         $('palmCapture').disabled = false;
         return;
       }
@@ -848,7 +881,7 @@
       enroll.palm = { v: 3, codes: codes };
       Cam.stop();
       $('palmStatus').textContent = 'Palm clip analysed.';
-      $('palmMsg').innerHTML = '<div class="success">Palm enrolled from a live recorded clip: movement check passed, and ' + codes.length + ' palmprint codes (EDCC competitive code — the palm\'s own print pattern) were read from the clip\'s best open-palm frames.</div>';
+      $('palmMsg').innerHTML = '<div class="success">Palm enrolled from live recorded clips: movement check passed, and ' + codes.length + ' palmprint codes (EDCC competitive code — the palm\'s own print pattern) were read from the two clips\' best fully-open frames.</div>';
       advanceFrom('palm');
     }).catch(function (e) {
       palmScanBusy = false;
@@ -1018,12 +1051,10 @@
         palmScanBusy = true;
         $('termScan').disabled = true;
         $('termResult').innerHTML = '<div class="notice">Recording palm clip - open the palm wide, close it into a loose fist, then open it wide again...</div>';
-        attempt = recordPalmClip($('termVideo'), $('termStatus'), 4500).then(function (frames) {
-          return processPalmClip(frames, $('termStatus'));
-        }).then(function (res) {
+        attempt = capturePalmResults($('termVideo'), $('termStatus'), false).then(function (res) {
           palmScanBusy = false;
           $('termScan').disabled = false;
-          if (!res.movement.pass) return { fail: 'Movement check not completed in the recorded clip - nothing was verified. During the recording the customer must open the palm wide, close it into a loose fist, then open it wide again. A still photo cannot pass. (' + res.movement.reason + ')' };
+          if (!res.movement.pass) return { fail: 'Movement check not completed in either recording attempt - nothing was verified. During the recording the customer must open the palm wide, close it into a loose fist, then open it wide again. A still photo cannot pass. (' + res.movement.reason + ')' };
           if (B.palmprintProfileSane(person.palmProfile)) {
             var liveCodes = B.selectPalmprintLiveCodes(res.results);
             if (!liveCodes) return { fail: 'No usable open palm with readable print detail found in the recorded clip. Nothing was verified. Hold one open palm still, fingers spread, filling the guide in good light, and run the scan again.' };
