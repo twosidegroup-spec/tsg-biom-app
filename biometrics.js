@@ -592,6 +592,16 @@
      a Uint8Array of 841 packed bytes (direction | side << 4), or null
      when the input is unusable. The code is only a template — sanity
      (palmprintCodeSane) decides whether it carries real print detail. */
+  /* Horizontal mirror of a grayscale image (row-wise reversal). Used to
+     encode the mirror twin of a palm ROI: a front-camera capture and a
+     back-camera capture of the same palm are mirror images of each
+     other, and an EDCC code of one does not match the other. */
+  function flipGrayHorizontal(gray, w, h) {
+    if (!gray || !w || !h || gray.length < w * h) return null;
+    var out = new Array(w * h);
+    for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) out[y * w + (w - 1 - x)] = gray[y * w + x];
+    return out;
+  }
   function palmprintEncode(gray, w, h, size) {
     size = size || PALMPRINT_SIZE;
     if (!gray || !w || !h || gray.length < w * h) return null;
@@ -692,7 +702,12 @@
     var ba = palmprintCodeBytes(a), bb = palmprintCodeBytes(b);
     if (!palmprintCodeSane(ba, size) || !palmprintCodeSane(bb, size)) return null;
     var best = null;
-    for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
+    // v15: the shift search widened from +/-1 to +/-2 code pixels. On a
+    // real phone the landmark-derived warp lands a few pixels off
+    // between sessions; +/-1 starved genuine matches (a real enrolled
+    // palm scored 0.240 against the 0.36 threshold on 2026-11-20).
+    // Impostor separation re-verified on the E2E battery before shipping.
+    for (var dy = -2; dy <= 2; dy++) for (var dx = -2; dx <= 2; dx++) {
       var s = edccScoreAtShift(ba, bb, dx, dy, size);
       if (s !== null && (best === null || s > best)) best = s;
     }
@@ -819,7 +834,7 @@
     var out = [];
     (frames || []).forEach(function (f, i) {
       if (f && typeof f.openness === 'number' && isFinite(f.openness) && f.openness >= PALM_OPEN_MIN && palmprintCodeSane(f.code)) {
-        out.push({ index: i, openness: f.openness, code: palmprintCodeBytes(f.code), sharpness: f.sharpness || 0 });
+        out.push({ index: i, openness: f.openness, code: palmprintCodeBytes(f.code), codeM: (f.codeM && palmprintCodeSane(f.codeM)) ? palmprintCodeBytes(f.codeM) : null, sharpness: f.sharpness || 0 });
       }
     });
     return out;
@@ -830,7 +845,20 @@
     var usable = palmprintUsableOpenFrames(frames);
     if (usable.length < 2) return null;
     var picks = [];
-    if (usable.length <= 3) picks = usable.slice();
+    // v15: enrol from the FULLY OPEN pose. Verification compares the
+    // sharpest fully-open live frames; codes enrolled from mid-movement
+    // transition frames (fingers half-spread, caught by the old per-third
+    // buckets around the fist phase) match nothing later — a real
+    // enrolled palm scored 0.240 at verification on 2026-11-20. Take the
+    // frames within 0.15 openness of the clip's most-open frame and keep
+    // the sharpest three; fall back to the bucket picks when the
+    // fully-open set is too small.
+    var maxOpen = Math.max.apply(null, usable.map(function (u) { return u.openness; }));
+    var full = usable.filter(function (u) { return u.openness >= maxOpen - 0.15; });
+    if (full.length >= 2) {
+      full.sort(function (a, b) { return b.sharpness - a.sharpness; });
+      picks = full.slice(0, 3);
+    } else if (usable.length <= 3) picks = usable.slice();
     else {
       for (var t = 0; t < 3; t++) {
         var bucket = usable.slice(Math.floor(t * usable.length / 3), Math.floor((t + 1) * usable.length / 3));
@@ -847,12 +875,19 @@
     var usable = palmprintUsableOpenFrames(frames);
     if (!usable.length) return null;
     usable.sort(function (a, b) { return b.sharpness - a.sharpness; });
-    // Top 3 live codes (was 2): the 2026-11-20 E2E battery showed genuine
-    // scores swinging 0.354-0.699 across runs of the same palm when only
-    // 1-2 usable open frames survived a clip; a third live code steadies
-    // the genuine best-match. Impostor separation re-verified on the same
-    // battery before this shipped (v13).
-    return usable.slice(0, 3).map(function (u) { return u.code; });
+    // Top 3 live frames (v13 raised this from 2 after E2E score swings),
+    // each contributing TWO codes in v15: the frame's own code and its
+    // mirror twin. A front-camera enrolment and a back-camera
+    // verification (or the reverse) capture mirror images of the same
+    // palm; without the twin those can never match. Best-of over the
+    // doubled set keeps the impostor cost bounded — re-verified on the
+    // E2E battery before v15 shipped.
+    var out = [];
+    usable.slice(0, 3).forEach(function (u) {
+      out.push(u.code);
+      if (u.codeM) out.push(u.codeM);
+    });
+    return out;
   }
 
   /* ---- Fingerprint through camera: image processing on real pixels ---- */
@@ -1103,6 +1138,7 @@
     PALMPRINT_THRESHOLD: PALMPRINT_THRESHOLD,
     PALMPRINT_ROI_SIZE: PALMPRINT_ROI_SIZE,
     palmprintEncode: palmprintEncode,
+    flipGrayHorizontal: flipGrayHorizontal,
     palmprintCodeSane: palmprintCodeSane,
     palmprintSimilarity: palmprintSimilarity,
     palmRoiFromLandmarks: palmRoiFromLandmarks,

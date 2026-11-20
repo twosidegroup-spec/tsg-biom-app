@@ -551,10 +551,11 @@
     });
   }
 
-  /* Palmprint ROI + EDCC code from a recorded frame (v9): the landmarks
+  /* Palmprint ROI + EDCC codes from a recorded frame (v9): the landmarks
      locate the palm square, the warp cuts it out, the encoder reads the
-     print itself. Returns a code (Uint8Array) or null. */
-  function palmCodeFromFrame(frame, lm) {
+     print itself. Returns { code, codeM } (codeM = the mirror twin's
+     code, v15) or null. */
+  function palmCodesFromFrame(frame, lm) {
     try {
       var w = frame.width, h = frame.height;
       if (!w || !h) return null;
@@ -564,7 +565,10 @@
       for (var i = 0; i < w * h; i++) gray[i] = Math.round(0.299 * img[i * 4] + 0.587 * img[i * 4 + 1] + 0.114 * img[i * 4 + 2]);
       var roi = B.palmRoiFromLandmarks(gray, w, h, lm);
       if (!roi) return null;
-      return B.palmprintEncode(roi, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE);
+      var code = B.palmprintEncode(roi, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE);
+      var flipped = B.flipGrayHorizontal(roi, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE);
+      var codeM = flipped ? B.palmprintEncode(flipped, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE) : null;
+      return { code: code, codeM: codeM };
     } catch (e) { return null; }
   }
 
@@ -575,12 +579,12 @@
       chain = chain.then(function () {
         if (statusEl) statusEl.textContent = 'Analysing palm clip... frame ' + (idx + 1) + ' of ' + frames.length + '.';
         return PalmProc.landmarks(frame).then(function (lm) {
-          if (!lm) { results.push({ openness: null, descriptor: null, code: null, sharpness: 0, texture: null }); return; }
+          if (!lm) { results.push({ openness: null, descriptor: null, code: null, codeM: null, sharpness: 0, texture: null }); return; }
           var openness = B.palmOpenness(lm);
           var descriptor = B.palmDescriptorFromLandmarks(lm);
           var meas = descriptor ? palmFrameMeasures(frame, frame.width, frame.height, lm) : { texture: null, sharpness: 0 };
-          var code = (descriptor && typeof openness === 'number' && openness >= B.PALM_OPEN_MIN) ? palmCodeFromFrame(frame, lm) : null;
-          results.push({ openness: openness, descriptor: descriptor, code: code, sharpness: meas.sharpness, texture: meas.texture });
+          var codes = (descriptor && typeof openness === 'number' && openness >= B.PALM_OPEN_MIN) ? palmCodesFromFrame(frame, lm) : null;
+          results.push({ openness: openness, descriptor: descriptor, code: codes ? codes.code : null, codeM: codes ? codes.codeM : null, sharpness: meas.sharpness, texture: meas.texture });
         });
       });
     });
@@ -950,6 +954,9 @@
   $('termMethod').addEventListener('change', function () {
     var m = $('termMethod').value;
     $('termGuide').className = m === 'finger' ? 'finger' : m === 'palm' ? 'hand' : 'oval';
+    // The fingerprint preview pair belongs to finger scans only; on face
+    // and palm scans it showed as two empty black boxes (v15 tidy-up).
+    $('termFingerPreviews').classList.toggle('hidden', m !== 'finger');
     $('termScan').disabled = true;
     syncCamToggle('terminal');
     syncFlashToggle('terminal');
