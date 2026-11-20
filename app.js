@@ -545,7 +545,7 @@
         var el = Date.now() - t0;
         var f = grabVideoFrame(video);
         if (f) frames.push(f);
-        if (statusEl) statusEl.textContent = 'Recording palm clip... ' + Math.max(0, Math.ceil((durationMs - el) / 1000)) + 's - keep the whole hand inside the frame, about 30 cm away: open the palm wide, close it into a loose fist, then open it wide again and hold it open.';
+        if (statusEl) statusEl.textContent = 'Recording palm clip... ' + Math.max(0, Math.ceil((durationMs - el) / 1000)) + 's - keep the whole hand inside the frame, about 30 cm away: open the palm wide, close it into a loose fist, then open it wide again.';
         if (el >= durationMs) { clearInterval(iv); resolve(frames); }
       }, 250);
     });
@@ -1010,7 +1010,7 @@
         if (palmScanBusy) return null;
         palmScanBusy = true;
         $('termScan').disabled = true;
-        $('termResult').innerHTML = '<div class="notice">Recording palm clip - open the palm wide, close it into a loose fist, then open it wide again and hold...</div>';
+        $('termResult').innerHTML = '<div class="notice">Recording palm clip - open the palm wide, close it into a loose fist, then open it wide again...</div>';
         attempt = recordPalmClip($('termVideo'), $('termStatus'), 4500).then(function (frames) {
           return processPalmClip(frames, $('termStatus'));
         }).then(function (res) {

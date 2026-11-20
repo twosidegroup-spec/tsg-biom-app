@@ -349,6 +349,24 @@
      hand settles (his 2026-11-20 v9 test failed exactly there, after
      a full open-close swing). A static image produces a near-constant
      series and still fails on range. */
+  /* The liveness cycle: an open sample, then a closed sample, then an
+     open sample again, in that order, anywhere inside the clip. This
+     cycle rule replaced the v10 "final samples must read open" rule in
+     v14 (2026-11-20): on a real phone the hand naturally relaxes or
+     leaves the frame as the 4.5 s recording ends, which failed real
+     users who had completed the movement — the end check alone failed
+     the chairman's own enrolments on 2026-11-20 (v9 and v13 tests).
+     A still photo still cannot pass: it shows neither the close nor
+     the re-open. Fail-closed is unchanged. */
+  function palmCycleCompleted(vals) {
+    var seenOpen = false, seenClosedAfterOpen = false;
+    for (var i = 0; i < vals.length; i++) {
+      if (!seenOpen) { if (vals[i] >= PALM_OPEN_MIN) seenOpen = true; }
+      else if (!seenClosedAfterOpen) { if (vals[i] <= PALM_CLOSED_MAX) seenClosedAfterOpen = true; }
+      else if (vals[i] >= PALM_OPEN_MIN) return true;
+    }
+    return false;
+  }
   function evaluatePalmMovement(samples) {
     var vals = (samples || []).filter(function (v) { return typeof v === 'number' && isFinite(v); });
     var out = { ok: false, pass: false, samples: vals.length, min: null, max: null, last: null, range: null, reason: 'Not enough hand movement observed.' };
@@ -358,7 +376,7 @@
     if (max < PALM_OPEN_MIN) out.reason = 'Open your palm wide, fingers spread, so the camera can see it fully.';
     else if (min > PALM_CLOSED_MAX) out.reason = 'Now close your hand into a loose fist, then open it again - a still image cannot pass this check.';
     else if (out.range < PALM_MOVE_MIN_RANGE) out.reason = 'The open-close movement was too small - close fully into a loose fist, then open wide.';
-    else if (Math.max.apply(null, vals.slice(-3)) < PALM_OPEN_MIN) out.reason = 'Finish with your palm open wide.';
+    else if (!palmCycleCompleted(vals)) out.reason = 'After closing into a fist, open your palm wide again - the full open - close - open movement must complete inside the recording.';
     else { out.ok = true; out.pass = true; out.reason = 'Live hand movement confirmed (open - close - open).'; }
     return out;
   }
