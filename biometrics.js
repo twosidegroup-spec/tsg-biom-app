@@ -720,7 +720,16 @@
     if (bezel) reasons.push('rectangular device bezel edges detected around the hand');
     if (flatMoire >= 0.20 && flatCoherence >= 0.35) reasons.push('periodic screen pixel-grid pattern detected in the flat regions of the frame (density ' + flatMoire.toFixed(2) + ', grid coherence ' + flatCoherence.toFixed(2) + ')');
     if (glare > 0.05) reasons.push('flat specular glass glare detected (' + Math.round(glare * 100) + '% of frame)');
-    var spoof = bezel || (flatMoire >= 0.20 && flatCoherence >= 0.50) || (flatMoire >= 0.20 && flatCoherence >= 0.35 && glare > 0.05);
+    // v32: the grid-ALONE bar rises 0.50 -> 0.62. Measured on the
+    // user's phone (2026-11-20): his REAL hand at a real terminal was
+    // spoof-rejected with grid coherences 0.52-0.59 (density
+    // 0.22-0.55) - his camera's processing of a flat bright wall
+    // produces a stronger lattice signature than the test rig's
+    // actual screen replay (coherence 0.46, caught by the bezel rule
+    // instead). Grid-alone in the 0.50s is therefore not evidence of
+    // a screen in the environment that matters; bezel, and grid +
+    // glare at 0.35, are unchanged.
+    var spoof = bezel || (flatMoire >= 0.20 && flatCoherence >= 0.62) || (flatMoire >= 0.20 && flatCoherence >= 0.35 && glare > 0.05);
     var score = Math.max(bezel ? 0.9 : 0, flatMoire >= 0.20 ? Math.min(1, flatCoherence / 0.5) : flatCoherence * 0.5, Math.min(1, glare / 0.12));
     return { spoof: spoof, score: spoof ? Math.max(score, 0.6) : score, reasons: reasons, moire: moire, flatMoire: flatMoire, flatCoherence: flatCoherence, bezel: bezel, glare: glare, checked: true };
   }
@@ -1498,15 +1507,25 @@
      streak - consecutiveness is in capture order, not best-of. Pure
      state transition so the rule is unit-testable without a camera. */
   function streamMatchUpdate(state, score) {
-    var streak = state && typeof state.streak === 'number' ? state.streak : 0;
     var best = state && typeof state.best === 'number' ? state.best : null;
-    if (typeof score === 'number' && isFinite(score)) {
-      if (best === null || score > best) best = score;
-      streak = score >= PALMPRINT_THRESHOLD ? streak + 1 : 0;
-    } else {
-      streak = 0;
-    }
-    return { streak: streak, best: best, done: streak >= 2 };
+    var hist = state && Array.isArray(state.hist) ? state.hist.slice(-2) : [];
+    var isNum = typeof score === 'number' && isFinite(score);
+    var isMatch = isNum && score >= PALMPRINT_THRESHOLD;
+    if (isNum && (best === null || score > best)) best = score;
+    // v32: the win rule is two matching frames within a rolling
+    // three-frame window (the current frame completing the pair),
+    // not two strictly consecutive frames. Measured need: the user's
+    // genuine palm scored 0.338 - above the line - on one frame while
+    // its neighbours jittered just below, and the consecutive rule
+    // rejected a verified palm (2026-11-20). A single isolated frame
+    // still cannot verify: two independent above-threshold reads of
+    // the same palm must land within three analysed frames.
+    var prev = hist.slice(-2);
+    var done = isMatch && prev.some(function (h) { return !!h; });
+    hist.push(isMatch);
+    var streak = 0;
+    for (var i = hist.length - 1; i >= 0 && hist[i]; i--) streak++;
+    return { streak: streak, best: best, hist: hist.slice(-3), done: done };
   }
 
   /* Self-contained Web Worker source for palmprint matching (v20):
