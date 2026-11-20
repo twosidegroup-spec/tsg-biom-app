@@ -653,8 +653,13 @@
       // a slightly easier threshold catches, and every missed frame is
       // a frame the movement check and the matcher never see.
       var missed = [];
-      results.forEach(function (r, i) { if (r && !r.descriptor) missed.push(i); });
-      if (!missed.length || !PalmProc.hands) return null;
+      var detected = 0;
+      results.forEach(function (r, i) { if (r && r.descriptor) detected++; else if (r) missed.push(i); });
+      // v19 trim: the rescue pass costs a second full analysis per
+      // missed frame on a slow phone (the long "second look" tail).
+      // With 10+ detected frames the sequence, codes and match already
+      // have plenty - only rescue when the hand was genuinely scarce.
+      if (!missed.length || detected >= 10 || !PalmProc.hands) return null;
       PalmProc.hands.setOptions({ minDetectionConfidence: 0.3 });
       var rescue = Promise.resolve();
       missed.forEach(function (idx) {

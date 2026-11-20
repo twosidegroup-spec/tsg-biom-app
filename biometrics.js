@@ -521,17 +521,18 @@
      frame: (1) PIXEL GRID IN FLAT REGIONS - a display's pixel structure
      beats against the camera sensor EVERYWHERE, including the frame's
      flattest areas, while a real scene's fine texture (palm creases)
-     lives only where the texture is. The first E2E run proved the
-     point: raw global alternation scored 0.46-0.51 on a genuine palm
-     feed, so global moire is reported for information only and never
-     triggers on its own - the trigger is alternation density inside
-     the flattest quartile of blocks. (2) BEZEL - the device's
-     rectangular frame produces long straight edges spanning the frame
-     in both orientations. (3) GLASS GLARE - flat, saturated patches
-     from specular reflection off glass. Heuristic by design: Field
-     Test Mode exists to measure its real-world rejection rate. */
+     lives only where the texture is. The grid trigger is the signal's
+     PERIODICITY inside the flattest quartile of blocks (v19 - see the
+     note at flatCoherence): alternation density alone false-flagged
+     both a genuine synthetic feed (0.46-0.51) and a real phone
+     (0.27-0.41), because dense texture and sensor noise alternate too.
+     (2) BEZEL - the device's rectangular frame produces long straight
+     edges spanning the frame in both orientations. (3) GLASS GLARE -
+     flat, saturated patches from specular reflection off glass.
+     Heuristic by design: Field Test Mode exists to measure its
+     real-world rejection rate. */
   function screenSpoofCheck(gray, w, h) {
-    var none = { spoof: false, score: 0, reasons: [], moire: 0, flatMoire: 0, bezel: false, glare: 0, checked: false };
+    var none = { spoof: false, score: 0, reasons: [], moire: 0, flatMoire: 0, flatCoherence: 0, bezel: false, glare: 0, checked: false };
     if (!gray || !w || !h || gray.length < w * h || w < 48 || h < 48) return none;
     // Global strong-alternation density (informational).
     var strong = 0, altern = 0, prevSign = 0;
@@ -577,6 +578,56 @@
       }
     });
     var flatMoire = fStrong > 30 ? fAltern / fStrong : 0;
+    // Flat-region GRID COHERENCE (v19): a display grid is a 2D lattice
+    // - the pattern in one row repeats in the row below, exactly
+    // inverted (checkerboard), or shifted by a pixel or two (diagonal
+    // moire). Sensor noise is independent in every row, and a smooth
+    // gradient has no high-frequency energy at all. So the trigger
+    // pairs two facts inside the flat blocks: high-frequency energy is
+    // present (the alternation density above), AND the detrended rows
+    // correlate with the row beneath them at some small shift - one
+    // global estimate per shift, accumulated over all flat blocks
+    // before dividing. Noise stays at ~0 coherence however strong it
+    // is; a lattice peaks near 1. This distinction is forced by a real
+    // phone test: density alone scored 0.27-0.41 on a genuine hand in
+    // indoor light and false-flagged the scan.
+    var SH = 3, cohNum = [], cohDenA = [], cohDenB = [], shIdx;
+    for (shIdx = 0; shIdx <= 2 * SH; shIdx++) { cohNum.push(0); cohDenA.push(0); cohDenB.push(0); }
+    function detrendRow(vals) {
+      var n = vals.length, mean = 0, i, num = 0, den2 = 0, slope, out = [];
+      for (i = 0; i < n; i++) mean += vals[i];
+      mean /= n;
+      for (i = 0; i < n; i++) { num += (i - (n - 1) / 2) * (vals[i] - mean); den2 += (i - (n - 1) / 2) * (i - (n - 1) / 2); }
+      slope = den2 ? num / den2 : 0;
+      for (i = 0; i < n; i++) out.push(vals[i] - mean - slope * (i - (n - 1) / 2));
+      return out;
+    }
+    flatBlocks.forEach(function (bl) {
+      var rowsD = [], yy4, xx4;
+      for (yy4 = 0; yy4 < BS; yy4++) {
+        var rb4 = (bl.by + yy4) * w + bl.bx, vals = [];
+        for (xx4 = 0; xx4 < BS; xx4++) vals.push(gray[rb4 + xx4]);
+        rowsD.push(detrendRow(vals));
+      }
+      for (var p = 0; p + 1 < BS; p++) {
+        var A = rowsD[p], Bv = rowsD[p + 1];
+        for (var sh = -SH; sh <= SH; sh++) {
+          var si = sh + SH;
+          for (var i4 = 0; i4 < BS; i4++) {
+            var j = i4 + sh;
+            if (j < 0 || j >= BS) continue;
+            cohNum[si] += A[i4] * Bv[j];
+            cohDenA[si] += A[i4] * A[i4];
+            cohDenB[si] += Bv[j] * Bv[j];
+          }
+        }
+      }
+    });
+    var flatCoherence = 0;
+    for (var s1 = 0; s1 <= 2 * SH; s1++) {
+      var dd = Math.sqrt(cohDenA[s1] * cohDenB[s1]);
+      if (dd > 0) flatCoherence = Math.max(flatCoherence, Math.abs(cohNum[s1] / dd));
+    }
     // (2) Bezel: per-row and per-column mean edge strength; a bezel
     // edge spikes one row/column far above the frame's median AND runs
     // across at least 80% of that line - a local bright patch (glare)
@@ -612,11 +663,11 @@
     var glare = blocks ? flatBright / blocks : 0;
     var reasons = [];
     if (bezel) reasons.push('rectangular device bezel edges detected around the hand');
-    if (flatMoire >= 0.12) reasons.push('screen pixel-grid pattern detected in the flat regions of the frame (density ' + flatMoire.toFixed(2) + ')');
+    if (flatMoire >= 0.20 && flatCoherence >= 0.35) reasons.push('periodic screen pixel-grid pattern detected in the flat regions of the frame (density ' + flatMoire.toFixed(2) + ', grid coherence ' + flatCoherence.toFixed(2) + ')');
     if (glare > 0.05) reasons.push('flat specular glass glare detected (' + Math.round(glare * 100) + '% of frame)');
-    var spoof = bezel || flatMoire >= 0.25 || (flatMoire >= 0.12 && glare > 0.05);
-    var score = Math.max(bezel ? 0.9 : 0, Math.min(1, flatMoire / 0.25), Math.min(1, glare / 0.12));
-    return { spoof: spoof, score: spoof ? Math.max(score, 0.6) : score, reasons: reasons, moire: moire, flatMoire: flatMoire, bezel: bezel, glare: glare, checked: true };
+    var spoof = bezel || (flatMoire >= 0.20 && flatCoherence >= 0.50) || (flatMoire >= 0.20 && flatCoherence >= 0.35 && glare > 0.05);
+    var score = Math.max(bezel ? 0.9 : 0, flatMoire >= 0.20 ? Math.min(1, flatCoherence / 0.5) : flatCoherence * 0.5, Math.min(1, glare / 0.12));
+    return { spoof: spoof, score: spoof ? Math.max(score, 0.6) : score, reasons: reasons, moire: moire, flatMoire: flatMoire, flatCoherence: flatCoherence, bezel: bezel, glare: glare, checked: true };
   }
 
   /* ------------- Field-test statistics + CSV (v18) ---------------------
