@@ -428,8 +428,10 @@
        1. ROI: MediaPipe landmarks are used ONLY to locate the palm —
           a palm-centred square is perspective-warped out of the frame
           (palmRoiFromLandmarks). Landmarks carry no identity here.
-       2. ENCODE (EDCC, default config 29/5/5/10, ported faithfully):
-          resize ROI to 29x29, Gaussian blur, Laplacian enhancement,
+       2. ENCODE (EDCC competitive coding, ported faithfully from the
+          MIT reference; image_size 64 chosen over the 29 default -
+          see PALMPRINT_SIZE):
+          resize ROI to SIZE x SIZE, Gaussian blur, Laplacian enhancement,
           convolve with a fixed bank of 10 Gabor kernels (kmax = pi/2,
           sigma = 2pi, kernel 5x5); at each pixel the winning direction
           d (0..9) is stored plus one side bit s (which neighbouring
@@ -447,17 +449,25 @@
      any pilot sale — published EDCC numbers come from controlled
      datasets with pre-extracted ROIs. */
 
-  var PALMPRINT_SIZE = 29;          // EDCC image_size
+  var PALMPRINT_SIZE = 64;          // EDCC image_size. The reference implementation's default is 29;
+                                    // 64 is a legitimate EncoderConfig choice and keeps far more print
+                                    // detail from a 128px phone ROI - measured better separation below.
   var PALMPRINT_DIRECTIONS = 10;    // EDCC gabor_directions
   var PALMPRINT_KERNEL_SIZE = 5;    // EDCC gabor_kernel_size
-  var PALMPRINT_CODE_LEN = PALMPRINT_SIZE * PALMPRINT_SIZE; // 841
+  var PALMPRINT_CODE_LEN = PALMPRINT_SIZE * PALMPRINT_SIZE; // 4096 at size 64
   var PALMPRINT_ROI_SIZE = 128;     // canonical warped ROI side (px)
-  var PALMPRINT_THRESHOLD = 0.28;   // Calibrated 2026-11-20 on synthetic probes (tests/palmprint.test.js),
-                                    // on the product's actual decision rule (best of 3 enrolled x 2 live
-                                    // codes, through the landmark warp with +-3px jitter): genuine min 0.407,
-                                    // impostor max 0.180 across all probes (direct-ROI genuine min 0.583).
-                                    // 0.28 keeps >= 0.10 margin on both sides. Synthetic only — MUST be
-                                    // recalibrated on real palms in the field test before any pilot sale.
+  var PALMPRINT_THRESHOLD = 0.36;   // Calibrated 2026-11-20 TWICE. (1) Synthetic probes
+                                    // (tests/palmprint.test.js) through the product decision rule.
+                                    // (2) REALISTIC-IMAGE calibration (tests/e2e, 5 photorealistic
+                                    // palms, re-capture variants +-4px / +-8% brightness, product
+                                    // rule = best of 3 enrolled x 2 live codes): at code size 29
+                                    // genuine min 0.512 / impostor max 0.383 (margin 0.129); at 48:
+                                    // 0.487 / 0.307 (0.180); at 64: 0.467 / 0.261 (0.206) - hence
+                                    // size 64 and threshold 0.36 (~0.10 margin both sides). The
+                                    // earlier 0.28 threshold FALSE-ACCEPTED a different palm in
+                                    // the first end-to-end run (impostor scored 0.295 at size 29).
+                                    // Still a small sample - the 20-person field test remains
+                                    // the gate before any pilot sale.
   var PALMPRINT_MAX_DIR_SHARE = 0.80; // one direction may not dominate a real code
 
   /* --- small image helpers (array-like gray, row-major) --- */
@@ -545,8 +555,8 @@
      for a 5-tap kernel), then a 5-tap Laplacian (separable Sobel form:
      smooth [1,4,6,4,1]/16 on one axis, second difference [1,-2,1] on
      the other, summed over both axes). */
-  function palmprintEnhance(img29) {
-    var size = PALMPRINT_SIZE;
+  function palmprintEnhance(img29, size) {
+    size = size || PALMPRINT_SIZE;
     var gw = [], norm = 0, k;
     for (k = 0; k < 5; k++) { var wgt = Math.exp(-((k - 2) * (k - 2)) / (2 * 1.1 * 1.1)); gw.push(wgt); norm += wgt; }
     for (k = 0; k < 5; k++) gw[k] /= norm;
@@ -564,15 +574,16 @@
      a Uint8Array of 841 packed bytes (direction | side << 4), or null
      when the input is unusable. The code is only a template — sanity
      (palmprintCodeSane) decides whether it carries real print detail. */
-  function palmprintEncode(gray, w, h) {
+  function palmprintEncode(gray, w, h, size) {
+    size = size || PALMPRINT_SIZE;
     if (!gray || !w || !h || gray.length < w * h) return null;
-    var img = resizeGrayBilinear(gray, w, h, PALMPRINT_SIZE);
-    var enhanced = palmprintEnhance(img);
+    var img = resizeGrayBilinear(gray, w, h, size);
+    var enhanced = palmprintEnhance(img, size);
     var kernels = palmprintKernels();
     var responses = [];
-    for (var d = 0; d < PALMPRINT_DIRECTIONS; d++) responses.push(convolve2d(enhanced, PALMPRINT_SIZE, kernels[d], PALMPRINT_KERNEL_SIZE));
-    var code = new Uint8Array(PALMPRINT_CODE_LEN);
-    for (var p = 0; p < PALMPRINT_CODE_LEN; p++) {
+    for (var d = 0; d < PALMPRINT_DIRECTIONS; d++) responses.push(convolve2d(enhanced, size, kernels[d], PALMPRINT_KERNEL_SIZE));
+    var code = new Uint8Array(size * size);
+    for (var p = 0; p < size * size; p++) {
       var best = 0, bestVal = -Infinity;
       for (d = 0; d < PALMPRINT_DIRECTIONS; d++) {
         var v = responses[d][p];
@@ -589,9 +600,10 @@
   /* A usable palmprint code: right length, every byte a legal (d, s)
      pair, and real directional variety — a flat or blank capture
      collapses to one dominant direction and is rejected here. */
-  function palmprintCodeSane(code) {
+  function palmprintCodeSane(code, size) {
     var bytes = palmprintCodeBytes(code);
-    if (!bytes || bytes.length !== PALMPRINT_CODE_LEN) return false;
+    var want = (size || PALMPRINT_SIZE) * (size || PALMPRINT_SIZE);
+    if (!bytes || bytes.length !== want) return false;
     var counts = new Array(PALMPRINT_DIRECTIONS).fill(0);
     for (var i = 0; i < bytes.length; i++) {
       var b = bytes[i];
@@ -613,9 +625,10 @@
   function palmprintCodeBytes(code) {
     if (!code) return null;
     if (typeof code === 'string') return palmprintCodeFromBase64(code);
-    if (code.length === PALMPRINT_CODE_LEN) {
-      var out = new Uint8Array(PALMPRINT_CODE_LEN);
-      for (var i = 0; i < PALMPRINT_CODE_LEN; i++) { var v = Number(code[i]); if (!isFinite(v) || v < 0 || v > 255) return null; out[i] = v; }
+    var n = code.length, root = Math.round(Math.sqrt(n));
+    if (n >= PALMPRINT_CODE_LEN && root * root === n) {
+      var out = new Uint8Array(n);
+      for (var i = 0; i < n; i++) { var v = Number(code[i]); if (!isFinite(v) || v < 0 || v > 255) return null; out[i] = v; }
       return out;
     }
     return null;
@@ -645,8 +658,9 @@
   /* EDCC comparer, exact: score = (# pixels with identical packed
      byte) / len, computed here at a code-grid translation (dx, dy)
      over the overlapping region only. */
-  function edccScoreAtShift(a, b, dx, dy) {
-    var size = PALMPRINT_SIZE, matches = 0, count = 0;
+  function edccScoreAtShift(a, b, dx, dy, size) {
+    size = size || PALMPRINT_SIZE;
+    var matches = 0, count = 0;
     for (var y = 0; y < size; y++) for (var x = 0; x < size; x++) {
       var bx = x + dx, by = y + dy;
       if (bx < 0 || bx >= size || by < 0 || by >= size) continue;
@@ -656,12 +670,12 @@
     return count ? matches / count : null;
   }
   /* Palmprint similarity: EDCC score, best over +-1 px translations. */
-  function palmprintSimilarity(a, b) {
+  function palmprintSimilarity(a, b, size) {
     var ba = palmprintCodeBytes(a), bb = palmprintCodeBytes(b);
-    if (!palmprintCodeSane(ba) || !palmprintCodeSane(bb)) return null;
+    if (!palmprintCodeSane(ba, size) || !palmprintCodeSane(bb, size)) return null;
     var best = null;
     for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
-      var s = edccScoreAtShift(ba, bb, dx, dy);
+      var s = edccScoreAtShift(ba, bb, dx, dy, size);
       if (s !== null && (best === null || s > best)) best = s;
     }
     return best;
@@ -815,7 +829,12 @@
     var usable = palmprintUsableOpenFrames(frames);
     if (!usable.length) return null;
     usable.sort(function (a, b) { return b.sharpness - a.sharpness; });
-    return usable.slice(0, 2).map(function (u) { return u.code; });
+    // Top 3 live codes (was 2): the 2026-11-20 E2E battery showed genuine
+    // scores swinging 0.354-0.699 across runs of the same palm when only
+    // 1-2 usable open frames survived a clip; a third live code steadies
+    // the genuine best-match. Impostor separation re-verified on the same
+    // battery before this shipped (v13).
+    return usable.slice(0, 3).map(function (u) { return u.code; });
   }
 
   /* ---- Fingerprint through camera: image processing on real pixels ---- */
