@@ -1175,6 +1175,8 @@
       var id = msgIds[fromStep];
       if (id && $(id)) $(id).innerHTML = html;
       toast('Enrollment not finished - no biometric was captured.');
+      Snd.buzz();
+      Snd.speak('Registration failed');
     }
     if (!enroll.details) { fail('<div class="error">Enrollment is incomplete - details are missing. Go back and start again.</div>'); return; }
     if (capturedCount() === 0) {
@@ -1208,6 +1210,10 @@
           '<b>Palm Loyalty:</b> Active — 0 points';
         enroll = { details: null, face: null, palm: null, finger: null, types: { face: true, palm: true, finger: true } };
         toast('Enrolled: ' + person.id);
+        // Voice verdict (v23, his order): spoken ONLY here, after the
+        // record is actually saved - never on a step, never early.
+        Snd.chime();
+        Snd.speak('Registration done successfully');
       });
     }).catch(function (e) { fail('<div class="error">Could not save enrollment on this device: ' + esc(e.message || e) + '</div>'); });
   }
@@ -1328,7 +1334,7 @@
       $('palmStatus').textContent = 'Palm captured.';
       $('palmMsg').innerHTML = '<div class="success">Palm enrolled by instant auto-capture in ' + (res.elapsedMs / 1000).toFixed(1) + ' s: movement check passed, and ' + codes.length + ' palmprint codes (EDCC competitive code — the palm\'s own print pattern) were read from the best fully-open frames.</div>';
       Snd.chime();
-      Snd.speak('Palm registered');
+      Snd.speak('Palm captured');
       advanceFrom('palm');
     }).catch(function (e) {
       palmScanBusy = false;
@@ -1616,7 +1622,7 @@
                     '<b>Store:</b> ' + esc(tx.store) + '<br><b>Authorized by:</b> ' + esc(METHOD_LABEL[method]) + ' scan — ' + esc(out.measured) + '<br>' +
                     '<b>Status:</b> ' + esc(tx.status) + '</div></div>';
                   toast('Biom Pay authorized: ' + tx.id);
-                  if (method === 'palm') Snd.speak('Palm recognized, payment complete');
+                  if (method === 'palm') Snd.speak('Payment complete');
                 });
               });
             };
