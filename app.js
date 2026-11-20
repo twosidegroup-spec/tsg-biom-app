@@ -14,7 +14,7 @@
      matching code do not read reliably against a new one. Bump
      APP_DATA_VERSION together with the service-worker shell on any
      build that changes enrolment or matching. */
-  var APP_DATA_VERSION = 'v27';
+  var APP_DATA_VERSION = 'v28';
   /* DEVELOPMENT ONLY (his order, 2026-11-20): the wipe below runs
      only in development builds. A commercial build ships with
      BUILD_MODE set to 'commercial' and never wipes - real customer
@@ -970,7 +970,16 @@
         // visible and correctable instead of silent.
         var seenHand = results.some(function (x) { return typeof x.openness === 'number'; });
         var lastResult = results.length ? results[results.length - 1] : null;
-        if (analysed >= 12 && !seenHand) {
+        if (B.evaluateMovementSequenceStreaming(measures, sequence).pass) {
+          // Movement done, print codes still banking (v28): say so,
+          // with the count - at Step 3 the app previously kept showing
+          // the stage prompt while silently collecting codes, which
+          // read as 'stuck' on the user's phone.
+          var usableNow = B.palmprintUsableOpenFrames(results);
+          var maxOpenNow = usableNow.length ? Math.max.apply(null, usableNow.map(function (u) { return u.openness; })) : 0;
+          var bankedNow = usableNow.filter(function (u) { return u.openness >= maxOpenNow - 0.30; }).length;
+          statusEl.textContent = 'Movement complete — hold your open palm still inside the ring, fingers spread wide. Capturing print detail: ' + Math.min(bankedNow, 3) + ' of 3 codes.';
+        } else if (analysed >= 12 && !seenHand) {
           statusEl.textContent = 'No hand seen yet — hold your open palm inside the ring, facing the camera, about 30 cm away.';
         } else if (lastResult && lastResult.framing) {
           statusEl.textContent = lastResult.framing;
@@ -988,7 +997,7 @@
       // v20.2 rig measurement showed concurrent inference starving
       // the grab timer on slow processors and phase-locking the
       // sampling to one point of the movement cycle.
-      return recordBurst(1500).then(analyseBurst).then(cycle);
+      return recordBurst(1000).then(analyseBurst).then(cycle);
     }
     setRing($('palmRing'), 'on');
     return cycle();

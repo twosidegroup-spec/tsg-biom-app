@@ -491,10 +491,17 @@
   function palmStageMet(stage, m) {
     if (!m || typeof m.openness !== 'number' || !isFinite(m.openness)) return false;
     switch (stage) {
-      case 'open': return m.openness >= PALM_OPEN_MIN;
+      // v28: the movement stages are a LIVENESS proof (the hand moves
+      // through the issued poses in order), not the print-quality gate
+      // - banking separately requires >= PALM_OPEN_MIN frames. The
+      // 'open'/'spread' stage bars therefore sit at PALM_LIVE_OPEN_MIN
+      // (1.55, the openness verification itself accepts): at 1.65 a
+      // natural re-open after the fist sat at Step 3 of 3 forever on
+      // the user's phone (2026-11-20) even though the hand was open.
+      case 'open': return m.openness >= PALM_LIVE_OPEN_MIN;
       case 'close': return m.openness <= PALM_CLOSED_MAX;
       case 'curl': return m.openness > PALM_CLOSED_MAX && m.openness < 1.95;
-      case 'spread': return m.openness >= PALM_OPEN_MIN && typeof m.spread === 'number' && m.spread >= PALM_SPREAD_MIN;
+      case 'spread': return m.openness >= PALM_LIVE_OPEN_MIN && typeof m.spread === 'number' && m.spread >= PALM_SPREAD_MIN;
       case 'tilt': return m.openness >= 1.45 && typeof m.tilt === 'number' && m.tilt >= PALM_TILT_MIN;
       default: return false;
     }
