@@ -115,9 +115,34 @@
           throw err;
         });
       }
-      var p = navigator.mediaDevices.getUserMedia({
-        video: { facingMode: facingMode, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false
-      }).then(function (stream) {
+      // Constraint ladder (v17): a bare-string facingMode is an EXACT
+      // requirement, and on multi-lens Android phones the exact request
+      // is the classic OverconstrainedError - the camera "troubles" on
+      // both front and back. Try exact first, then the same facing as a
+      // preference, then any camera at all - a working camera on the
+      // other side beats no camera. NotReadableError means the previous
+      // camera has not released yet: wait briefly and retry the ladder
+      // once before giving up.
+      function gum(facing, exact) {
+        var v = { width: { ideal: 1280 }, height: { ideal: 720 } };
+        if (facing) v.facingMode = exact ? facing : { ideal: facing };
+        return navigator.mediaDevices.getUserMedia({ video: v, audio: false });
+      }
+      function openCamera() {
+        return gum(facingMode, true).catch(function (e1) {
+          if (e1 && (e1.name === 'OverconstrainedError' || e1.name === 'NotFoundError')) return gum(facingMode, false);
+          throw e1;
+        }).catch(function (e2) {
+          if (e2 && (e2.name === 'OverconstrainedError' || e2.name === 'NotFoundError')) return gum(null, false);
+          throw e2;
+        }).catch(function (e3) {
+          if (e3 && e3.name === 'NotReadableError') {
+            return new Promise(function (res) { setTimeout(res, 700); }).then(function () { return gum(facingMode, false); });
+          }
+          throw e3;
+        });
+      }
+      var p = openCamera().then(function (stream) {
         if (token !== Cam._token) { // a newer start superseded this one
           stream.getTracks().forEach(function (t) { t.stop(); });
           return null;
@@ -581,21 +606,46 @@
 
   function processPalmClip(frames, statusEl) {
     var results = [];
+    function analyseFrame(frame, idx) {
+      return PalmProc.landmarks(frame).then(function (lm) {
+        if (!lm) { results[idx] = { openness: null, descriptor: null, code: null, codeM: null, roi: null, sharpness: 0, texture: null }; return; }
+        var openness = B.palmOpenness(lm);
+        var descriptor = B.palmDescriptorFromLandmarks(lm);
+        var meas = descriptor ? palmFrameMeasures(frame, frame.width, frame.height, lm) : { texture: null, sharpness: 0 };
+        var codes = (descriptor && typeof openness === 'number' && openness >= B.PALM_OPEN_MIN) ? palmCodesFromFrame(frame, lm) : null;
+        results[idx] = { openness: openness, descriptor: descriptor, code: codes ? codes.code : null, codeM: codes ? codes.codeM : null, roi: codes ? codes.roi : null, sharpness: meas.sharpness, texture: meas.texture };
+      });
+    }
     var chain = Promise.resolve();
     frames.forEach(function (frame, idx) {
       chain = chain.then(function () {
         if (statusEl) statusEl.textContent = 'Analysing palm clip... frame ' + (idx + 1) + ' of ' + frames.length + '.';
-        return PalmProc.landmarks(frame).then(function (lm) {
-          if (!lm) { results.push({ openness: null, descriptor: null, code: null, codeM: null, roi: null, sharpness: 0, texture: null }); return; }
-          var openness = B.palmOpenness(lm);
-          var descriptor = B.palmDescriptorFromLandmarks(lm);
-          var meas = descriptor ? palmFrameMeasures(frame, frame.width, frame.height, lm) : { texture: null, sharpness: 0 };
-          var codes = (descriptor && typeof openness === 'number' && openness >= B.PALM_OPEN_MIN) ? palmCodesFromFrame(frame, lm) : null;
-          results.push({ openness: openness, descriptor: descriptor, code: codes ? codes.code : null, codeM: codes ? codes.codeM : null, roi: codes ? codes.roi : null, sharpness: meas.sharpness, texture: meas.texture });
-        });
+        return analyseFrame(frame, idx);
       });
     });
     return chain.then(function () {
+      // Rescue pass (v17): frames where the detector found no hand get
+      // one more attempt at a lower detection confidence before they
+      // are given up - on real phones the first pass misses frames that
+      // a slightly easier threshold catches, and every missed frame is
+      // a frame the movement check and the matcher never see.
+      var missed = [];
+      results.forEach(function (r, i) { if (r && !r.descriptor) missed.push(i); });
+      if (!missed.length || !PalmProc.hands) return null;
+      PalmProc.hands.setOptions({ minDetectionConfidence: 0.3 });
+      var rescue = Promise.resolve();
+      missed.forEach(function (idx) {
+        rescue = rescue.then(function () {
+          if (statusEl) statusEl.textContent = 'Analysing palm clip... second look at frame ' + (idx + 1) + '.';
+          return analyseFrame(frames[idx], idx);
+        });
+      });
+      return rescue.then(function () {
+        PalmProc.hands.setOptions({ minDetectionConfidence: 0.5 });
+      }, function () {
+        PalmProc.hands.setOptions({ minDetectionConfidence: 0.5 });
+      });
+    }).then(function () {
       var series = [];
       results.forEach(function (r) { if (typeof r.openness === 'number' && isFinite(r.openness)) series.push(r.openness); });
       var usable = B.palmUsableOpenFrames(results);
@@ -613,24 +663,38 @@
      movement check failed or it produced no usable open-palm frames,
      so a slow or imperfect first attempt is not a dead end. Movement
      passes when either clip completes the open - close - open cycle. */
-  function capturePalmResults(video, statusEl, twoClips) {
+  function capturePalmResults(video, statusEl, twoClips, swapCamera) {
     function oneClip() {
       return recordPalmClip(video, statusEl, 4500).then(function (frames) {
         return processPalmClip(frames, statusEl);
       });
     }
+    function merge(r1, r2) {
+      return {
+        results: r1.results.concat(r2.results),
+        movement: r1.movement.pass ? r1.movement : r2.movement,
+        bestTexture: r1.bestTexture || r2.bestTexture,
+        usableCount: r1.usableCount + r2.usableCount
+      };
+    }
+    function secondClip(r1, note) {
+      if (statusEl) statusEl.textContent = note;
+      return new Promise(function (resolve) { setTimeout(resolve, 1200); }).then(oneClip).then(function (r2) { return merge(r1, r2); });
+    }
     return oneClip().then(function (r1) {
+      // Zero-hand rescue (v17): if NO frame in the clip produced a hand
+      // at all, the likeliest cause is the camera itself - a lens the
+      // detector cannot work with, a black feed, a covered lens. When
+      // the caller provides a camera swap, switch to the other camera
+      // and record once more before reporting failure.
+      var anyHand = r1.results.some(function (r) { return !!r.descriptor; });
+      if (!anyHand && swapCamera) {
+        if (statusEl) statusEl.textContent = 'No hand was seen by this camera - switching to the other camera and trying once more.';
+        return swapCamera().then(function () { return secondClip(r1, 'Other camera on - open the palm wide, close it into a loose fist, then open it wide again.'); });
+      }
       var needSecond = twoClips || !r1.movement.pass || !r1.usableCount;
       if (!needSecond) return r1;
-      if (statusEl) statusEl.textContent = twoClips ? 'Clip 1 done - once more, same movement: open, close, open.' : 'One more try - open the palm wide, close it into a loose fist, then open it wide again.';
-      return new Promise(function (resolve) { setTimeout(resolve, 1200); }).then(oneClip).then(function (r2) {
-        return {
-          results: r1.results.concat(r2.results),
-          movement: r1.movement.pass ? r1.movement : r2.movement,
-          bestTexture: r1.bestTexture || r2.bestTexture,
-          usableCount: r1.usableCount + r2.usableCount
-        };
-      });
+      return secondClip(r1, twoClips ? 'Clip 1 done - once more, same movement: open, close, open.' : 'One more try - open the palm wide, close it into a loose fist, then open it wide again.');
     });
   }
 
@@ -865,7 +929,11 @@
     palmScanBusy = true;
     $('palmCapture').disabled = true;
     $('palmMsg').innerHTML = '';
-    capturePalmResults($('palmVideo'), $('palmStatus'), true).then(function (res) {
+    capturePalmResults($('palmVideo'), $('palmStatus'), true, function () {
+      camFacing.enrollPalm = camFacing.enrollPalm === 'user' ? 'environment' : 'user';
+      syncCamToggle('enrollPalm');
+      return Cam.start($('palmVideo'), camFacing.enrollPalm, 'enrollPalm');
+    }).then(function (res) {
       palmScanBusy = false;
       if (!res.movement.pass) {
         $('palmMsg').innerHTML = '<div class="error">Movement check failed in both clips: ' + esc(res.movement.reason) + ' Nothing was stored. Record again and make the full open - close - open movement inside each recording.</div>';
@@ -1051,7 +1119,12 @@
         palmScanBusy = true;
         $('termScan').disabled = true;
         $('termResult').innerHTML = '<div class="notice">Recording palm clip - open the palm wide, close it into a loose fist, then open it wide again...</div>';
-        attempt = capturePalmResults($('termVideo'), $('termStatus'), false).then(function (res) {
+        attempt = capturePalmResults($('termVideo'), $('termStatus'), false, function () {
+          var k = termFacingKey($('termMethod').value);
+          camFacing[k] = camFacing[k] === 'user' ? 'environment' : 'user';
+          syncCamToggle('terminal');
+          return Cam.start($('termVideo'), camFacing[k], 'terminal');
+        }).then(function (res) {
           palmScanBusy = false;
           $('termScan').disabled = false;
           if (!res.movement.pass) return { fail: 'Movement check not completed in either recording attempt - nothing was verified. During the recording the customer must open the palm wide, close it into a loose fist, then open it wide again. A still photo cannot pass. (' + res.movement.reason + ')' };
