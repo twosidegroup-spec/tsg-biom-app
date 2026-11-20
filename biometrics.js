@@ -1391,11 +1391,27 @@
     var usable = palmprintUsableOpenFrames(frames, PALM_LIVE_OPEN_MIN);
     if (!usable.length) return null;
     usable.sort(function (a, b) { return b.sharpness - a.sharpness; });
+    var top = usable.slice(0, 3);
     var out = [];
-    usable.slice(0, 3).forEach(function (u) {
+    top.forEach(function (u) {
       out.push(u.code);
       if (u.codeM) out.push(u.codeM);
     });
+    // v30: live-side fusion, symmetric to the enrolled consensus -
+    // fuse the sharpest live frames into one consensus code (and the
+    // consensus of their mirror twins), so the final comparison can
+    // score the session's stable print rather than only single
+    // frames. The user's phone produced 24 readable live codes whose
+    // best single pair was 0.266-0.302 across two nights.
+    if (top.length >= 2) {
+      var consLive = palmprintConsensusCode(top.map(function (u) { return u.code; }));
+      if (consLive && palmprintCodeSane(consLive)) out.push(consLive);
+      var twins = top.map(function (u) { return u.codeM; }).filter(function (c) { return !!c; });
+      if (twins.length >= 2) {
+        var consTwin = palmprintConsensusCode(twins);
+        if (consTwin && palmprintCodeSane(consTwin)) out.push(consTwin);
+      }
+    }
     return out;
   }
 

@@ -14,7 +14,7 @@
      matching code do not read reliably against a new one. Bump
      APP_DATA_VERSION together with the service-worker shell on any
      build that changes enrolment or matching. */
-  var APP_DATA_VERSION = 'v29';
+  var APP_DATA_VERSION = 'v30';
   /* DEVELOPMENT ONLY (his order, 2026-11-20): the wipe below runs
      only in development builds. A commercial build ships with
      BUILD_MODE set to 'commercial' and never wipes - real customer
@@ -911,7 +911,15 @@
       var usable = B.palmprintUsableOpenFrames(results);
       if (usable.length < 3) return false;
       var maxOpen = Math.max.apply(null, usable.map(function (u) { return u.openness; }));
-      return usable.filter(function (u) { return u.openness >= maxOpen - 0.30; }).length >= 3;
+      var inBand = usable.filter(function (u) { return u.openness >= maxOpen - 0.30; }).length;
+      // v30: bank a FULL set, not the minimum. done() previously fired
+      // the moment 3 in-band frames existed; on the user's phone that
+      // produced a 3-single profile (4 codes with fusion) whose best
+      // verification pair scored 0.266, while a 6-single enrolment
+      // scored 0.302. The selector caps at 6 singles, so require 6
+      // in-band - with a late fallback: past 150 analysed frames a
+      // 3-code profile is better than grinding on to the deadline.
+      return inBand >= 6 || (inBand >= 3 && analysed >= 150);
     }
     function finish() {
       setRing($('palmRing'), 'off');
@@ -978,7 +986,7 @@
           var usableNow = B.palmprintUsableOpenFrames(results);
           var maxOpenNow = usableNow.length ? Math.max.apply(null, usableNow.map(function (u) { return u.openness; })) : 0;
           var bankedNow = usableNow.filter(function (u) { return u.openness >= maxOpenNow - 0.30; }).length;
-          statusEl.textContent = 'Movement complete — hold your open palm still inside the ring, fingers spread wide. Capturing print detail: ' + Math.min(bankedNow, 3) + ' of 3 codes.';
+          statusEl.textContent = 'Movement complete — hold your open palm still inside the ring, fingers spread wide. Capturing print detail: ' + Math.min(bankedNow, 6) + ' of 6 codes.';
         } else if (analysed >= 12 && !seenHand) {
           statusEl.textContent = 'No hand seen yet — hold your open palm inside the ring, facing the camera, about 30 cm away.';
         } else if (lastResult && lastResult.framing) {
