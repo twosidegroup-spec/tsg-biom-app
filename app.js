@@ -14,7 +14,7 @@
      matching code do not read reliably against a new one. Bump
      APP_DATA_VERSION together with the service-worker shell on any
      build that changes enrolment or matching. */
-  var APP_DATA_VERSION = 'v30';
+  var APP_DATA_VERSION = 'v31';
   /* DEVELOPMENT ONLY (his order, 2026-11-20): the wipe below runs
      only in development builds. A commercial build ships with
      BUILD_MODE set to 'commercial' and never wipes - real customer
@@ -26,23 +26,34 @@
     var DV_KEY = 'tsgbiom_data_version';
     if (BUILD_MODE !== 'commercial' && localStorage.getItem(DV_KEY) !== APP_DATA_VERSION) {
       if (sessionStorage.getItem(DV_KEY + '_wiped') === APP_DATA_VERSION) {
-        // Already reloaded once for this version (the delete was
-        // blocked): stamp and boot rather than loop.
-        localStorage.setItem(DV_KEY, APP_DATA_VERSION);
+        // Already attempted this session: boot as-is rather than loop.
+        // (The DB layer falls back safely if storage is still settling.)
       } else {
         sessionStorage.setItem(DV_KEY + '_wiped', APP_DATA_VERSION);
-        localStorage.setItem(DV_KEY, APP_DATA_VERSION);
         ['people', 'logs', 'transactions', 'meta'].forEach(function (s) { try { localStorage.removeItem('tsgbiom_' + s); } catch (e) {} });
         dataWipeReload = true;
-        var wipeDone = false;
-        var wipeReload = function () { if (!wipeDone) { wipeDone = true; location.reload(); } };
-        setTimeout(wipeReload, 1200);
+        var wipeSettled = false;
+        // v31: stamp the version ONLY when the delete actually
+        // completed. The old code stamped + reloaded even when the
+        // deletion was BLOCKED (another open copy of the app holding
+        // the database); the pending deletion then blocked the fresh
+        // DB.open() forever, DB.db stayed null, and the first save
+        // died with 'Cannot read properties of null (reading
+        // transaction)' on the user's phone. On blocked, wait for the
+        // delete to land; past the cap, reload UNSTAMPED so the next
+        // clean launch retries the wipe.
+        var finishWipe = function (stamp) {
+          if (wipeSettled) return; wipeSettled = true;
+          if (stamp) { try { localStorage.setItem(DV_KEY, APP_DATA_VERSION); } catch (e) {} }
+          location.reload();
+        };
+        setTimeout(function () { finishWipe(false); }, 2500);
         if ('indexedDB' in window) {
           var wipeReq = indexedDB.deleteDatabase('tsg-biom');
-          wipeReq.onsuccess = wipeReload;
-          wipeReq.onerror = wipeReload;
-          wipeReq.onblocked = wipeReload;
-        } else wipeReload();
+          wipeReq.onsuccess = function () { finishWipe(true); };
+          wipeReq.onerror = function () { finishWipe(true); };
+          wipeReq.onblocked = function () { /* wait for onsuccess or the cap */ };
+        } else finishWipe(true);
       }
     }
   } catch (e) {}
@@ -55,7 +66,21 @@
       var self = this;
       return new Promise(function (resolve) {
         if (!('indexedDB' in window)) { self.useLS = true; resolve(); return; }
-        var req = indexedDB.open('tsg-biom', 1);
+        // v31: an open() that never settles (blocked by a pending
+        // deletion or another instance) previously left db null with
+        // useLS false, and the first save threw a raw null error.
+        // Fall back to localStorage for the session on blocked, on
+        // error, or after 2.5 s unsettled - the app stays fully
+        // functional either way.
+        var settled = false;
+        var settle = function (useLS, db) {
+          if (settled) { if (db) try { db.close(); } catch (e) {} return; }
+          settled = true;
+          if (db) self.db = db; else self.useLS = true;
+          resolve();
+        };
+        var req;
+        try { req = indexedDB.open('tsg-biom', 1); } catch (e) { settle(true); return; }
         req.onupgradeneeded = function () {
           var db = req.result;
           db.createObjectStore('people', { keyPath: 'id' });
@@ -63,15 +88,17 @@
           db.createObjectStore('transactions', { keyPath: 'id' });
           db.createObjectStore('meta', { keyPath: 'key' });
         };
-        req.onsuccess = function () { self.db = req.result; resolve(); };
-        req.onerror = function () { self.useLS = true; resolve(); };
+        req.onsuccess = function () { settle(false, req.result); };
+        req.onerror = function () { settle(true); };
+        req.onblocked = function () { settle(true); };
+        setTimeout(function () { settle(true); }, 2500);
       });
     },
     lsGet: function (store) { try { return JSON.parse(localStorage.getItem('tsgbiom_' + store) || '[]'); } catch (e) { return []; } },
     lsSet: function (store, rows) { try { localStorage.setItem('tsgbiom_' + store, JSON.stringify(rows)); } catch (e) {} },
     put: function (store, value) {
       var self = this;
-      if (this.useLS) {
+      if (this.useLS || !this.db) {
         var rows = this.lsGet(store);
         if (store === 'meta') {
           var i = rows.findIndex(function (r) { return r.key === value.key; });
@@ -92,7 +119,7 @@
     },
     all: function (store) {
       var self = this;
-      if (this.useLS) return Promise.resolve(this.lsGet(store));
+      if (this.useLS || !this.db) return Promise.resolve(this.lsGet(store));
       return new Promise(function (resolve, reject) {
         var req = self.db.transaction(store, 'readonly').objectStore(store).getAll();
         req.onsuccess = function () { resolve(req.result || []); };
