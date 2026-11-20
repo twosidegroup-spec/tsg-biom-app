@@ -343,8 +343,12 @@
   /* Movement liveness verdict over a time series of openness samples.
      Pass requires ALL of: enough samples, the hand was seen open, the
      hand was seen closed, the openness swung by at least the minimum
-     range, and the hand ENDS open (the capture that follows is an open
-     palm). A static image produces a near-constant series and fails. */
+     range, and the hand ENDS open — judged on the end phase (any of
+     the last 3 samples open), not the single final sample: on a real
+     phone the last detection is often a soft/partial read while the
+     hand settles (his 2026-11-20 v9 test failed exactly there, after
+     a full open-close swing). A static image produces a near-constant
+     series and still fails on range. */
   function evaluatePalmMovement(samples) {
     var vals = (samples || []).filter(function (v) { return typeof v === 'number' && isFinite(v); });
     var out = { ok: false, pass: false, samples: vals.length, min: null, max: null, last: null, range: null, reason: 'Not enough hand movement observed.' };
@@ -354,7 +358,7 @@
     if (max < PALM_OPEN_MIN) out.reason = 'Open your palm wide, fingers spread, so the camera can see it fully.';
     else if (min > PALM_CLOSED_MAX) out.reason = 'Now close your hand into a loose fist, then open it again - a still image cannot pass this check.';
     else if (out.range < PALM_MOVE_MIN_RANGE) out.reason = 'The open-close movement was too small - close fully into a loose fist, then open wide.';
-    else if (last < PALM_OPEN_MIN) out.reason = 'Finish with your palm open wide.';
+    else if (Math.max.apply(null, vals.slice(-3)) < PALM_OPEN_MIN) out.reason = 'Finish with your palm open wide.';
     else { out.ok = true; out.pass = true; out.reason = 'Live hand movement confirmed (open - close - open).'; }
     return out;
   }

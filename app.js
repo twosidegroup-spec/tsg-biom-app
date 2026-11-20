@@ -480,7 +480,7 @@
       if (this.hands) return;
       var self = this;
       this.hands = new Hands({ locateFile: function (f) { return 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/' + f; } });
-      this.hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.5 });
+      this.hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
       this.hands.onResults(function (res) {
         var p = self.pending; self.pending = null;
         if (p) p((res.multiHandLandmarks && res.multiHandLandmarks[0]) ? res.multiHandLandmarks[0] : null);
@@ -545,7 +545,7 @@
         var el = Date.now() - t0;
         var f = grabVideoFrame(video);
         if (f) frames.push(f);
-        if (statusEl) statusEl.textContent = 'Recording palm clip... ' + Math.max(0, Math.ceil((durationMs - el) / 1000)) + 's - open the palm wide, close it into a loose fist, then open it wide again and hold.';
+        if (statusEl) statusEl.textContent = 'Recording palm clip... ' + Math.max(0, Math.ceil((durationMs - el) / 1000)) + 's - keep the whole hand inside the frame, about 30 cm away: open the palm wide, close it into a loose fist, then open it wide again and hold it open.';
         if (el >= durationMs) { clearInterval(iv); resolve(frames); }
       }, 250);
     });
@@ -815,7 +815,7 @@
   function resetPalmEnroll() { /* clip enrolment keeps no partial state */ }
   function startPalmCamera() {
     Cam.start($('palmVideo'), camFacing.enrollPalm, 'enrollPalm').then(function () {
-      $('palmStatus').textContent = 'Camera on - tap Record Palm Clip, then open the palm wide, close it into a loose fist, and open it wide again during the recording.';
+      $('palmStatus').textContent = 'Camera on - tap Record Palm Clip, hold the phone about 30 cm away so your whole hand fits inside the frame, then open the palm wide, close it into a loose fist, and open it wide again during the recording.';
       $('palmCapture').disabled = false;
     }).catch(function (e) { $('palmMsg').innerHTML = cameraErrorHTML(e); $('palmStatus').textContent = 'Camera blocked.'; });
   }
@@ -974,7 +974,7 @@
       Cam.start($('termVideo'), camFacing[termFacingKey(method)], termFacingKey(method)).then(function () {
         status.textContent = method === 'finger' ? 'Camera on - fingertip 5-8 cm away, filling the guide.' : 'Camera on - position for the scan, then Run Scan.';
         $('termScan').disabled = false;
-        if (method === 'palm') status.textContent = 'Camera on - tap SCAN, then open the palm wide, close it into a loose fist, and open it wide again during the 4-second recording.';
+        if (method === 'palm') status.textContent = 'Camera on - tap SCAN, keep the whole hand inside the frame about 30 cm away, then open the palm wide, close it into a loose fist, and open it wide again during the 4-second recording.';
       }).catch(function (e) { $('termResult').innerHTML = cameraErrorHTML(e); status.textContent = 'Camera blocked.'; });
     });
   }

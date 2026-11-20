@@ -90,6 +90,10 @@ ev = B.evaluatePalmMovement([openOp, openOp, fistOp, fistOp, openOp, openOp, ope
 check('MOVEMENT open-close-open PASSES', ev.pass, 'range=' + ev.range.toFixed(2) + ' - ' + ev.reason);
 ev = B.evaluatePalmMovement([openOp, openOp, fistOp, fistOp, fistOp, fistOp, fistOp]); // ends closed
 check('MOVEMENT ending closed FAILS', !ev.pass, ev.reason);
+ev = B.evaluatePalmMovement([openOp, openOp, fistOp, fistOp, openOp, openOp, 1.58]); // final sample is a soft read, end phase open
+check('MOVEMENT soft final sample but open end phase PASSES', ev.pass, 'range=' + ev.range.toFixed(2));
+ev = B.evaluatePalmMovement([openOp, fistOp, fistOp, fistOp, fistOp, fistOp, fistOp]); // opened only at the very start
+check('MOVEMENT open only at the start FAILS', !ev.pass, ev.reason);
 ev = B.evaluatePalmMovement([openOp, fistOp, openOp]); // too few samples
 check('MOVEMENT too few samples FAILS', !ev.pass, ev.reason);
 ev = B.evaluatePalmMovement([fistOp, fistOp, fistOp, fistOp, fistOp, fistOp, fistOp]); // fist only
