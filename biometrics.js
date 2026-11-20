@@ -239,6 +239,16 @@
   var PALM_TEXTURE_MIN = 0.35;    // realness floor - see calibration note above
   var PALM_OPEN_MIN = 1.65;       // openness at/above this = open hand (open synthetic: 2.08)
   var PALM_CLOSED_MAX = 1.55;     // openness at/below this = closed hand (fist synthetic: 1.15)
+  var PALM_LIVE_OPEN_MIN = 1.55;  // v24: live (verification) frames produce/match codes from
+                                  // this openness. Enrolment banks only fully-open codes
+                                  // (>= PALM_OPEN_MIN), but a natural checkout palm - held
+                                  // like tapping a card, not performed wide for a camera -
+                                  // sits lower; gating live codes at the enrolment bar
+                                  // starved verification of frames on a real phone
+                                  // (2026-11-20: enrolled fine, no match at the terminal).
+                                  // The 0.36 similarity + two-consecutive-frame rule +
+                                  // spoof gate remain the judges; this only widens the
+                                  // candidate frames they judge.
   var PALM_MOVE_MIN_RANGE = 0.35; // openness must swing at least this far during the scan
   var PALM_MOVE_MIN_SAMPLES = 6;  // and be observed over at least this many samples
   // Thresholds were loosened once, after the first real-phone test
@@ -953,6 +963,73 @@
     }
     return out;
   }
+  /* Illumination flattening + CLAHE for a square palm ROI -
+     EVALUATED 2026-11-20 and NOT ADOPTED (tests/norm-experiment.js).
+     The recipe is standard in RGB palmprint pipelines (divide out a
+     smooth illumination field estimated from a 16x16 downscale, then
+     CLAHE 8x8 tiles, clip limit 2.0), but measured on this encoder it
+     made things worse: genuine min fell on every condition (clean
+     0.483 -> 0.454, gradient X 0.479 -> 0.452, gradient+shift 0.314
+     -> 0.206) while impostor max improved only 0.140 -> 0.110, for
+     +2.3 ms per encode. The reason is structural: the EDCC
+     enhancement is a Laplacian high-pass, which already suppresses
+     smooth illumination fields (a 0.65->1.25 brightness gradient
+     costs the current pipeline only 0.004 of genuine score), while
+     CLAHE's per-tile contrast changes perturb the fine directional
+     responses the competitive coding competes on. Kept here, unused
+     by palmprintEncode, as the recorded candidate for the future
+     neural engine's preprocessing, where the calculus may differ. */
+  function palmprintNormaliseRoi(gray, w, h) {
+    if (!gray || !w || !h || w !== h || gray.length < w * h) return gray;
+    var size = w, i;
+    var small = resizeGrayBilinear(gray, w, h, 16);
+    var illum = resizeGrayBilinear(small, 16, 16, size);
+    var mean = 0;
+    for (i = 0; i < size * size; i++) mean += illum[i];
+    mean /= (size * size);
+    if (!(mean > 1)) return gray;
+    var flat = new Float64Array(size * size);
+    for (i = 0; i < size * size; i++) {
+      var d = illum[i] > 1 ? illum[i] : 1;
+      var v = gray[i] * mean / d;
+      flat[i] = v < 0 ? 0 : (v > 255 ? 255 : v);
+    }
+    // CLAHE: 8x8 tiles, clip limit 2.0.
+    var tiles = 8, ts = Math.floor(size / tiles);
+    if (ts < 4) return flat;
+    var luts = [];
+    for (var ty = 0; ty < tiles; ty++) {
+      luts.push([]);
+      for (var tx = 0; tx < tiles; tx++) {
+        var hist = new Float64Array(256), count = 0, x, y;
+        for (y = ty * ts; y < (ty + 1) * ts; y++) for (x = tx * ts; x < (tx + 1) * ts; x++) {
+          hist[Math.max(0, Math.min(255, Math.round(flat[y * size + x])))]++;
+          count++;
+        }
+        var clip = 2.0 * (count / 256), excess = 0, b;
+        for (b = 0; b < 256; b++) if (hist[b] > clip) { excess += hist[b] - clip; hist[b] = clip; }
+        var add = excess / 256;
+        var lut = new Float64Array(256), cdf = 0;
+        for (b = 0; b < 256; b++) { cdf += hist[b] + add; lut[b] = 255 * cdf / count; }
+        luts[ty].push(lut);
+      }
+    }
+    var out = new Float64Array(size * size);
+    for (var py = 0; py < size; py++) for (var px = 0; px < size; px++) {
+      // Bilinear blend of the four nearest tile LUTs (tile centres at
+      // (t + 0.5) * ts - 0.5 in pixel coordinates).
+      var gx = (px + 0.5) / ts - 0.5, gy = (py + 0.5) / ts - 0.5;
+      var x0 = Math.floor(gx), y0 = Math.floor(gy);
+      var fx = gx - x0, fy = gy - y0;
+      var xa = Math.max(0, Math.min(tiles - 1, x0)), xb = Math.max(0, Math.min(tiles - 1, x0 + 1));
+      var ya = Math.max(0, Math.min(tiles - 1, y0)), yb = Math.max(0, Math.min(tiles - 1, y0 + 1));
+      var bin = Math.max(0, Math.min(255, Math.round(flat[py * size + px])));
+      var top = luts[ya][xa][bin] * (1 - fx) + luts[ya][xb][bin] * fx;
+      var bot = luts[yb][xa][bin] * (1 - fx) + luts[yb][xb][bin] * fx;
+      out[py * size + px] = top * (1 - fy) + bot * fy;
+    }
+    return out;
+  }
   function palmprintEncode(gray, w, h, size) {
     size = size || PALMPRINT_SIZE;
     if (!gray || !w || !h || gray.length < w * h) return null;
@@ -1195,10 +1272,11 @@
   /* Clip frames for the palmprint path carry { openness, code,
      sharpness }. A frame counts only when the hand is open AND its
      code carries real print detail. */
-  function palmprintUsableOpenFrames(frames) {
+  function palmprintUsableOpenFrames(frames, minOpen) {
+    var gate = typeof minOpen === 'number' ? minOpen : PALM_OPEN_MIN;
     var out = [];
     (frames || []).forEach(function (f, i) {
-      if (f && typeof f.openness === 'number' && isFinite(f.openness) && f.openness >= PALM_OPEN_MIN && palmprintCodeSane(f.code)) {
+      if (f && typeof f.openness === 'number' && isFinite(f.openness) && f.openness >= gate && palmprintCodeSane(f.code)) {
         out.push({ index: i, openness: f.openness, code: palmprintCodeBytes(f.code), codeM: (f.codeM && palmprintCodeSane(f.codeM)) ? palmprintCodeBytes(f.codeM) : null, roi: (f.roi && f.roi.length === PALMPRINT_ROI_SIZE * PALMPRINT_ROI_SIZE) ? f.roi : null, sharpness: f.sharpness || 0 });
       }
     });
@@ -1218,8 +1296,14 @@
     // frames within 0.15 openness of the clip's most-open frame and keep
     // the sharpest three; fall back to the bucket picks when the
     // fully-open set is too small.
+    // v24: the band widened from 0.15 to 0.30 - still far above the
+    // fist-transition poses the v15 rule exists to exclude (a fist
+    // reads ~1.15-1.5; a 0.30 band under a ~2.0 max keeps picks at
+    // >= ~1.7), but wide enough to bank the natural variation of a
+    // real open palm, so the profile is not only the single most
+    // stretched pose the user happened to perform for the camera.
     var maxOpen = Math.max.apply(null, usable.map(function (u) { return u.openness; }));
-    var full = usable.filter(function (u) { return u.openness >= maxOpen - 0.15; });
+    var full = usable.filter(function (u) { return u.openness >= maxOpen - 0.30; });
     if (full.length >= 2) {
       full.sort(function (a, b) { return b.sharpness - a.sharpness; });
       picks = full.slice(0, 6); // v16: up to 6 codes — enrolment records two clips, and a wider enrolled pose set lifts genuine scores
@@ -1243,7 +1327,7 @@
   // source replaces tolerance by variant multiplication, cutting the
   // per-frame comparison count from 18 live codes to 2.
   function selectPalmprintLiveCodes(frames) {
-    var usable = palmprintUsableOpenFrames(frames);
+    var usable = palmprintUsableOpenFrames(frames, PALM_LIVE_OPEN_MIN);
     if (!usable.length) return null;
     usable.sort(function (a, b) { return b.sharpness - a.sharpness; });
     var out = [];
@@ -1268,6 +1352,31 @@
       cy: (Number(a.y) + Number(b.y)) / 2,
       span: Math.hypot(Number(b.x) - Number(a.x), Number(b.y) - Number(a.y))
     };
+  }
+  /* Framing guidance for a live palm (v24): the failure this answers
+     is a checkout palm held so close/high that fingertips leave the
+     frame - MediaPipe then estimates the missing points, the warp is
+     built on guessed geometry, and the print cannot match the
+     enrolment no matter how good the encoder is (his phone,
+     2026-11-20: enrolled, then no match with the palm overflowing
+     the frame). Returns a plain instruction or null when the hand is
+     wholly in view at a sane distance. */
+  function palmFramingHint(landmarks) {
+    if (!landmarks || landmarks.length !== 21) return null;
+    var tips = [0, 8, 12, 16, 20], i, p;
+    for (i = 0; i < tips.length; i++) {
+      p = landmarks[tips[i]];
+      if (!p || !isFinite(Number(p.x)) || !isFinite(Number(p.y))) continue;
+      if (Number(p.x) < 0.02 || Number(p.x) > 0.98 || Number(p.y) < 0.02 || Number(p.y) > 0.98) {
+        return 'Whole hand in view — part of the hand is being cut off. Move the palm back a little and centre it inside the ring.';
+      }
+    }
+    var pose = palmFramePose(landmarks);
+    if (pose) {
+      if (pose.span > 0.55) return 'Too close — move the palm back a little, about 30 cm away.';
+      if (pose.span < 0.15) return 'Move the palm a little closer to the camera.';
+    }
+    return null;
   }
 
   /* Passive liveness over a few rapid frames (Show & Pay, v20): a live
@@ -1575,6 +1684,7 @@
     verifyPalm: verifyPalm,
     PALM_TEXTURE_MIN: PALM_TEXTURE_MIN,
     PALM_OPEN_MIN: PALM_OPEN_MIN,
+    PALM_LIVE_OPEN_MIN: PALM_LIVE_OPEN_MIN,
     PALM_CLOSED_MAX: PALM_CLOSED_MAX,
     PALM_MOVE_MIN_RANGE: PALM_MOVE_MIN_RANGE,
     palmTextureSane: palmTextureSane,
@@ -1588,6 +1698,7 @@
     PALMPRINT_THRESHOLD: PALMPRINT_THRESHOLD,
     PALMPRINT_ROI_SIZE: PALMPRINT_ROI_SIZE,
     palmprintEncode: palmprintEncode,
+    palmprintNormaliseRoi: palmprintNormaliseRoi,
     flipGrayHorizontal: flipGrayHorizontal,
     rotateGray: rotateGray,
     palmSpread: palmSpread,
@@ -1612,6 +1723,7 @@
     selectPalmprintProfileCodes: selectPalmprintProfileCodes,
     selectPalmprintLiveCodes: selectPalmprintLiveCodes,
     palmFramePose: palmFramePose,
+    palmFramingHint: palmFramingHint,
     passiveLivenessCheck: passiveLivenessCheck,
     streamMatchUpdate: streamMatchUpdate,
     palmprintWorkerSource: palmprintWorkerSource,

@@ -751,7 +751,7 @@
      passive liveness. Same frame-result shape the clip pipeline used. */
   function analysePalmFrame(frame) {
     return PalmProc.landmarks(frame).then(function (lm) {
-      if (!lm) return { openness: null, descriptor: null, code: null, codeM: null, roi: null, sharpness: 0, texture: null, spread: null, tilt: null, pose: null };
+      if (!lm) return { openness: null, descriptor: null, code: null, codeM: null, roi: null, sharpness: 0, texture: null, spread: null, tilt: null, pose: null, framing: null };
       var openness = B.palmOpenness(lm);
       var descriptor = B.palmDescriptorFromLandmarks(lm);
       var meas = descriptor ? palmFrameMeasures(frame, frame.width, frame.height, lm) : { texture: null, sharpness: 0 };
@@ -763,8 +763,11 @@
       // only 4/24 passed the descriptor gate), which starved both
       // enrolment and verification of codes. The descriptor is still
       // computed for legacy geometry profiles only.
-      var codes = (typeof openness === 'number' && openness >= B.PALM_OPEN_MIN) ? palmCodesFromFrame(frame, lm) : null;
-      return { openness: openness, descriptor: descriptor, code: codes ? codes.code : null, codeM: codes ? codes.codeM : null, roi: codes ? codes.roi : null, sharpness: meas.sharpness, texture: meas.texture, spread: B.palmSpread(lm), tilt: B.palmTilt(lm), pose: B.palmFramePose(lm) };
+      // v24: codes are PRODUCED from the live bar (1.55) so a natural
+      // checkout palm yields candidates; enrolment still BANKS only
+      // fully-open frames (its selection gate stays at PALM_OPEN_MIN).
+      var codes = (typeof openness === 'number' && openness >= B.PALM_LIVE_OPEN_MIN) ? palmCodesFromFrame(frame, lm) : null;
+      return { openness: openness, descriptor: descriptor, code: codes ? codes.code : null, codeM: codes ? codes.codeM : null, roi: codes ? codes.roi : null, sharpness: meas.sharpness, texture: meas.texture, spread: B.palmSpread(lm), tilt: B.palmTilt(lm), pose: B.palmFramePose(lm), framing: B.palmFramingHint(lm) };
     });
   }
 
@@ -886,8 +889,11 @@
         // a hand has been seen and what is missing, so a stall is
         // visible and correctable instead of silent.
         var seenHand = results.some(function (x) { return typeof x.openness === 'number'; });
+        var lastResult = results.length ? results[results.length - 1] : null;
         if (analysed >= 12 && !seenHand) {
           statusEl.textContent = 'No hand seen yet — hold your open palm inside the ring, facing the camera, about 30 cm away.';
+        } else if (lastResult && lastResult.framing) {
+          statusEl.textContent = lastResult.framing;
         } else if (analysed >= 24 && seenHand && stageIdxNow() === 0) {
           statusEl.textContent = 'Hand seen — now open it wide: fingers spread, palm flat, facing the camera.';
         } else {
@@ -913,6 +919,7 @@
     var matchState = { streak: 0, best: null };
     var win = null;
     var bursts = 0, analysed = 0, swapped = false, locked = false;
+    var lastHint = null;
     var MAXF = 24, deadline = t0 + 90000;
 
     function finish(out) { setRing($('termRing'), 'off'); return out; }
@@ -1002,6 +1009,7 @@
             return analysePalmFrame(frame).then(function (r) {
               analysed++;
               frames.push(r);
+              if (typeof r.openness === 'number') lastHint = r.framing || null;
               if (r.pose) { poses.push(r.pose); if (poses.length > 6) poses.shift(); }
               var sane = !!(r.code && B.palmprintCodeSane(r.code));
               if (sane && !locked) { locked = true; Snd.tick(); setRing($('termRing'), 'locked'); }
@@ -1051,7 +1059,7 @@
         if (statusEl) statusEl.textContent = 'No hand was seen by this camera - switching to the other camera and trying once more.';
         return swapCamera().then(function () { return loop(); }, function () { return loop(); });
       }
-      if (statusEl) statusEl.textContent = 'Show & Pay scanning — hold the open palm inside the ring, like tapping a card.';
+      if (statusEl) statusEl.textContent = lastHint || 'Show & Pay scanning — hold the open palm inside the ring, like tapping a card.';
       return burst().then(function () { return waitMs(700); }).then(loop);
     }
     setRing($('termRing'), 'on');
