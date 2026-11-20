@@ -435,6 +435,243 @@
     return picks.length ? picks : null;
   }
 
+  /* ------------- Randomised liveness sequences (v18) -------------------
+     The fixed open -> close -> open choreography could be satisfied by
+     a pre-recorded video of someone else performing it. From v18 each
+     scan is issued ONE sequence at random from the set below, the
+     prompts are shown live, and the stages must complete IN ORDER
+     within a strict 3.5-second window (PALM_SEQUENCE_WINDOW_MS). A
+     recording made for a different sequence, or at a different pace,
+     misses the order or the window. Stages are judged on per-frame
+     measures computed from the landmarks: openness (above), spread
+     (fingertip fan) and tilt (knuckle-line angle). */
+  var PALM_SPREAD_MIN = 0.9;        // fingertip-gap sum / knuckle span at/above this = fingers spread
+  var PALM_TILT_MIN = 25;           // knuckle-line angle (degrees) at/above this = hand tilted
+  var PALM_SEQUENCE_WINDOW_MS = 3500;
+  var PALM_SEQUENCES = [
+    { id: 'open-close-open', label: 'Open - Close - Open', stages: ['open', 'close', 'open'] },
+    { id: 'open-tilt-open', label: 'Open - Tilt - Open', stages: ['open', 'tilt', 'open'] },
+    { id: 'open-close-spread', label: 'Open - Close - Spread', stages: ['open', 'close', 'spread'] },
+    { id: 'open-curl-open', label: 'Open - Curl - Open', stages: ['open', 'curl', 'open'] }
+  ];
+  var PALM_STAGE_PROMPTS = {
+    open: 'Open your palm wide, fingers spread.',
+    close: 'Now close it into a loose fist.',
+    curl: 'Now curl your fingers halfway - not a full fist.',
+    tilt: 'Now tilt your hand to one side, palm still open.',
+    spread: 'Now spread your fingers wide apart.'
+  };
+  function palmSpread(landmarks) {
+    if (!landmarks || landmarks.length !== 21) return null;
+    function dist(a, b) { var dx = landmarks[a].x - landmarks[b].x, dy = landmarks[a].y - landmarks[b].y; return Math.sqrt(dx * dx + dy * dy); }
+    var span = dist(5, 17);
+    if (!(span > 0.02)) return null;
+    var gaps = dist(8, 12) + dist(12, 16) + dist(16, 20);
+    var v = gaps / span;
+    return isFinite(v) ? v : null;
+  }
+  function palmTilt(landmarks) {
+    if (!landmarks || landmarks.length !== 21) return null;
+    var dx = landmarks[17].x - landmarks[5].x, dy = landmarks[17].y - landmarks[5].y;
+    if (Math.abs(dx) < 0.02 && Math.abs(dy) < 0.02) return null;
+    var deg = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI);
+    if (deg > 90) deg = 180 - deg; // knuckle line orientation, direction-free
+    return isFinite(deg) ? deg : null;
+  }
+  function palmStageMet(stage, m) {
+    if (!m || typeof m.openness !== 'number' || !isFinite(m.openness)) return false;
+    switch (stage) {
+      case 'open': return m.openness >= PALM_OPEN_MIN;
+      case 'close': return m.openness <= PALM_CLOSED_MAX;
+      case 'curl': return m.openness > PALM_CLOSED_MAX && m.openness < 1.95;
+      case 'spread': return m.openness >= PALM_OPEN_MIN && typeof m.spread === 'number' && m.spread >= PALM_SPREAD_MIN;
+      case 'tilt': return m.openness >= 1.45 && typeof m.tilt === 'number' && m.tilt >= PALM_TILT_MIN;
+      default: return false;
+    }
+  }
+  /* measures: [{openness, spread, tilt}] one per recorded frame, in
+     order; frameMs: milliseconds between frames (250 in the app).
+     Passes only when every stage is met in order and the span from the
+     first stage's frame to the last stage's frame fits the window. */
+  function evaluateMovementSequence(measures, sequence, frameMs) {
+    var fail = function (reason) { return { pass: false, reason: reason, sequence: sequence ? sequence.id : null, completedMs: null }; };
+    if (!sequence || !sequence.stages || !sequence.stages.length) return fail('No liveness sequence was issued for this scan.');
+    if (!measures || measures.length < 3) return fail('Movement check needs a few seconds of hand movement - follow the prompts shown during the recording.');
+    var stageIdx = 0, firstIdx = -1, lastIdx = -1;
+    for (var i = 0; i < measures.length && stageIdx < sequence.stages.length; i++) {
+      if (palmStageMet(sequence.stages[stageIdx], measures[i])) {
+        if (firstIdx < 0) firstIdx = i;
+        lastIdx = i;
+        stageIdx++;
+      }
+    }
+    if (stageIdx < sequence.stages.length) {
+      return fail('The movement sequence was not completed in order (' + sequence.label + '). Follow each prompt as it appears during the recording.');
+    }
+    var completedMs = (lastIdx - firstIdx) * (frameMs || 250);
+    if (completedMs > PALM_SEQUENCE_WINDOW_MS) {
+      return fail('The movement sequence was completed too slowly (' + (completedMs / 1000).toFixed(1) + 's; the live limit is ' + (PALM_SEQUENCE_WINDOW_MS / 1000).toFixed(1) + 's). Follow the prompts promptly - a pre-recorded video cannot match the issued sequence and pace.');
+    }
+    return { pass: true, reason: 'Live movement sequence completed in order inside the window (' + sequence.label + ', ' + (completedMs / 1000).toFixed(1) + 's).', sequence: sequence.id, completedMs: completedMs };
+  }
+
+  /* ------------- Screen-spoof detector (v18) ---------------------------
+     A video replay presents the hand on another device's screen. Three
+     physical traces of a screen are measured on the raw grayscale
+     frame: (1) PIXEL GRID IN FLAT REGIONS - a display's pixel structure
+     beats against the camera sensor EVERYWHERE, including the frame's
+     flattest areas, while a real scene's fine texture (palm creases)
+     lives only where the texture is. The first E2E run proved the
+     point: raw global alternation scored 0.46-0.51 on a genuine palm
+     feed, so global moire is reported for information only and never
+     triggers on its own - the trigger is alternation density inside
+     the flattest quartile of blocks. (2) BEZEL - the device's
+     rectangular frame produces long straight edges spanning the frame
+     in both orientations. (3) GLASS GLARE - flat, saturated patches
+     from specular reflection off glass. Heuristic by design: Field
+     Test Mode exists to measure its real-world rejection rate. */
+  function screenSpoofCheck(gray, w, h) {
+    var none = { spoof: false, score: 0, reasons: [], moire: 0, flatMoire: 0, bezel: false, glare: 0, checked: false };
+    if (!gray || !w || !h || gray.length < w * h || w < 48 || h < 48) return none;
+    // Global strong-alternation density (informational).
+    var strong = 0, altern = 0, prevSign = 0;
+    for (var y = 2; y < h - 2; y += 2) {
+      var base = y * w;
+      for (var x = 1; x < w; x++) {
+        var d = gray[base + x] - gray[base + x - 1];
+        if (Math.abs(d) >= 12) {
+          strong++;
+          var s = d > 0 ? 1 : -1;
+          if (prevSign !== 0 && s !== prevSign) altern++;
+          prevSign = s;
+        }
+      }
+    }
+    var moire = strong > 200 ? altern / strong : 0;
+    // Flat-region alternation: range of every 16x16 block, keep the
+    // flattest quartile, measure the same density inside those blocks.
+    var BS = 16, blocksIdx = [];
+    for (var by = 0; by + BS <= h; by += BS) for (var bx = 0; bx + BS <= w; bx += BS) {
+      var mn = 255, mx = 0;
+      for (var yy = 0; yy < BS; yy++) for (var xx = 0; xx < BS; xx++) {
+        var v = gray[(by + yy) * w + (bx + xx)];
+        if (v < mn) mn = v; if (v > mx) mx = v;
+      }
+      blocksIdx.push({ bx: bx, by: by, range: mx - mn });
+    }
+    blocksIdx.sort(function (a, b) { return a.range - b.range; });
+    var flatBlocks = blocksIdx.slice(0, Math.max(4, Math.floor(blocksIdx.length / 4)));
+    var fStrong = 0, fAltern = 0;
+    flatBlocks.forEach(function (bl) {
+      for (var yy2 = 0; yy2 < BS; yy2++) {
+        var prev = 0, rowBase = (bl.by + yy2) * w + bl.bx;
+        for (var xx2 = 1; xx2 < BS; xx2++) {
+          var d = gray[rowBase + xx2] - gray[rowBase + xx2 - 1];
+          if (Math.abs(d) >= 12) {
+            fStrong++;
+            var s2 = d > 0 ? 1 : -1;
+            if (prev !== 0 && s2 !== prev) fAltern++;
+            prev = s2;
+          }
+        }
+      }
+    });
+    var flatMoire = fStrong > 30 ? fAltern / fStrong : 0;
+    // (2) Bezel: per-row and per-column mean edge strength; a bezel
+    // edge spikes one row/column far above the frame's median AND runs
+    // across at least 80% of that line - a local bright patch (glare)
+    // has straight edges too, but they do not span the frame.
+    function spike(horizontal) {
+      var n = horizontal ? h : w, vals = [], cover = [];
+      for (var i = 1; i < n; i++) {
+        var sum = 0, cnt = 0, strongCnt = 0;
+        if (horizontal) { for (var xx = 0; xx < w; xx += 2) { var d1 = Math.abs(gray[i * w + xx] - gray[(i - 1) * w + xx]); sum += d1; if (d1 >= 12) strongCnt++; cnt++; } }
+        else { for (var yy = 0; yy < h; yy += 2) { var d2 = Math.abs(gray[yy * w + i] - gray[yy * w + i - 1]); sum += d2; if (d2 >= 12) strongCnt++; cnt++; } }
+        vals.push(sum / cnt);
+        cover.push(cnt ? strongCnt / cnt : 0);
+      }
+      var sorted = vals.slice().sort(function (a, b) { return a - b; });
+      var median = sorted[Math.floor(sorted.length / 2)] || 0;
+      for (var k = 0; k < vals.length; k++) {
+        if (vals[k] > 16 && vals[k] > 6 * Math.max(median, 0.5) && cover[k] >= 0.8) return true;
+      }
+      return false;
+    }
+    var bezel = spike(true) && spike(false);
+    // (3) Glare: share of 8x8 blocks that are flat AND near-saturated.
+    var blocks = 0, flatBright = 0;
+    for (var by = 0; by + 8 <= h; by += 8) for (var bx = 0; bx + 8 <= w; bx += 8) {
+      var mn = 255, mx = 0, sm = 0;
+      for (var yy2 = 0; yy2 < 8; yy2++) for (var xx2 = 0; xx2 < 8; xx2++) {
+        var v = gray[(by + yy2) * w + (bx + xx2)];
+        if (v < mn) mn = v; if (v > mx) mx = v; sm += v;
+      }
+      blocks++;
+      if (sm / 64 >= 238 && mx - mn <= 10) flatBright++;
+    }
+    var glare = blocks ? flatBright / blocks : 0;
+    var reasons = [];
+    if (bezel) reasons.push('rectangular device bezel edges detected around the hand');
+    if (flatMoire >= 0.12) reasons.push('screen pixel-grid pattern detected in the flat regions of the frame (density ' + flatMoire.toFixed(2) + ')');
+    if (glare > 0.05) reasons.push('flat specular glass glare detected (' + Math.round(glare * 100) + '% of frame)');
+    var spoof = bezel || flatMoire >= 0.25 || (flatMoire >= 0.12 && glare > 0.05);
+    var score = Math.max(bezel ? 0.9 : 0, Math.min(1, flatMoire / 0.25), Math.min(1, glare / 0.12));
+    return { spoof: spoof, score: spoof ? Math.max(score, 0.6) : score, reasons: reasons, moire: moire, flatMoire: flatMoire, bezel: bezel, glare: glare, checked: true };
+  }
+
+  /* ------------- Field-test statistics + CSV (v18) ---------------------
+     Pure functions over field-test scan records so the gate metrics are
+     computed identically on screen, in the exported CSV and in tests.
+     Record shape: { ts, biomId, camera, lighting, genuineScore,
+     impostorMax, liveness ('pass'|'fail'), spoofTag ('real_hand' |
+     'photo_spoof' | 'video_replay'), result ('verified'|'rejected') }.
+     GAR: share of real-hand attempts verified. FAR: share of real-hand
+     attempts whose highest OTHER-template score reached the match
+     threshold (the scan would have false-accepted against that
+     template). Spoof rejection: share of photo/video spoof attempts
+     that were rejected. */
+  function fieldTestStats(records) {
+    var g = { attempts: 0, accepted: 0 }, f = { attempts: 0, falseAccepts: 0 }, s = { attempts: 0, rejected: 0 };
+    (records || []).forEach(function (r) {
+      if (!r) return;
+      if (r.spoofTag === 'real_hand') {
+        g.attempts++;
+        if (r.result === 'verified') g.accepted++;
+        if (typeof r.impostorMax === 'number' && isFinite(r.impostorMax)) {
+          f.attempts++;
+          if (r.impostorMax >= PALMPRINT_THRESHOLD) f.falseAccepts++;
+        }
+      } else if (r.spoofTag === 'photo_spoof' || r.spoofTag === 'video_replay') {
+        s.attempts++;
+        if (r.result !== 'verified') s.rejected++;
+      }
+    });
+    var pct = function (a, b) { return b > 0 ? Math.round((a / b) * 1000) / 10 : null; };
+    return {
+      genuine: { attempts: g.attempts, accepted: g.accepted, gar: pct(g.accepted, g.attempts) },
+      impostor: { attempts: f.attempts, falseAccepts: f.falseAccepts, far: pct(f.falseAccepts, f.attempts) },
+      spoof: { attempts: s.attempts, rejected: s.rejected, rejectionRate: pct(s.rejected, s.attempts) }
+    };
+  }
+  function fieldTestCsv(records) {
+    function cell(v) {
+      if (v === null || v === undefined) return '';
+      var s = String(v);
+      return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    }
+    var lines = ['timestamp,biom_id,camera,lighting,genuine_score,impostor_max_score,liveness,spoof_tag,result'];
+    (records || []).forEach(function (r) {
+      if (!r) return;
+      lines.push([
+        cell(new Date(r.ts).toISOString()), cell(r.biomId), cell(r.camera), cell(r.lighting),
+        cell(typeof r.genuineScore === 'number' ? r.genuineScore.toFixed(3) : ''),
+        cell(typeof r.impostorMax === 'number' ? r.impostorMax.toFixed(3) : ''),
+        cell(r.liveness), cell(r.spoofTag), cell(r.result)
+      ].join(','));
+    });
+    return lines.join('\n') + '\n';
+  }
+
   /* ---------------- Palmprint — EDCC competitive code (v9, 2026-11-20) ----
      The geometry matcher above is kept for legacy (v2) enrolments only.
      New enrolments use a real palmprint method, ported from EDCC
@@ -1181,6 +1418,18 @@
     palmprintEncode: palmprintEncode,
     flipGrayHorizontal: flipGrayHorizontal,
     rotateGray: rotateGray,
+    palmSpread: palmSpread,
+    palmTilt: palmTilt,
+    palmStageMet: palmStageMet,
+    evaluateMovementSequence: evaluateMovementSequence,
+    screenSpoofCheck: screenSpoofCheck,
+    fieldTestStats: fieldTestStats,
+    fieldTestCsv: fieldTestCsv,
+    PALM_SEQUENCES: PALM_SEQUENCES,
+    PALM_STAGE_PROMPTS: PALM_STAGE_PROMPTS,
+    PALM_SEQUENCE_WINDOW_MS: PALM_SEQUENCE_WINDOW_MS,
+    PALM_SPREAD_MIN: PALM_SPREAD_MIN,
+    PALM_TILT_MIN: PALM_TILT_MIN,
     palmprintCodeSane: palmprintCodeSane,
     palmprintSimilarity: palmprintSimilarity,
     palmRoiFromLandmarks: palmRoiFromLandmarks,

@@ -26,8 +26,8 @@
 
 <nav class="nav" id="mainNav">
   <button data-page="dashboard" class="active"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>Home</button>
-  <button data-page="enroll"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="8" r="3.5"/><path d="M4 20c.6-3.2 3-5 6-5s5.4 1.8 6 5"/><path d="M18.5 5v6M15.5 8h6"/></svg>Enrol</button>
-  <button data-page="terminal"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M4 12h16"/></svg>Terminal</button>
+  <button data-page="enroll"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="8" r="3.5"/><path d="M4 20c.6-3.2 3-5 6-5s5.4 1.8 6 5"/><path d="M18.5 5v6M15.5 8h6"/></svg>regBIOM</button>
+  <button data-page="terminal"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M4 12h16"/></svg>takeBIOM</button>
   <button data-page="registry"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5c.5-3 2.7-4.6 5.5-4.6s5 1.6 5.5 4.6"/><path d="M15.5 5.8a3.2 3.2 0 0 1 0 5.9M17.8 15.2c1.6.7 2.5 2 2.8 4"/></svg>People</button>
   <button data-page="more"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>More</button>
 </nav>
@@ -55,6 +55,11 @@
       <div class="sstat"><div class="num" id="statVolume">BDT 0</div><div class="lbl">Biom Pay today</div></div>
     </div>
     <div class="card" style="margin-top:16px">
+      <h2>Live modes</h2>
+      <p style="margin:0 0 8px"><span class="badge ok">Palm Loyalty — LIVE</span> <span class="sub">Verified palm scans earn loyalty points automatically (1 point per BDT 10 paid, 5 points for a visit scan).</span></p>
+      <p style="margin:0"><span class="badge warn">Palm Pay — Biometric Authorised — Pending Provider Settlement</span> <span class="sub">Payments are authorised by the biometric scan and recorded on this device; money moves only when the official bKash / Nagad merchant connection is live.</span></p>
+    </div>
+    <div class="card" style="margin-top:16px">
       <h2>Recent activity</h2>
       <div id="liveFeed" class="kv">No activity yet on this device.</div>
     </div>
@@ -76,6 +81,10 @@
       <button class="morelink" data-go="partner"><span>Partner Integration</span><small>bKash / Nagad merchant connection status</small></button>
       <button class="morelink" data-go="registry"><span>People Registry</span><small>Everyone enrolled on this device</small></button>
     </div>
+    <div class="card" style="margin-top:16px"><h2>Field Test Mode</h2>
+      <label class="check"><input type="checkbox" id="fieldModeToggle2"> Field Test Mode — record GAR / FAR / spoof metrics for the 20-person, 200-scan validation</label>
+      <p class="sub" style="margin:8px 0 0">The full field-test panel, live metrics and the CSV export live under Transactions / Logs.</p>
+    </div>
     <div class="card" style="margin-top:16px"><h2>How the real scanning works</h2>
       <p class="sub" style="margin:0">
         Face: a real face-recognition model extracts a 128-point descriptor; verification measures the actual distance between scans.
@@ -89,7 +98,7 @@
 
   <!-- ENROLL -->
   <section class="page" id="page-enroll">
-    <h1>Register a person</h1>
+    <h1>regBIOM — Customer Registration</h1>
     <p class="sub">One registration creates one TSG Biom ID. Enroll any one, two, or all three biometrics — each works on its own, and at least one must be captured. Wallet linking is optional.</p>
     <div class="progresslabel" id="enrollProgress">Step 1 of 5 — Details + Wallet</div>
     <div class="progress" style="margin:10px 0 16px"><i id="enrollProgressBar" style="width:20%"></i></div>
@@ -112,6 +121,12 @@
         <div><label>Wallet number</label><input id="enWalletNumber" placeholder="01XXXXXXXXX" inputmode="tel"></div>
       </div>
       <p class="sub" style="margin-top:10px">The wallet number is normalised (+880 / 880 become 01…) and only ever shown masked, e.g. 01933-***706.</p>
+      <h2 style="margin-top:18px">Biometric-only payment limits — optional</h2>
+      <div class="row">
+        <div><label>Per-transaction limit (BDT)</label><input id="enLimitPerTx" type="number" min="0" placeholder="e.g. 1000 — blank = no limit"></div>
+        <div><label>Daily limit (BDT)</label><input id="enLimitDaily" type="number" min="0" placeholder="e.g. 5000 — blank = no limit"></div>
+      </div>
+      <p class="sub" style="margin-top:10px">Above a limit, a Palm Pay payment is not created on palm alone — PIN confirmation is required. Leave blank for no limit.</p>
       <h2 style="margin-top:18px">Biometrics to enroll — each one is optional</h2>
       <p class="sub" style="margin:0">Enroll any one, two, or all three - each biometric works independently. Unchecked types are skipped entirely; you can also Skip a step during capture. At least one type must be captured to issue a Biom ID.</p>
       <div class="checkrow">
@@ -210,8 +225,8 @@
 
   <!-- TERMINAL -->
   <section class="page" id="page-terminal">
-    <h1>Verify &amp; Pay</h1>
-    <p class="sub">Find the person, pick how they will scan, then press the big Scan button. Add an amount only when this is a payment.</p>
+    <h1>takeBIOM — Merchant Terminal</h1>
+    <p class="sub">Find the person, pick how they will scan, then press the big Scan button. Add an amount only when this is a payment. Palm Loyalty is LIVE; Palm Pay is Biometric Authorised — Pending Provider Settlement.</p>
     <div class="card">
       <label>Find person</label>
       <input id="termSearch" placeholder="Type a name, Biom ID or phone number" style="margin-bottom:10px">
@@ -226,6 +241,11 @@
       </div>
       <div class="row">
         <div><label>Payment amount (BDT) — only for Biom Pay, leave empty for a plain identity check</label><input id="termAmount" type="number" min="1" placeholder="e.g. 500"></div>
+      </div>
+      <div class="row hidden" id="fieldRow">
+        <div><label>Field test — attempt type for this scan</label>
+          <select id="fieldAttemptTag"><option value="real_hand">Genuine — real hand</option><option value="photo_spoof">Photo spoof attempt</option><option value="video_replay">Video replay attempt</option></select>
+          <p class="camnote">Field Test Mode is ON: this scan will be recorded in the field-test metrics and CSV.</p></div>
       </div>
       <div class="camtoggle" data-cam-toggle="terminal" role="group" aria-label="Terminal camera choice">
         <button type="button" data-facing="user" class="on">Front camera</button>
@@ -287,6 +307,13 @@
   <section class="page" id="page-logs">
     <h1>Transactions / Logs</h1>
     <p class="sub">Every verification attempt and every Biom Pay authorization recorded on this device, with its real measured distance or score.</p>
+    <div class="card" style="margin-bottom:14px"><h2>Daily cashier sheet — today</h2><div id="dailySheet" class="kv">No transactions yet today.</div></div>
+    <div class="card" style="margin-bottom:14px"><h2>Field Test Mode — 20 people / 200 scans gate</h2>
+      <label class="check"><input type="checkbox" id="fieldModeToggle"> Field Test Mode — record every palm scan for the real-hand validation</label>
+      <div id="fieldStats" class="kv" style="margin-top:10px">Field test metrics will appear here once scans are recorded.</div>
+      <p class="sub" style="margin:10px 0">GAR = genuine real-hand attempts verified. FAR = genuine attempts whose highest score against any OTHER enrolled palm reached the match threshold. Spoof Rejection = photo / video spoof attempts rejected. Lighting and camera are recorded automatically per scan; set the attempt type at the terminal before each test scan.</p>
+      <button class="btn primary" id="fieldExportBtn">Export Field Test CSV</button>
+    </div>
     <div class="card" style="overflow-x:auto"><h2>Biom Pay transactions</h2><table>
       <thead><tr><th>Record ID</th><th>Time</th><th>Person</th><th>Provider</th><th>Wallet</th><th>Store</th><th>Amount</th><th>Status</th></tr></thead>
       <tbody id="txBody"></tbody>

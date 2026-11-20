@@ -4,7 +4,7 @@
   'use strict';
   var B = window.TSGBiometrics;
   var STORES = ['GreenCare Pharmacy (CVS)', 'FreshMart Supermarket', 'UrbanStyle Retail', 'City Centre Mall'];
-  var PAY_STATUS = 'Biometric Authorized - Pending bKash Partner API Settlement';
+  var PAY_STATUS = 'Biometric Authorised — Pending Provider Settlement';
 
   /* ---------------- Storage: IndexedDB with localStorage fallback -------- */
   var DB = {
@@ -562,20 +562,22 @@
     } catch (e) { return { texture: null, sharpness: 0 }; }
   }
 
-  function recordPalmClip(video, statusEl, durationMs) {
+  function recordPalmClip(video, statusEl, durationMs, sequence) {
     var frames = [];
     var t0 = Date.now();
+    var stages = (sequence && sequence.stages && sequence.stages.length) ? sequence.stages : ['open', 'close', 'open'];
     return new Promise(function (resolve) {
       var iv = setInterval(function () {
         var el = Date.now() - t0;
         var f = grabVideoFrame(video);
         if (f) frames.push(f);
-        // Timed stage prompts (v16): coach the movement in step with the
-        // recording instead of one long instruction — open, then close,
-        // then open again, each while its stage is on screen.
+        // Timed stage prompts: coach the ISSUED liveness sequence (v18:
+        // randomised per scan) in step with the recording — one stage
+        // per third of the clip, each shown while its stage is due.
         if (statusEl) {
           var frac = durationMs ? el / durationMs : 1;
-          var stage = frac < 0.4 ? 'Open your palm wide, fingers spread.' : frac < 0.7 ? 'Now close it into a loose fist.' : 'Now open it wide again.';
+          var stageIdx = Math.min(stages.length - 1, Math.floor(frac * stages.length));
+          var stage = B.PALM_STAGE_PROMPTS[stages[stageIdx]] || stages[stageIdx];
           statusEl.textContent = 'Recording palm clip... ' + Math.max(0, Math.ceil((durationMs - el) / 1000)) + 's - keep the whole hand inside the frame, about 30 cm away. ' + stage;
         }
         if (el >= durationMs) { clearInterval(iv); resolve(frames); }
@@ -604,22 +606,43 @@
     } catch (e) { return null; }
   }
 
-  function processPalmClip(frames, statusEl) {
+  var spoofScratch = null;
+  /* Downscale a recorded frame and run the screen-spoof detector on
+     it (v18). Returns the detector result plus the frame's mean
+     brightness (used for the field-test lighting tag), or null. */
+  function spoofSample(frame) {
+    try {
+      if (!spoofScratch) spoofScratch = document.createElement('canvas');
+      var w = 160, h = Math.max(48, Math.round(160 * frame.height / frame.width));
+      spoofScratch.width = w; spoofScratch.height = h;
+      var ctx = spoofScratch.getContext('2d');
+      ctx.drawImage(frame, 0, 0, w, h);
+      var img = ctx.getImageData(0, 0, w, h).data;
+      var gray = new Array(w * h), sum = 0;
+      for (var i = 0; i < w * h; i++) { var v = Math.round(0.299 * img[i * 4] + 0.587 * img[i * 4 + 1] + 0.114 * img[i * 4 + 2]); gray[i] = v; sum += v; }
+      var chk = B.screenSpoofCheck(gray, w, h);
+      chk.meanBrightness = sum / (w * h);
+      return chk;
+    } catch (e) { return null; }
+  }
+  function processPalmClip(frames, statusEl, sequence) {
     var results = [];
+    var spoofChecks = [];
     function analyseFrame(frame, idx) {
       return PalmProc.landmarks(frame).then(function (lm) {
-        if (!lm) { results[idx] = { openness: null, descriptor: null, code: null, codeM: null, roi: null, sharpness: 0, texture: null }; return; }
+        if (!lm) { results[idx] = { openness: null, descriptor: null, code: null, codeM: null, roi: null, sharpness: 0, texture: null, spread: null, tilt: null }; return; }
         var openness = B.palmOpenness(lm);
         var descriptor = B.palmDescriptorFromLandmarks(lm);
         var meas = descriptor ? palmFrameMeasures(frame, frame.width, frame.height, lm) : { texture: null, sharpness: 0 };
         var codes = (descriptor && typeof openness === 'number' && openness >= B.PALM_OPEN_MIN) ? palmCodesFromFrame(frame, lm) : null;
-        results[idx] = { openness: openness, descriptor: descriptor, code: codes ? codes.code : null, codeM: codes ? codes.codeM : null, roi: codes ? codes.roi : null, sharpness: meas.sharpness, texture: meas.texture };
+        results[idx] = { openness: openness, descriptor: descriptor, code: codes ? codes.code : null, codeM: codes ? codes.codeM : null, roi: codes ? codes.roi : null, sharpness: meas.sharpness, texture: meas.texture, spread: B.palmSpread(lm), tilt: B.palmTilt(lm) };
       });
     }
     var chain = Promise.resolve();
     frames.forEach(function (frame, idx) {
       chain = chain.then(function () {
         if (statusEl) statusEl.textContent = 'Analysing palm clip... frame ' + (idx + 1) + ' of ' + frames.length + '.';
+        if (idx % 3 === 0) { var s = spoofSample(frame); if (s) spoofChecks.push(s); }
         return analyseFrame(frame, idx);
       });
     });
@@ -647,11 +670,27 @@
       });
     }).then(function () {
       var series = [];
-      results.forEach(function (r) { if (typeof r.openness === 'number' && isFinite(r.openness)) series.push(r.openness); });
+      var measures = [];
+      results.forEach(function (r) { if (typeof r.openness === 'number' && isFinite(r.openness)) { series.push(r.openness); measures.push({ openness: r.openness, spread: r.spread, tilt: r.tilt }); } });
       var usable = B.palmUsableOpenFrames(results);
       var bestTexture = null, bestSharp = -1;
       usable.forEach(function (u) { if (u.texture && u.sharpness > bestSharp) { bestSharp = u.sharpness; bestTexture = u.texture; } });
-      return { results: results, movement: B.evaluatePalmMovement(series), bestTexture: bestTexture, usableCount: usable.length };
+      // Movement: from v18 the issued randomised sequence is the gate
+      // (order + 3.5s window); without a sequence the legacy cycle rule
+      // applies. Spoof: aggregate the sampled frame checks - the scan
+      // is a screen replay when at least half the sampled frames (and
+      // at least two) carry screen traces.
+      var movement = sequence ? B.evaluateMovementSequence(measures, sequence, 250) : B.evaluatePalmMovement(series);
+      var spoofFrames = spoofChecks.filter(function (c) { return c.spoof; });
+      var spoof = {
+        spoof: spoofChecks.length > 0 && spoofFrames.length >= Math.max(2, Math.ceil(spoofChecks.length / 2)),
+        score: spoofChecks.reduce(function (m, c) { return Math.max(m, c.score); }, 0),
+        reasons: spoofFrames.reduce(function (acc, c) { return acc.concat(c.reasons); }, []),
+        framesChecked: spoofChecks.length, framesFlagged: spoofFrames.length
+      };
+      var meanB = spoofChecks.length ? spoofChecks.reduce(function (s, c) { return s + c.meanBrightness; }, 0) / spoofChecks.length : null;
+      var lightTag = meanB === null ? null : meanB > 150 ? 'bright' : meanB >= 80 ? 'indoor' : 'dim';
+      return { results: results, movement: movement, bestTexture: bestTexture, usableCount: usable.length, spoof: spoof, lightTag: lightTag };
     });
   }
   var palmScanBusy = false;
@@ -663,10 +702,10 @@
      movement check failed or it produced no usable open-palm frames,
      so a slow or imperfect first attempt is not a dead end. Movement
      passes when either clip completes the open - close - open cycle. */
-  function capturePalmResults(video, statusEl, twoClips, swapCamera) {
+  function capturePalmResults(video, statusEl, twoClips, swapCamera, sequence) {
     function oneClip() {
-      return recordPalmClip(video, statusEl, 4500).then(function (frames) {
-        return processPalmClip(frames, statusEl);
+      return recordPalmClip(video, statusEl, 4500, sequence).then(function (frames) {
+        return processPalmClip(frames, statusEl, sequence);
       });
     }
     function merge(r1, r2) {
@@ -674,7 +713,9 @@
         results: r1.results.concat(r2.results),
         movement: r1.movement.pass ? r1.movement : r2.movement,
         bestTexture: r1.bestTexture || r2.bestTexture,
-        usableCount: r1.usableCount + r2.usableCount
+        usableCount: r1.usableCount + r2.usableCount,
+        spoof: (r2.spoof && r2.spoof.spoof) ? r2.spoof : r1.spoof,
+        lightTag: r2.lightTag || r1.lightTag
       };
     }
     function secondClip(r1, note) {
@@ -682,6 +723,10 @@
       return new Promise(function (resolve) { setTimeout(resolve, 1200); }).then(oneClip).then(function (r2) { return merge(r1, r2); });
     }
     return oneClip().then(function (r1) {
+      // Spoof verdicts are FINAL (v18): a flagged screen replay is
+      // never retried, re-recorded or camera-swapped - it is rejected
+      // and logged by the caller.
+      if (r1.spoof && r1.spoof.spoof) return r1;
       // Zero-hand rescue (v17): if NO frame in the clip produced a hand
       // at all, the likeliest cause is the camera itself - a lens the
       // detector cannot work with, a black feed, a covered lens. When
@@ -690,11 +735,11 @@
       var anyHand = r1.results.some(function (r) { return !!r.descriptor; });
       if (!anyHand && swapCamera) {
         if (statusEl) statusEl.textContent = 'No hand was seen by this camera - switching to the other camera and trying once more.';
-        return swapCamera().then(function () { return secondClip(r1, 'Other camera on - open the palm wide, close it into a loose fist, then open it wide again.'); });
+        return swapCamera().then(function () { return secondClip(r1, 'Other camera on - same movement again: follow the prompts on screen.'); });
       }
       var needSecond = twoClips || !r1.movement.pass || !r1.usableCount;
       if (!needSecond) return r1;
-      return secondClip(r1, twoClips ? 'Clip 1 done - once more, same movement: open, close, open.' : 'One more try - open the palm wide, close it into a loose fist, then open it wide again.');
+      return secondClip(r1, twoClips ? 'Clip 1 done - once more, same movement: follow the prompts.' : 'One more try - follow the prompts shown on screen, promptly and in order.');
     });
   }
 
@@ -825,6 +870,8 @@
         id: 'TSG-BIO-' + seq,
         name: enroll.details.name, phone: enroll.details.phone, type: enroll.details.type, store: enroll.details.store,
         walletProvider: enroll.details.walletProvider, walletNumber: enroll.details.walletNumber,
+        limits: { perTx: enroll.details.limitPerTx || null, daily: enroll.details.limitDaily || null },
+        loyaltyPoints: 0,
         faceDescriptor: enroll.face || null,
         palmDescriptor: enroll.palm && enroll.palm.geometry ? enroll.palm.geometry[0] : null,
         palmProfile: enroll.palm || null,
@@ -839,7 +886,9 @@
           '<b>Face:</b> ' + (person.faceDescriptor ? 'Enrolled (128-d descriptor)' : 'Not enrolled') + '<br>' +
           '<b>Palm:</b> ' + (person.palmProfile && person.palmProfile.v === 3 ? 'Enrolled (palmprint — EDCC competitive code, ' + person.palmProfile.codes.length + ' captures, movement-checked)' : person.palmProfile ? 'Enrolled (3 geometry captures + palm texture, movement-checked)' : person.palmDescriptor ? 'Enrolled (hand geometry)' : 'Not enrolled') + '<br>' +
           '<b>Fingerprint:</b> ' + (person.fingerprint ? 'Enrolled (camera template, quality ' + person.fingerprint.quality.sharpness.toFixed(1) + ')' : 'Not enrolled') + '<br>' +
-          '<b>Wallet:</b> ' + (person.walletProvider ? esc(person.walletProvider) + ' ' + esc(B.maskWalletNumber(person.walletNumber)) : 'Not linked');
+          '<b>Wallet:</b> ' + (person.walletProvider ? esc(person.walletProvider) + ' ' + esc(B.maskWalletNumber(person.walletNumber)) : 'Not linked') + '<br>' +
+          '<b>Biometric-only limits:</b> ' + (person.limits.perTx ? 'BDT ' + person.limits.perTx.toLocaleString() + ' per transaction' : 'No per-transaction limit') + (person.limits.daily ? ', BDT ' + person.limits.daily.toLocaleString() + ' per day' : '') + '<br>' +
+          '<b>Palm Loyalty:</b> Active — 0 points';
         enroll = { details: null, face: null, palm: null, finger: null, types: { face: true, palm: true, finger: true } };
         toast('Enrolled: ' + person.id);
       });
@@ -872,7 +921,9 @@
     resetPalmEnroll();
     enroll.details = {
       name: name, phone: $('enPhone').value.trim(), type: $('enType').value, store: $('enStore').value,
-      walletProvider: provider || '', walletNumber: wallet || ''
+      walletProvider: provider || '', walletNumber: wallet || '',
+      limitPerTx: Number($('enLimitPerTx').value) > 0 ? Number($('enLimitPerTx').value) : null,
+      limitDaily: Number($('enLimitDaily').value) > 0 ? Number($('enLimitDaily').value) : null
     };
     setStep(ENROLL_ORDER.filter(function (s) { return types[s]; })[0]);
   });
@@ -918,7 +969,7 @@
   function resetPalmEnroll() { /* clip enrolment keeps no partial state */ }
   function startPalmCamera() {
     Cam.start($('palmVideo'), camFacing.enrollPalm, 'enrollPalm').then(function () {
-      $('palmStatus').textContent = 'Camera on - tap Record Palm Clip, hold the phone about 30 cm away so your whole hand fits inside the frame. The app records two short clips; in each one, open the palm wide, close it into a loose fist, and open it wide again - just follow the prompts on screen.';
+      $('palmStatus').textContent = 'Camera on - tap Record Palm Clip, hold the phone about 30 cm away so your whole hand fits inside the frame. The app records two short clips and shows a movement sequence on screen - it is picked at random each time; just follow each prompt as it appears.';
       $('palmCapture').disabled = false;
     }).catch(function (e) { $('palmMsg').innerHTML = cameraErrorHTML(e); $('palmStatus').textContent = 'Camera blocked.'; });
   }
@@ -929,14 +980,21 @@
     palmScanBusy = true;
     $('palmCapture').disabled = true;
     $('palmMsg').innerHTML = '';
+    var sequence = B.PALM_SEQUENCES[Math.floor(Math.random() * B.PALM_SEQUENCES.length)];
     capturePalmResults($('palmVideo'), $('palmStatus'), true, function () {
       camFacing.enrollPalm = camFacing.enrollPalm === 'user' ? 'environment' : 'user';
       syncCamToggle('enrollPalm');
       return Cam.start($('palmVideo'), camFacing.enrollPalm, 'enrollPalm');
-    }).then(function (res) {
+    }, sequence).then(function (res) {
       palmScanBusy = false;
+      if (res.spoof && res.spoof.spoof) {
+        DB.put('logs', { ts: Date.now(), personId: '', personName: '(enrolment attempt)', store: '', method: 'palm', measured: 'Spoof score ' + res.spoof.score.toFixed(2) + ' - ' + res.spoof.reasons.join('; '), result: 'Spoof / Screen Replay Detected' });
+        $('palmMsg').innerHTML = '<div class="error">Spoof / Screen Replay Detected — the scan showed a screen or a recording, not a live hand (' + esc(res.spoof.reasons.join('; ')) + '). Nothing was stored. Enrolment requires the real hand, live in front of the camera.</div>';
+        $('palmCapture').disabled = false;
+        return;
+      }
       if (!res.movement.pass) {
-        $('palmMsg').innerHTML = '<div class="error">Movement check failed in both clips: ' + esc(res.movement.reason) + ' Nothing was stored. Record again and make the full open - close - open movement inside each recording.</div>';
+        $('palmMsg').innerHTML = '<div class="error">Movement check failed in both clips: ' + esc(res.movement.reason) + ' Nothing was stored. Record again and complete the movement sequence shown in the prompts, in order, inside each recording.</div>';
         $('palmCapture').disabled = false;
         return;
       }
@@ -1083,7 +1141,7 @@
       Cam.start($('termVideo'), camFacing[termFacingKey(method)], termFacingKey(method)).then(function () {
         status.textContent = method === 'finger' ? 'Camera on - fingertip 5-8 cm away, filling the guide.' : 'Camera on - position for the scan, then Run Scan.';
         $('termScan').disabled = false;
-        if (method === 'palm') status.textContent = 'Camera on - tap SCAN, keep the whole hand inside the frame about 30 cm away, then open the palm wide, close it into a loose fist, and open it wide again during the 4-second recording.';
+        if (method === 'palm') status.textContent = 'Camera on - tap SCAN, keep the whole hand inside the frame about 30 cm away, and follow the movement prompts shown during the recording - the sequence is picked at random for each scan and must be completed promptly, in order.';
       }).catch(function (e) { $('termResult').innerHTML = cameraErrorHTML(e); status.textContent = 'Camera blocked.'; });
     });
   }
@@ -1092,6 +1150,35 @@
 
   function logVerification(person, method, measured, result) {
     return DB.put('logs', { ts: Date.now(), personId: person.id, personName: person.name, store: $('termStore').value, method: method, measured: measured, result: result });
+  }
+
+  /* ---------------- Field Test Mode (v18) -------------------------------
+     When ON, every terminal palm scan also writes a field-test record
+     (kind 'fieldtest' in the logs store): camera, auto lighting tag,
+     genuine score, highest score against any OTHER enrolled palm,
+     liveness result, operator-set attempt type, and the outcome. The
+     Logs panel turns those records into GAR / FAR / spoof-rejection
+     metrics and the exportable CSV via the pure functions in
+     biometrics.js, so screen, CSV and tests always agree. */
+  function fieldModeOn() { try { return localStorage.getItem('biomFieldMode') === '1'; } catch (e) { return false; } }
+  function setFieldMode(on) {
+    try { localStorage.setItem('biomFieldMode', on ? '1' : '0'); } catch (e) {}
+    if ($('fieldModeToggle')) $('fieldModeToggle').checked = on;
+    if ($('fieldModeToggle2')) $('fieldModeToggle2').checked = on;
+    if ($('fieldRow')) $('fieldRow').classList.toggle('hidden', !on);
+  }
+  function currentCameraTag(viewKey) {
+    try {
+      var track = Cam.stream && Cam.stream.getVideoTracks()[0];
+      var f = track && track.getSettings && track.getSettings().facingMode;
+      if (f === 'user') return 'front';
+      if (f === 'environment') return 'back';
+    } catch (e) {}
+    return camFacing[viewKey] === 'environment' ? 'back' : 'front';
+  }
+  function writeFieldRecord(rec) {
+    rec.kind = 'fieldtest';
+    return DB.put('logs', rec).then(function () { renderFieldPanel(); });
   }
 
   $('termScan').addEventListener('click', function () {
@@ -1118,30 +1205,53 @@
         if (palmScanBusy) return null;
         palmScanBusy = true;
         $('termScan').disabled = true;
-        $('termResult').innerHTML = '<div class="notice">Recording palm clip - open the palm wide, close it into a loose fist, then open it wide again...</div>';
+        var sequence = B.PALM_SEQUENCES[Math.floor(Math.random() * B.PALM_SEQUENCES.length)];
+        $('termResult').innerHTML = '<div class="notice">Recording palm clip — this scan has issued a random live sequence (' + esc(sequence.label) + '). Follow the prompts on the camera view, in order and promptly...</div>';
         attempt = capturePalmResults($('termVideo'), $('termStatus'), false, function () {
           var k = termFacingKey($('termMethod').value);
           camFacing[k] = camFacing[k] === 'user' ? 'environment' : 'user';
           syncCamToggle('terminal');
           return Cam.start($('termVideo'), camFacing[k], 'terminal');
-        }).then(function (res) {
+        }, sequence).then(function (res) {
           palmScanBusy = false;
           $('termScan').disabled = false;
-          if (!res.movement.pass) return { fail: 'Movement check not completed in either recording attempt - nothing was verified. During the recording the customer must open the palm wide, close it into a loose fist, then open it wide again. A still photo cannot pass. (' + res.movement.reason + ')' };
+          var fieldRec = function (genuineScore, impostorMax, liveness, result) {
+            if (!fieldModeOn()) return;
+            writeFieldRecord({
+              ts: Date.now(), biomId: person.id, camera: currentCameraTag(termFacingKey('palm')),
+              lighting: res.lightTag || '', genuineScore: genuineScore, impostorMax: impostorMax,
+              liveness: liveness, spoofTag: $('fieldAttemptTag').value, result: result
+            });
+          };
+          if (res.spoof && res.spoof.spoof) {
+            var spoofMeasured = 'Spoof score ' + res.spoof.score.toFixed(2) + ' - ' + res.spoof.reasons.join('; ');
+            logVerification(person, 'palm', spoofMeasured, 'Spoof / Screen Replay Detected');
+            fieldRec(null, null, 'fail', 'rejected');
+            return { fail: 'Spoof / Screen Replay Detected — the scan showed a screen or a recording, not a live hand (' + res.spoof.reasons.join('; ') + '). Nothing was verified. Present the real hand, live in front of the camera.' };
+          }
+          if (!res.movement.pass) { fieldRec(null, null, 'fail', 'rejected'); return { fail: 'Movement check not completed in either recording attempt - nothing was verified. During the recording the customer must follow the issued sequence (' + sequence.label + ') as prompted, in order and inside the time window. A still photo or a pre-recorded video cannot pass. (' + res.movement.reason + ')' }; }
           if (B.palmprintProfileSane(person.palmProfile)) {
             var liveCodes = B.selectPalmprintLiveCodes(res.results);
-            if (!liveCodes) return { fail: 'No usable open palm with readable print detail found in the recorded clip. Nothing was verified. Hold one open palm still, fingers spread, filling the guide in good light, and run the scan again.' };
+            if (!liveCodes) { fieldRec(null, null, 'pass', 'rejected'); return { fail: 'No usable open palm with readable print detail found in the recorded clip. Nothing was verified. Hold one open palm still, fingers spread, filling the guide in good light, and run the scan again.' }; }
             var rp3 = B.verifyPalmprintProfile(person.palmProfile, liveCodes);
-            var measured3 = 'Palmprint similarity ' + (rp3.similarity === null ? 'n/a' : rp3.similarity.toFixed(3)) + ' (threshold ' + rp3.threshold + ', best of ' + person.palmProfile.codes.length + ' enrolled print codes x ' + liveCodes.length + ' live codes), live movement check passed in recorded clip';
+            var impostorMax = null;
+            people.forEach(function (p) {
+              if (p.id === person.id || !B.palmprintProfileSane(p.palmProfile)) return;
+              var ro = B.verifyPalmprintProfile(p.palmProfile, liveCodes);
+              if (ro && typeof ro.similarity === 'number' && (impostorMax === null || ro.similarity > impostorMax)) impostorMax = ro.similarity;
+            });
+            fieldRec(rp3.similarity, impostorMax, 'pass', rp3.verified ? 'verified' : 'rejected');
+            var measured3 = 'Palmprint similarity ' + (rp3.similarity === null ? 'n/a' : rp3.similarity.toFixed(3)) + ' (threshold ' + rp3.threshold + ', best of ' + person.palmProfile.codes.length + ' enrolled print codes x ' + liveCodes.length + ' live codes), live movement sequence ' + sequence.id + ' passed in recorded clip';
             return { r: rp3, measured: measured3 };
           }
           var livePalm = B.selectPalmDescriptor(res.results);
-          if (!livePalm) return { fail: 'No usable open palm found in the recorded clip. Nothing was verified. Hold one open palm still, fingers spread, filling the guide, and run the scan again.' };
+          if (!livePalm) { fieldRec(null, null, 'pass', 'rejected'); return { fail: 'No usable open palm found in the recorded clip. Nothing was verified. Hold one open palm still, fingers spread, filling the guide, and run the scan again.' }; }
           var storedPalm = person.palmProfile || person.palmDescriptor;
           var rp = B.verifyPalmProfile(storedPalm, { geometry: livePalm, texture: res.bestTexture });
+          fieldRec(null, null, 'pass', rp.verified ? 'verified' : 'rejected');
           var palmMeasured = 'Geometry distance ' + (rp.distance === null ? 'n/a' : rp.distance.toFixed(3)) + ' (threshold ' + rp.threshold + ', best of ' + (person.palmProfile ? person.palmProfile.geometry.length : 1) + ' enrolled captures)' +
             (rp.textureSimilarity !== null && rp.textureSimilarity !== undefined ? ', palm texture similarity ' + rp.textureSimilarity.toFixed(3) + ' (realness floor ' + rp.textureThreshold + ')' : ', no texture gate (legacy enrollment)') +
-            ', live movement check passed in recorded clip';
+            ', live movement sequence ' + sequence.id + ' passed in recorded clip';
           return { r: rp, measured: palmMeasured };
         }).catch(function (e) {
           palmScanBusy = false;
@@ -1173,31 +1283,64 @@
             return;
           }
           html = '<div class="resultbig ok"><div class="verdict">VERIFIED</div><div class="who">' + esc(person.name) + ' (' + esc(person.id) + ')</div><div class="meas">Measured: ' + esc(out.measured) + '</div></div>';
+          // Palm Loyalty (live mode, v18): every verified palm scan
+          // earns points - 1 per BDT 10 on a payment, 5 for a visit
+          // scan - credited to the customer's Biom ID record.
+          var loyaltyLine = '';
+          if (method === 'palm') {
+            var pts = amount > 0 ? Math.floor(amount / 10) : 5;
+            if (pts > 0) {
+              person.loyaltyPoints = (person.loyaltyPoints || 0) + pts;
+              loyaltyLine = '<div class="notice" style="margin-top:10px">Palm Loyalty: +' + pts + ' points awarded — balance ' + person.loyaltyPoints + ' points.</div>';
+              DB.put('people', person);
+            }
+          }
           if (amount > 0) {
             if (!person.walletProvider) {
-              $('termResult').innerHTML = html + '<div class="error" style="margin-top:10px">Biom Pay not created: this person has no linked bKash / Nagad wallet.</div>';
+              $('termResult').innerHTML = html + loyaltyLine + '<div class="error" style="margin-top:10px">Biom Pay not created: this person has no linked bKash / Nagad wallet.</div>';
               return;
             }
-            return DB.nextSeq('paySeq', 1001).then(function (seq) {
-              var tx = {
-                id: 'BIOM-PAY-' + seq, ts: Date.now(), personId: person.id, personName: person.name,
-                provider: person.walletProvider, walletMasked: B.maskWalletNumber(person.walletNumber),
-                store: $('termStore').value, amount: amount, method: method, measured: out.measured, status: PAY_STATUS
-              };
-              return DB.put('transactions', tx).then(function () {
-                $('termResult').innerHTML = html +
-                  '<div class="receipt"><div class="rhead">Biom Pay — Payment Authorized</div><div class="kv">' +
-                  '<b>Amount:</b> BDT ' + tx.amount.toLocaleString() + '<br>' +
-                  '<b>Paid by:</b> ' + esc(person.name) + '<br>' +
-                  '<b>Wallet:</b> ' + esc(tx.provider) + ' ' + esc(tx.walletMasked) + '<br>' +
-                  '<b>Record ID:</b> ' + esc(tx.id) + ' (TSG Biom record — not a ' + esc(tx.provider) + ' TrxID)<br>' +
-                  '<b>Store:</b> ' + esc(tx.store) + '<br><b>Authorized by:</b> ' + esc(METHOD_LABEL[method]) + ' scan — ' + esc(out.measured) + '<br>' +
-                  '<b>Status:</b> ' + esc(tx.status) + '</div></div>';
-                toast('Biom Pay authorized: ' + tx.id);
+            var createPay = function () {
+              return DB.nextSeq('paySeq', 1001).then(function (seq) {
+                var tx = {
+                  id: 'BIOM-PAY-' + seq, ts: Date.now(), personId: person.id, personName: person.name,
+                  provider: person.walletProvider, walletMasked: B.maskWalletNumber(person.walletNumber),
+                  store: $('termStore').value, amount: amount, method: method, measured: out.measured, status: PAY_STATUS
+                };
+                return DB.put('transactions', tx).then(function () {
+                  $('termResult').innerHTML = html + loyaltyLine +
+                    '<div class="receipt"><div class="rhead">Biom Pay — Payment Authorized</div><div class="kv">' +
+                    '<b>Amount:</b> BDT ' + tx.amount.toLocaleString() + '<br>' +
+                    '<b>Paid by:</b> ' + esc(person.name) + '<br>' +
+                    '<b>Wallet:</b> ' + esc(tx.provider) + ' ' + esc(tx.walletMasked) + '<br>' +
+                    '<b>Record ID:</b> ' + esc(tx.id) + ' (TSG Biom record — not a ' + esc(tx.provider) + ' TrxID)<br>' +
+                    '<b>Store:</b> ' + esc(tx.store) + '<br><b>Authorized by:</b> ' + esc(METHOD_LABEL[method]) + ' scan — ' + esc(out.measured) + '<br>' +
+                    '<b>Status:</b> ' + esc(tx.status) + '</div></div>';
+                  toast('Biom Pay authorized: ' + tx.id);
+                });
               });
-            });
+            };
+            // Biometric-only limits set at registration (regBIOM): above
+            // a limit the palm alone does not create a payment - PIN
+            // confirmation is required, so nothing is recorded as paid.
+            if (person.limits && person.limits.perTx && amount > person.limits.perTx) {
+              $('termResult').innerHTML = html + loyaltyLine + '<div class="error" style="margin-top:10px">Biom Pay not created: BDT ' + amount.toLocaleString() + ' exceeds this customer\'s biometric-only per-transaction limit of BDT ' + person.limits.perTx.toLocaleString() + '. PIN confirmation is required above the limit.</div>';
+              return;
+            }
+            if (person.limits && person.limits.daily) {
+              return DB.all('transactions').then(function (txs) {
+                var dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+                var todaySum = txs.filter(function (t) { return t.personId === person.id && t.ts >= dayStart.getTime(); }).reduce(function (s, t) { return s + Number(t.amount || 0); }, 0);
+                if (todaySum + amount > person.limits.daily) {
+                  $('termResult').innerHTML = html + loyaltyLine + '<div class="error" style="margin-top:10px">Biom Pay not created: this payment would take today\'s total to BDT ' + (todaySum + amount).toLocaleString() + ', above this customer\'s biometric-only daily limit of BDT ' + person.limits.daily.toLocaleString() + '. PIN confirmation is required above the limit.</div>';
+                  return;
+                }
+                return createPay();
+              });
+            }
+            return createPay();
           }
-          $('termResult').innerHTML = html;
+          $('termResult').innerHTML = html + loyaltyLine;
         });
       });
     }).catch(function (e) { $('termResult').innerHTML = '<div class="error">Scan failed: ' + esc(e && e.message ? e.message : e) + '</div>'; });
@@ -1210,7 +1353,7 @@
       var rows = people.filter(function (p) {
         return !q || p.name.toLowerCase().indexOf(q) >= 0 || p.id.toLowerCase().indexOf(q) >= 0 || (p.phone || '').indexOf(q) >= 0;
       }).map(function (p) {
-        return '<tr><td><b>' + esc(p.name) + '</b><br><span style="color:var(--muted)">' + esc(p.phone || '') + '</span></td>' +
+        return '<tr><td><b>' + esc(p.name) + '</b><br><span style="color:var(--muted)">' + esc(p.phone || '') + '</span>' + (p.loyaltyPoints ? '<br><span style="color:var(--muted)">Loyalty: ' + p.loyaltyPoints + ' pts</span>' : '') + '</td>' +
           '<td>' + esc(p.id) + '</td><td>' + esc(p.type) + '<br><span style="color:var(--muted)">' + esc(p.store) + '</span></td>' +
           '<td>' + (personHasMethod(p, 'face') ? '<span class="badge ok">Enrolled</span>' : '<span class="badge bad">Not enrolled</span>') + '</td>' +
           '<td>' + (personHasMethod(p, 'palm') ? '<span class="badge ok">Enrolled</span>' : '<span class="badge bad">Not enrolled</span>') + '</td>' +
@@ -1232,18 +1375,52 @@
   }
   $('registrySearch').addEventListener('input', renderRegistry);
 
+  function renderFieldPanel() {
+    if (!$('fieldStats')) return Promise.resolve();
+    return DB.all('logs').then(function (logs) {
+      var recs = logs.filter(function (l) { return l.kind === 'fieldtest'; });
+      var st = B.fieldTestStats(recs);
+      var fmt = function (v) { return v === null ? '—' : v + '%'; };
+      $('fieldStats').innerHTML = '<b>Scans recorded:</b> ' + recs.length + ' of 200<br>' +
+        '<b>Genuine Accept Rate (GAR):</b> ' + fmt(st.genuine.gar) + ' — ' + st.genuine.accepted + ' of ' + st.genuine.attempts + ' real-hand attempts verified<br>' +
+        '<b>False Accept Rate (FAR):</b> ' + fmt(st.impostor.far) + ' — ' + st.impostor.falseAccepts + ' of ' + st.impostor.attempts + ' genuine attempts reached the threshold against another enrolled palm<br>' +
+        '<b>Spoof Rejection Rate:</b> ' + fmt(st.spoof.rejectionRate) + ' — ' + st.spoof.rejected + ' of ' + st.spoof.attempts + ' photo / video attempts rejected';
+    });
+  }
+
   function renderLogs() {
     return Promise.all([DB.all('transactions'), DB.all('logs')]).then(function (r) {
       var txs = r[0].slice().sort(function (a, b) { return b.ts - a.ts; });
-      var logs = r[1].slice().sort(function (a, b) { return b.ts - a.ts; });
+      var logs = r[1].filter(function (l) { return l.kind !== 'fieldtest'; }).sort(function (a, b) { return b.ts - a.ts; });
+      var dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+      var todayTxs = txs.filter(function (t) { return t.ts >= dayStart.getTime(); });
+      var todayTotal = todayTxs.reduce(function (s, t) { return s + Number(t.amount || 0); }, 0);
+      $('dailySheet').innerHTML = '<b>Biom Pay transactions today:</b> ' + todayTxs.length + '<br><b>Total authorised today:</b> BDT ' + todayTotal.toLocaleString() + '<br><b>Status of all:</b> ' + esc(PAY_STATUS);
       $('txBody').innerHTML = txs.map(function (t) {
         return '<tr><td>' + esc(t.id) + '</td><td>' + esc(fmtTime(t.ts)) + '</td><td>' + esc(t.personName) + '</td><td>' + esc(t.provider) + '</td><td>' + esc(t.walletMasked) + '</td><td>' + esc(t.store) + '</td><td>BDT ' + Number(t.amount).toLocaleString() + '</td><td>' + esc(t.status) + '</td></tr>';
       }).join('') || '<tr><td colspan="8" style="color:var(--muted)">No Biom Pay transactions yet.</td></tr>';
       $('logBody').innerHTML = logs.map(function (l) {
         return '<tr><td>' + esc(fmtTime(l.ts)) + '</td><td>' + esc(l.personName) + '</td><td>' + esc(l.store) + '</td><td>' + esc(l.method) + '</td><td>' + esc(l.measured) + '</td><td><span class="badge ' + (l.result === 'Verified' ? 'ok' : 'bad') + '">' + esc(l.result) + '</span></td></tr>';
       }).join('') || '<tr><td colspan="6" style="color:var(--muted)">No verifications yet.</td></tr>';
+      return renderFieldPanel();
     });
   }
+
+  $('fieldExportBtn').addEventListener('click', function () {
+    DB.all('logs').then(function (logs) {
+      var recs = logs.filter(function (l) { return l.kind === 'fieldtest'; }).sort(function (a, b) { return a.ts - b.ts; });
+      var blob = new Blob([B.fieldTestCsv(recs)], { type: 'text/csv' });
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'tsg-biom-field-test.csv';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 400);
+      toast(recs.length ? 'Field test CSV exported — ' + recs.length + ' scans.' : 'No field-test scans recorded yet; the CSV holds only its header.');
+    });
+  });
+  $('fieldModeToggle').addEventListener('change', function () { setFieldMode(this.checked); toast(this.checked ? 'Field Test Mode ON — terminal palm scans are being recorded for the gate.' : 'Field Test Mode OFF.'); });
+  $('fieldModeToggle2').addEventListener('change', function () { setFieldMode(this.checked); toast(this.checked ? 'Field Test Mode ON — terminal palm scans are being recorded for the gate.' : 'Field Test Mode OFF.'); });
 
   /* ---------------- Install (PWA) ---------------------------------------- */
   var deferredPrompt = null;
@@ -1260,6 +1437,7 @@
   window.TSGApp = { go: go };
   wireCamToggles();
   wireFlashToggles();
+  setFieldMode(fieldModeOn());
   syncCamToggle('terminal');
   ['enrollFace', 'enrollPalm', 'enrollFinger', 'terminal'].forEach(function (g) { syncFlashToggle(g); });
   fillStoreSelects();
