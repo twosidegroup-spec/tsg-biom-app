@@ -6,6 +6,42 @@
   var STORES = ['GreenCare Pharmacy (CVS)', 'FreshMart Supermarket', 'UrbanStyle Retail', 'City Centre Mall'];
   var PAY_STATUS = 'Biometric Authorised — Pending Provider Settlement';
 
+  /* ---------------- Data version wipe (his order, 2026-11-20) --------
+     Every new build link starts empty: when the app's data version
+     changes, all stored people, transactions and logs from the older
+     build are removed on first open, so a fresh registration is made
+     against the current build only - profiles captured under older
+     matching code do not read reliably against a new one. Bump
+     APP_DATA_VERSION together with the service-worker shell on any
+     build that changes enrolment or matching. */
+  var APP_DATA_VERSION = 'v26';
+  var dataWipeReload = false;
+  try {
+    var DV_KEY = 'tsgbiom_data_version';
+    if (localStorage.getItem(DV_KEY) !== APP_DATA_VERSION) {
+      if (sessionStorage.getItem(DV_KEY + '_wiped') === APP_DATA_VERSION) {
+        // Already reloaded once for this version (the delete was
+        // blocked): stamp and boot rather than loop.
+        localStorage.setItem(DV_KEY, APP_DATA_VERSION);
+      } else {
+        sessionStorage.setItem(DV_KEY + '_wiped', APP_DATA_VERSION);
+        localStorage.setItem(DV_KEY, APP_DATA_VERSION);
+        ['people', 'logs', 'transactions', 'meta'].forEach(function (s) { try { localStorage.removeItem('tsgbiom_' + s); } catch (e) {} });
+        dataWipeReload = true;
+        var wipeDone = false;
+        var wipeReload = function () { if (!wipeDone) { wipeDone = true; location.reload(); } };
+        setTimeout(wipeReload, 1200);
+        if ('indexedDB' in window) {
+          var wipeReq = indexedDB.deleteDatabase('tsg-biom');
+          wipeReq.onsuccess = wipeReload;
+          wipeReq.onerror = wipeReload;
+          wipeReq.onblocked = wipeReload;
+        } else wipeReload();
+      }
+    }
+  } catch (e) {}
+  if (dataWipeReload) return;
+
   /* ---------------- Storage: IndexedDB with localStorage fallback -------- */
   var DB = {
     db: null, useLS: false,
