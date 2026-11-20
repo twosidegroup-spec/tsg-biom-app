@@ -413,6 +413,407 @@
     return picks.length ? picks : null;
   }
 
+  /* ---------------- Palmprint — EDCC competitive code (v9, 2026-11-20) ----
+     The geometry matcher above is kept for legacy (v2) enrolments only.
+     New enrolments use a real palmprint method, ported from EDCC
+     (Leosocy/EDCC-Palmprint-Recognition, MIT licence — the strongest
+     licence-clean palmprint encoder found in the 2026-11-20 GitHub
+     research; see ~/workspace/research_notes/github-palm-scan-best-20261120-0552/).
+
+     Pipeline, the same shape every serious palmprint system uses:
+       1. ROI: MediaPipe landmarks are used ONLY to locate the palm —
+          a palm-centred square is perspective-warped out of the frame
+          (palmRoiFromLandmarks). Landmarks carry no identity here.
+       2. ENCODE (EDCC, default config 29/5/5/10, ported faithfully):
+          resize ROI to 29x29, Gaussian blur, Laplacian enhancement,
+          convolve with a fixed bank of 10 Gabor kernels (kmax = pi/2,
+          sigma = 2pi, kernel 5x5); at each pixel the winning direction
+          d (0..9) is stored plus one side bit s (which neighbouring
+          direction responded stronger). One byte per pixel, 841 bytes.
+       3. MATCH (EDCC comparer, exact): score = fraction of pixels whose
+          packed (d, s) byte is identical. Our one extension, declared:
+          the score is the best over +-1 px translations of the code
+          grid, because a phone warp is never pixel-perfect.
+
+     The enhancement stage (blur + Laplacian) is implemented with the
+     standard separable 5-tap kernels; enrolment and verification always
+     run this same code, so templates are self-consistent. Threshold is
+     calibrated on synthetic palmprint probes (tests/palmprint.test.js)
+     and MUST be recalibrated on real palms in the field test before
+     any pilot sale — published EDCC numbers come from controlled
+     datasets with pre-extracted ROIs. */
+
+  var PALMPRINT_SIZE = 29;          // EDCC image_size
+  var PALMPRINT_DIRECTIONS = 10;    // EDCC gabor_directions
+  var PALMPRINT_KERNEL_SIZE = 5;    // EDCC gabor_kernel_size
+  var PALMPRINT_CODE_LEN = PALMPRINT_SIZE * PALMPRINT_SIZE; // 841
+  var PALMPRINT_ROI_SIZE = 128;     // canonical warped ROI side (px)
+  var PALMPRINT_THRESHOLD = 0.28;   // Calibrated 2026-11-20 on synthetic probes (tests/palmprint.test.js),
+                                    // on the product's actual decision rule (best of 3 enrolled x 2 live
+                                    // codes, through the landmark warp with +-3px jitter): genuine min 0.407,
+                                    // impostor max 0.180 across all probes (direct-ROI genuine min 0.583).
+                                    // 0.28 keeps >= 0.10 margin on both sides. Synthetic only — MUST be
+                                    // recalibrated on real palms in the field test before any pilot sale.
+  var PALMPRINT_MAX_DIR_SHARE = 0.80; // one direction may not dominate a real code
+
+  /* --- small image helpers (array-like gray, row-major) --- */
+  function reflect101(i, n) {
+    if (n <= 1) return 0;
+    while (i < 0 || i >= n) { if (i < 0) i = -i; if (i >= n) i = 2 * n - 2 - i; }
+    return i;
+  }
+  function resizeGrayBilinear(gray, w, h, size) {
+    var out = new Float64Array(size * size);
+    var sx, sy, x0, y0, x1, y1, fx, fy;
+    for (var y = 0; y < size; y++) {
+      sy = (y + 0.5) * (h / size) - 0.5;
+      y0 = Math.floor(sy); fy = sy - y0;
+      y1 = y0 + 1;
+      y0 = Math.max(0, Math.min(h - 1, y0)); y1 = Math.max(0, Math.min(h - 1, y1));
+      for (var x = 0; x < size; x++) {
+        sx = (x + 0.5) * (w / size) - 0.5;
+        x0 = Math.floor(sx); fx = sx - x0;
+        x1 = x0 + 1;
+        x0 = Math.max(0, Math.min(w - 1, x0)); x1 = Math.max(0, Math.min(w - 1, x1));
+        var top = gray[y0 * w + x0] * (1 - fx) + gray[y0 * w + x1] * fx;
+        var bot = gray[y1 * w + x0] * (1 - fx) + gray[y1 * w + x1] * fx;
+        out[y * size + x] = top * (1 - fy) + bot * fy;
+      }
+    }
+    return out;
+  }
+  function convolveSeparable(gray, size, kx, ky) {
+    var tmp = new Float64Array(size * size), out = new Float64Array(size * size);
+    var half = Math.floor(kx.length / 2), x, y, i, s;
+    for (y = 0; y < size; y++) for (x = 0; x < size; x++) {
+      s = 0;
+      for (i = -half; i <= half; i++) s += kx[i + half] * gray[y * size + reflect101(x + i, size)];
+      tmp[y * size + x] = s;
+    }
+    for (y = 0; y < size; y++) for (x = 0; x < size; x++) {
+      s = 0;
+      for (i = -half; i <= half; i++) s += ky[i + half] * tmp[reflect101(y + i, size) * size + x];
+      out[y * size + x] = s;
+    }
+    return out;
+  }
+  function convolve2d(gray, size, kernel, ksize) {
+    var out = new Float64Array(size * size);
+    var half = Math.floor(ksize / 2);
+    for (var y = 0; y < size; y++) for (var x = 0; x < size; x++) {
+      var s = 0;
+      for (var i = -half; i <= half; i++) for (var j = -half; j <= half; j++) {
+        s += kernel[(i + half) * ksize + (j + half)] * gray[reflect101(y + i, size) * size + reflect101(x + j, size)];
+      }
+      out[y * size + x] = s;
+    }
+    return out;
+  }
+
+  /* EDCC Gabor kernel (real part), verbatim formula from gabor_filter.cpp:
+     Kv = kmax / f^dimension with kmax = pi/2, dimension = 0 -> Kv = pi/2;
+     sigma = 2*pi; kernel = Kv^2/sigma^2 * exp(-Kv^2 (i^2+j^2) / (2 sigma^2))
+     * (cos(Kv cos(Qu) j + Kv sin(Qu) i) - exp(-sigma^2 / 2)), Qu = pi*d/10. */
+  function gaborKernelReal(direction) {
+    var size = PALMPRINT_KERNEL_SIZE, half = Math.floor(size / 2);
+    var kmax = Math.PI / 2, sigma = 2 * Math.PI, sqsigma = sigma * sigma;
+    var Kv = kmax;
+    var Qu = Math.PI * direction / PALMPRINT_DIRECTIONS;
+    var postmean = Math.exp(-sqsigma / 2);
+    var kernel = new Float64Array(size * size);
+    for (var i = -half; i <= half; i++) for (var j = -half; j <= half; j++) {
+      var tmp1 = Math.exp(-(Kv * Kv * (i * i + j * j)) / (2 * sqsigma));
+      var tmp2 = Math.cos(Kv * Math.cos(Qu) * j + Kv * Math.sin(Qu) * i) - postmean;
+      kernel[(i + half) * size + (j + half)] = Kv * Kv * tmp1 * tmp2 / sqsigma;
+    }
+    return kernel;
+  }
+  var PALMPRINT_KERNELS = null;
+  function palmprintKernels() {
+    if (!PALMPRINT_KERNELS) {
+      PALMPRINT_KERNELS = [];
+      for (var d = 0; d < PALMPRINT_DIRECTIONS; d++) PALMPRINT_KERNELS.push(gaborKernelReal(d));
+    }
+    return PALMPRINT_KERNELS;
+  }
+
+  /* EDCC enhancement: Gaussian blur 5x5 (sigma 1.1, OpenCV's auto sigma
+     for a 5-tap kernel), then a 5-tap Laplacian (separable Sobel form:
+     smooth [1,4,6,4,1]/16 on one axis, second difference [1,-2,1] on
+     the other, summed over both axes). */
+  function palmprintEnhance(img29) {
+    var size = PALMPRINT_SIZE;
+    var gw = [], norm = 0, k;
+    for (k = 0; k < 5; k++) { var wgt = Math.exp(-((k - 2) * (k - 2)) / (2 * 1.1 * 1.1)); gw.push(wgt); norm += wgt; }
+    for (k = 0; k < 5; k++) gw[k] /= norm;
+    var blurred = convolveSeparable(img29, size, gw, gw);
+    var smooth = [1, 4, 6, 4, 1].map(function (v) { return v / 16; });
+    var d2 = [0, 1, -2, 1, 0];
+    var lx = convolveSeparable(blurred, size, d2, smooth);
+    var ly = convolveSeparable(blurred, size, smooth, d2);
+    var out = new Float64Array(size * size);
+    for (var i = 0; i < size * size; i++) out[i] = lx[i] + ly[i];
+    return out;
+  }
+
+  /* Encode a grayscale palm ROI (any size) into an EDCC code:
+     a Uint8Array of 841 packed bytes (direction | side << 4), or null
+     when the input is unusable. The code is only a template — sanity
+     (palmprintCodeSane) decides whether it carries real print detail. */
+  function palmprintEncode(gray, w, h) {
+    if (!gray || !w || !h || gray.length < w * h) return null;
+    var img = resizeGrayBilinear(gray, w, h, PALMPRINT_SIZE);
+    var enhanced = palmprintEnhance(img);
+    var kernels = palmprintKernels();
+    var responses = [];
+    for (var d = 0; d < PALMPRINT_DIRECTIONS; d++) responses.push(convolve2d(enhanced, PALMPRINT_SIZE, kernels[d], PALMPRINT_KERNEL_SIZE));
+    var code = new Uint8Array(PALMPRINT_CODE_LEN);
+    for (var p = 0; p < PALMPRINT_CODE_LEN; p++) {
+      var best = 0, bestVal = -Infinity;
+      for (d = 0; d < PALMPRINT_DIRECTIONS; d++) {
+        var v = responses[d][p];
+        if (v > bestVal) { bestVal = v; best = d; }
+      }
+      var sLeft = best === PALMPRINT_DIRECTIONS - 1 ? 0 : best + 1;
+      var sRight = best === 0 ? PALMPRINT_DIRECTIONS - 1 : best - 1;
+      var side = responses[sLeft][p] >= responses[sRight][p] ? 1 : 0;
+      code[p] = best | (side << 4);
+    }
+    return code;
+  }
+
+  /* A usable palmprint code: right length, every byte a legal (d, s)
+     pair, and real directional variety — a flat or blank capture
+     collapses to one dominant direction and is rejected here. */
+  function palmprintCodeSane(code) {
+    var bytes = palmprintCodeBytes(code);
+    if (!bytes || bytes.length !== PALMPRINT_CODE_LEN) return false;
+    var counts = new Array(PALMPRINT_DIRECTIONS).fill(0);
+    for (var i = 0; i < bytes.length; i++) {
+      var b = bytes[i];
+      if ((b & 0x0F) >= PALMPRINT_DIRECTIONS) return false;
+      if ((b & 0xF0) !== 0 && (b & 0xF0) !== 0x10) return false;
+      counts[b & 0x0F]++;
+    }
+    var distinct = 0, maxShare = 0;
+    for (i = 0; i < PALMPRINT_DIRECTIONS; i++) {
+      if (counts[i] > 0) distinct++;
+      if (counts[i] / bytes.length > maxShare) maxShare = counts[i] / bytes.length;
+    }
+    if (distinct < 5) return false;
+    if (maxShare > PALMPRINT_MAX_DIR_SHARE) return false;
+    return true;
+  }
+
+  /* Codes travel as base64 strings inside stored profiles. */
+  function palmprintCodeBytes(code) {
+    if (!code) return null;
+    if (typeof code === 'string') return palmprintCodeFromBase64(code);
+    if (code.length === PALMPRINT_CODE_LEN) {
+      var out = new Uint8Array(PALMPRINT_CODE_LEN);
+      for (var i = 0; i < PALMPRINT_CODE_LEN; i++) { var v = Number(code[i]); if (!isFinite(v) || v < 0 || v > 255) return null; out[i] = v; }
+      return out;
+    }
+    return null;
+  }
+  function palmprintCodeToBase64(code) {
+    var bytes = palmprintCodeBytes(code);
+    if (!bytes) return null;
+    if (typeof Buffer !== 'undefined') return Buffer.from(bytes).toString('base64');
+    var s = '';
+    for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return typeof btoa === 'function' ? btoa(s) : null;
+  }
+  function palmprintCodeFromBase64(str) {
+    if (typeof str !== 'string' || !str.length) return null;
+    try {
+      var bytes;
+      if (typeof Buffer !== 'undefined') bytes = new Uint8Array(Buffer.from(str, 'base64'));
+      else if (typeof atob === 'function') {
+        var bin = atob(str);
+        bytes = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      } else return null;
+      return bytes.length === PALMPRINT_CODE_LEN ? bytes : null;
+    } catch (e) { return null; }
+  }
+
+  /* EDCC comparer, exact: score = (# pixels with identical packed
+     byte) / len, computed here at a code-grid translation (dx, dy)
+     over the overlapping region only. */
+  function edccScoreAtShift(a, b, dx, dy) {
+    var size = PALMPRINT_SIZE, matches = 0, count = 0;
+    for (var y = 0; y < size; y++) for (var x = 0; x < size; x++) {
+      var bx = x + dx, by = y + dy;
+      if (bx < 0 || bx >= size || by < 0 || by >= size) continue;
+      count++;
+      if (a[y * size + x] === b[by * size + bx]) matches++;
+    }
+    return count ? matches / count : null;
+  }
+  /* Palmprint similarity: EDCC score, best over +-1 px translations. */
+  function palmprintSimilarity(a, b) {
+    var ba = palmprintCodeBytes(a), bb = palmprintCodeBytes(b);
+    if (!palmprintCodeSane(ba) || !palmprintCodeSane(bb)) return null;
+    var best = null;
+    for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
+      var s = edccScoreAtShift(ba, bb, dx, dy);
+      if (s !== null && (best === null || s > best)) best = s;
+    }
+    return best;
+  }
+
+  /* --- Palm ROI extraction: landmarks locate, they do not identify ---
+     Palm frame built in PIXEL space (landmark coords are per-axis
+     normalised, so geometry must be computed after scaling): u runs
+     along the knuckle line (index MCP -> pinky MCP), v runs from the
+     knuckles toward the wrist. The ROI square has side 1.7 x knuckle
+     span, centred 0.42 side-lengths toward the wrist from the knuckle
+     line — the central palm, where the principal print lines live. */
+  function palmRoiCornersPx(w, h, landmarks) {
+    if (!landmarks || landmarks.length !== 21 || !w || !h) return null;
+    var pts = [];
+    for (var i = 0; i < 21; i++) {
+      var p = landmarks[i];
+      if (!p || !isFinite(Number(p.x)) || !isFinite(Number(p.y))) return null;
+      pts.push({ x: Number(p.x) * w, y: Number(p.y) * h });
+    }
+    var A = pts[5], Bp = pts[17], W = pts[0];
+    var mx = (A.x + Bp.x) / 2, my = (A.y + Bp.y) / 2;
+    var ux = Bp.x - A.x, uy = Bp.y - A.y;
+    var span = Math.hypot(ux, uy);
+    if (!(span >= 0.10 * Math.min(w, h))) return null; // hand too small / partial
+    ux /= span; uy /= span;
+    var vx = -uy, vy = ux;
+    if ((W.x - mx) * vx + (W.y - my) * vy < 0) { vx = -vx; vy = -vy; }
+    var side = 1.7 * span;
+    var cx = mx + vx * 0.42 * side, cy = my + vy * 0.42 * side;
+    var hs = side / 2;
+    return [
+      { x: cx - ux * hs - vx * hs, y: cy - uy * hs - vy * hs },
+      { x: cx + ux * hs - vx * hs, y: cy + uy * hs - vy * hs },
+      { x: cx + ux * hs + vx * hs, y: cy + uy * hs + vy * hs },
+      { x: cx - ux * hs + vx * hs, y: cy - uy * hs + vy * hs }
+    ];
+  }
+  function homographyFromQuad(corners) {
+    // Maps the unit square (0,0),(1,0),(1,1),(0,1) onto corners TL,TR,BR,BL.
+    var x0 = corners[0].x, y0 = corners[0].y, x1 = corners[1].x, y1 = corners[1].y;
+    var x2 = corners[2].x, y2 = corners[2].y, x3 = corners[3].x, y3 = corners[3].y;
+    var sx = x0 - x1 + x2 - x3, sy = y0 - y1 + y2 - y3;
+    var dx1 = x1 - x2, dy1 = y1 - y2, dx2 = x3 - x2, dy2 = y3 - y2;
+    var det = dx1 * dy2 - dx2 * dy1;
+    if (!det || !isFinite(det)) return null;
+    var g = (sx * dy2 - dx2 * sy) / det, hh = (dx1 * sy - sx * dy1) / det;
+    return {
+      a: x1 - x0 + g * x1, b: x3 - x0 + hh * x3, c: x0,
+      d: y1 - y0 + g * y1, e: y3 - y0 + hh * y3, f: y0,
+      g: g, h: hh
+    };
+  }
+  /* Warp the palm square out of a grayscale frame. Returns a
+     PALMPRINT_ROI_SIZE square (plain Array of gray values) or null. */
+  function palmRoiFromLandmarks(gray, w, h, landmarks, outSize) {
+    if (!gray || gray.length < w * h) return null;
+    var size = outSize || PALMPRINT_ROI_SIZE;
+    var corners = palmRoiCornersPx(w, h, landmarks);
+    if (!corners) return null;
+    var H = homographyFromQuad(corners);
+    if (!H) return null;
+    var out = new Array(size * size);
+    for (var y = 0; y < size; y++) for (var x = 0; x < size; x++) {
+      var u = x / (size - 1), v = y / (size - 1);
+      var den = H.g * u + H.h * v + 1;
+      var sx = (H.a * u + H.b * v + H.c) / den;
+      var sy = (H.d * u + H.e * v + H.f) / den;
+      sx = Math.max(0, Math.min(w - 1, sx)); sy = Math.max(0, Math.min(h - 1, sy));
+      var x0 = Math.floor(sx), y0 = Math.floor(sy);
+      var x1 = Math.min(w - 1, x0 + 1), y1 = Math.min(h - 1, y0 + 1);
+      var fx = sx - x0, fy = sy - y0;
+      var top = gray[y0 * w + x0] * (1 - fx) + gray[y0 * w + x1] * fx;
+      var bot = gray[y1 * w + x0] * (1 - fx) + gray[y1 * w + x1] * fx;
+      out[y * size + x] = top * (1 - fy) + bot * fy;
+    }
+    return out;
+  }
+
+  /* --- Palmprint profile (v3) + clip selection --- */
+  function normalisePalmprintProfile(stored) {
+    if (!stored || typeof stored !== 'object' || stored.v !== 3 || !Array.isArray(stored.codes)) return null;
+    var codes = [];
+    for (var i = 0; i < stored.codes.length; i++) {
+      var bytes = palmprintCodeBytes(stored.codes[i]);
+      if (!bytes || !palmprintCodeSane(bytes)) return null;
+      codes.push(bytes);
+    }
+    if (codes.length < 2) return null; // enrolment keeps 3; fewer than 2 sane codes is not a profile
+    return { codes: codes };
+  }
+  function palmprintProfileSane(stored) { return normalisePalmprintProfile(stored) !== null; }
+
+  /* Verify a live palmprint against a v3 profile: the best EDCC
+     similarity over every (enrolled code x live code) pair must clear
+     the threshold. Fail closed on any missing or degenerate data. */
+  function verifyPalmprintProfile(stored, liveCodes) {
+    var fail = function (reason, similarity) {
+      return { ok: false, verified: false, similarity: similarity, threshold: PALMPRINT_THRESHOLD, reason: reason };
+    };
+    var profile = normalisePalmprintProfile(stored);
+    if (!profile) return fail('No usable palmprint enrolled for this person - the stored palmprint data is missing or invalid.', null);
+    var live = [];
+    (liveCodes || []).forEach(function (c) { var b = palmprintCodeBytes(c); if (b && palmprintCodeSane(b)) live.push(b); });
+    if (!live.length) return fail('No real open palm with readable print detail was detected in this scan.', null);
+    var best = null;
+    for (var i = 0; i < profile.codes.length; i++) for (var j = 0; j < live.length; j++) {
+      var s = palmprintSimilarity(profile.codes[i], live[j]);
+      if (s === null || !isFinite(s)) return fail('Palmprint comparison failed.', null);
+      if (best === null || s > best) best = s;
+    }
+    var verified = best >= PALMPRINT_THRESHOLD;
+    return {
+      ok: true, verified: verified, similarity: best, threshold: PALMPRINT_THRESHOLD,
+      reason: verified ? 'Palmprint code matches the enrolled palm.' : 'Palmprint similarity below threshold - not the enrolled palm.'
+    };
+  }
+
+  /* Clip frames for the palmprint path carry { openness, code,
+     sharpness }. A frame counts only when the hand is open AND its
+     code carries real print detail. */
+  function palmprintUsableOpenFrames(frames) {
+    var out = [];
+    (frames || []).forEach(function (f, i) {
+      if (f && typeof f.openness === 'number' && isFinite(f.openness) && f.openness >= PALM_OPEN_MIN && palmprintCodeSane(f.code)) {
+        out.push({ index: i, openness: f.openness, code: palmprintCodeBytes(f.code), sharpness: f.sharpness || 0 });
+      }
+    });
+    return out;
+  }
+  // Enrolment: up to 3 codes, sharpest usable frame in each third of
+  // the clip (natural pose variation), returned as base64 strings.
+  function selectPalmprintProfileCodes(frames) {
+    var usable = palmprintUsableOpenFrames(frames);
+    if (usable.length < 2) return null;
+    var picks = [];
+    if (usable.length <= 3) picks = usable.slice();
+    else {
+      for (var t = 0; t < 3; t++) {
+        var bucket = usable.slice(Math.floor(t * usable.length / 3), Math.floor((t + 1) * usable.length / 3));
+        bucket.sort(function (a, b) { return b.sharpness - a.sharpness; });
+        if (bucket.length) picks.push(bucket[0]);
+      }
+    }
+    if (picks.length < 2) return null;
+    var out = picks.map(function (u) { return palmprintCodeToBase64(u.code); });
+    return out.indexOf(null) >= 0 ? null : out;
+  }
+  // Verification: the 2 sharpest usable live codes.
+  function selectPalmprintLiveCodes(frames) {
+    var usable = palmprintUsableOpenFrames(frames);
+    if (!usable.length) return null;
+    usable.sort(function (a, b) { return b.sharpness - a.sharpness; });
+    return usable.slice(0, 2).map(function (u) { return u.code; });
+  }
+
   /* ---- Fingerprint through camera: image processing on real pixels ---- */
 
   // gray: array of 0..255, width w, height h (row-major)
@@ -658,6 +1059,17 @@
     palmUsableOpenFrames: palmUsableOpenFrames,
     selectPalmDescriptor: selectPalmDescriptor,
     selectPalmProfile: selectPalmProfile,
+    PALMPRINT_THRESHOLD: PALMPRINT_THRESHOLD,
+    PALMPRINT_ROI_SIZE: PALMPRINT_ROI_SIZE,
+    palmprintEncode: palmprintEncode,
+    palmprintCodeSane: palmprintCodeSane,
+    palmprintSimilarity: palmprintSimilarity,
+    palmRoiFromLandmarks: palmRoiFromLandmarks,
+    palmprintProfileSane: palmprintProfileSane,
+    verifyPalmprintProfile: verifyPalmprintProfile,
+    palmprintUsableOpenFrames: palmprintUsableOpenFrames,
+    selectPalmprintProfileCodes: selectPalmprintProfileCodes,
+    selectPalmprintLiveCodes: selectPalmprintLiveCodes,
     laplacianVariance: laplacianVariance,
     contrastStretch: contrastStretch,
     sharpen: sharpen,

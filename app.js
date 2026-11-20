@@ -467,11 +467,13 @@
      the mixed-frame averaging trap after the movement check). The clip
      path records a few seconds of real frames first, then analyses
      them one by one with a dedicated Hands processor: movement
-     liveness from the openness series, geometry from the best genuine
-     open-palm frames, texture from the sharpest one. Same gates, same
-     stored profile format - only the capture mechanics changed.
-     A single still photo is NOT accepted anywhere: with no movement
-     series there is no liveness, so there is no scan. */
+     liveness from the openness series, and (v9) a palmprint code from
+     each genuine open-palm frame — the landmarks locate the palm
+     square, the EDCC encoder reads the print inside it. Legacy v2
+     geometry descriptors are still computed per frame so older
+     enrolments keep verifying. A single still photo is NOT accepted
+     anywhere: with no movement series there is no liveness, so there
+     is no scan. */
   var PalmProc = {
     hands: null, pending: null,
     init: function () {
@@ -549,6 +551,23 @@
     });
   }
 
+  /* Palmprint ROI + EDCC code from a recorded frame (v9): the landmarks
+     locate the palm square, the warp cuts it out, the encoder reads the
+     print itself. Returns a code (Uint8Array) or null. */
+  function palmCodeFromFrame(frame, lm) {
+    try {
+      var w = frame.width, h = frame.height;
+      if (!w || !h) return null;
+      var ctx = frame.getContext('2d');
+      var img = ctx.getImageData(0, 0, w, h).data;
+      var gray = new Array(w * h);
+      for (var i = 0; i < w * h; i++) gray[i] = Math.round(0.299 * img[i * 4] + 0.587 * img[i * 4 + 1] + 0.114 * img[i * 4 + 2]);
+      var roi = B.palmRoiFromLandmarks(gray, w, h, lm);
+      if (!roi) return null;
+      return B.palmprintEncode(roi, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE);
+    } catch (e) { return null; }
+  }
+
   function processPalmClip(frames, statusEl) {
     var results = [];
     var chain = Promise.resolve();
@@ -556,11 +575,12 @@
       chain = chain.then(function () {
         if (statusEl) statusEl.textContent = 'Analysing palm clip... frame ' + (idx + 1) + ' of ' + frames.length + '.';
         return PalmProc.landmarks(frame).then(function (lm) {
-          if (!lm) { results.push({ openness: null, descriptor: null, sharpness: 0, texture: null }); return; }
+          if (!lm) { results.push({ openness: null, descriptor: null, code: null, sharpness: 0, texture: null }); return; }
           var openness = B.palmOpenness(lm);
           var descriptor = B.palmDescriptorFromLandmarks(lm);
           var meas = descriptor ? palmFrameMeasures(frame, frame.width, frame.height, lm) : { texture: null, sharpness: 0 };
-          results.push({ openness: openness, descriptor: descriptor, sharpness: meas.sharpness, texture: meas.texture });
+          var code = (descriptor && typeof openness === 'number' && openness >= B.PALM_OPEN_MIN) ? palmCodeFromFrame(frame, lm) : null;
+          results.push({ openness: openness, descriptor: descriptor, code: code, sharpness: meas.sharpness, texture: meas.texture });
         });
       });
     });
@@ -703,7 +723,7 @@
         name: enroll.details.name, phone: enroll.details.phone, type: enroll.details.type, store: enroll.details.store,
         walletProvider: enroll.details.walletProvider, walletNumber: enroll.details.walletNumber,
         faceDescriptor: enroll.face || null,
-        palmDescriptor: enroll.palm ? enroll.palm.geometry[0] : null,
+        palmDescriptor: enroll.palm && enroll.palm.geometry ? enroll.palm.geometry[0] : null,
         palmProfile: enroll.palm || null,
         fingerprint: enroll.finger ? { template: enroll.finger.template, texture: enroll.finger.texture, quality: enroll.finger.quality, ridgeImage: enroll.finger.ridgeImage } : null,
         enrolledAt: Date.now()
@@ -714,7 +734,7 @@
           '<b>Name:</b> ' + esc(person.name) + '<br><b>Biom ID:</b> ' + esc(person.id) + '<br>' +
           '<b>Store:</b> ' + esc(person.store) + '<br>' +
           '<b>Face:</b> ' + (person.faceDescriptor ? 'Enrolled (128-d descriptor)' : 'Not enrolled') + '<br>' +
-          '<b>Palm:</b> ' + (person.palmProfile ? 'Enrolled (3 geometry captures + palm texture, movement-checked)' : person.palmDescriptor ? 'Enrolled (hand geometry)' : 'Not enrolled') + '<br>' +
+          '<b>Palm:</b> ' + (person.palmProfile && person.palmProfile.v === 3 ? 'Enrolled (palmprint — EDCC competitive code, ' + person.palmProfile.codes.length + ' captures, movement-checked)' : person.palmProfile ? 'Enrolled (3 geometry captures + palm texture, movement-checked)' : person.palmDescriptor ? 'Enrolled (hand geometry)' : 'Not enrolled') + '<br>' +
           '<b>Fingerprint:</b> ' + (person.fingerprint ? 'Enrolled (camera template, quality ' + person.fingerprint.quality.sharpness.toFixed(1) + ')' : 'Not enrolled') + '<br>' +
           '<b>Wallet:</b> ' + (person.walletProvider ? esc(person.walletProvider) + ' ' + esc(B.maskWalletNumber(person.walletNumber)) : 'Not linked');
         enroll = { details: null, face: null, palm: null, finger: null, types: { face: true, palm: true, finger: true } };
@@ -788,11 +808,10 @@
   });
 
   /* Palm enroll - recorded-clip path: one 4-second clip carries the
-     whole strengthened enrolment. The movement check runs on the
-     clip's openness series (a photo has no series), the profile keeps
-     3 geometry captures selected from the clip's best open-palm
-     frames spread across the recording, and the texture comes from
-     the sharpest usable frame. */
+     whole enrolment. The movement check runs on the clip's openness
+     series (a photo has no series), and the stored profile (v3) keeps
+     3 palmprint codes read from the clip's best open-palm frames
+     spread across the recording. */
   function resetPalmEnroll() { /* clip enrolment keeps no partial state */ }
   function startPalmCamera() {
     Cam.start($('palmVideo'), camFacing.enrollPalm, 'enrollPalm').then(function () {
@@ -816,21 +835,16 @@
         $('palmCapture').disabled = false;
         return;
       }
-      var geometry = B.selectPalmProfile(res.results);
-      if (!geometry) {
-        $('palmMsg').innerHTML = '<div class="error">No usable open palm found in the clip. Nothing was stored. Hold one open palm still, fingers spread, filling the guide, and record again.</div>';
+      var codes = B.selectPalmprintProfileCodes(res.results);
+      if (!codes) {
+        $('palmMsg').innerHTML = '<div class="error">No usable open palm with readable print detail found in the clip. Nothing was stored. Hold one open palm still, fingers spread, filling the guide in good light, and record again.</div>';
         $('palmCapture').disabled = false;
         return;
       }
-      if (!res.bestTexture) {
-        $('palmMsg').innerHTML = '<div class="error">The palm texture could not be read from the clip. Nothing was stored. Record again in good light, ending with the palm held steady and open.</div>';
-        $('palmCapture').disabled = false;
-        return;
-      }
-      enroll.palm = { v: 2, geometry: geometry, texture: res.bestTexture };
+      enroll.palm = { v: 3, codes: codes };
       Cam.stop();
       $('palmStatus').textContent = 'Palm clip analysed.';
-      $('palmMsg').innerHTML = '<div class="success">Palm enrolled from a live recorded clip: movement check passed, ' + geometry.length + ' hand-geometry captures (30 measures each) selected from the clip\'s best open-palm frames, and palm texture stored.</div>';
+      $('palmMsg').innerHTML = '<div class="success">Palm enrolled from a live recorded clip: movement check passed, and ' + codes.length + ' palmprint codes (EDCC competitive code — the palm\'s own print pattern) were read from the clip\'s best open-palm frames.</div>';
       advanceFrom('palm');
     }).catch(function (e) {
       palmScanBusy = false;
@@ -905,7 +919,7 @@
     var current = $('termMethod').value;
     var available = ENROLL_ORDER.filter(function (m) { return personHasMethod(person, m); });
     $('termMethod').innerHTML = available.length
-      ? available.map(function (m) { return '<option value="' + m + '">' + esc(METHOD_LABEL[m]) + (m === 'palm' ? ' — Hand Geometry + Texture' : m === 'finger' ? ' (camera)' : '') + '</option>'; }).join('')
+      ? available.map(function (m) { return '<option value="' + m + '">' + esc(METHOD_LABEL[m]) + (m === 'palm' ? ' — Palmprint' : m === 'finger' ? ' (camera)' : '') + '</option>'; }).join('')
       : '<option value="">No biometrics enrolled for this person</option>';
     if (available.indexOf(current) >= 0) $('termMethod').value = current;
     $('termMethodNote').textContent = person
@@ -918,7 +932,7 @@
     // a missing, empty or degenerate template can never be verified against.
     if (!person) return false;
     if (method === 'face') return B.faceDescriptorSane(person.faceDescriptor);
-    if (method === 'palm') return B.palmProfileSane(person.palmProfile) || B.palmDescriptorSane(person.palmDescriptor);
+    if (method === 'palm') return B.palmprintProfileSane(person.palmProfile) || B.palmProfileSane(person.palmProfile) || B.palmDescriptorSane(person.palmDescriptor);
     return B.fingerprintRecordSane(person.fingerprint);
   }
   function notEnrolledMessage(person, method) {
@@ -1002,6 +1016,13 @@
           palmScanBusy = false;
           $('termScan').disabled = false;
           if (!res.movement.pass) return { fail: 'Movement check not completed in the recorded clip - nothing was verified. During the recording the customer must open the palm wide, close it into a loose fist, then open it wide again. A still photo cannot pass. (' + res.movement.reason + ')' };
+          if (B.palmprintProfileSane(person.palmProfile)) {
+            var liveCodes = B.selectPalmprintLiveCodes(res.results);
+            if (!liveCodes) return { fail: 'No usable open palm with readable print detail found in the recorded clip. Nothing was verified. Hold one open palm still, fingers spread, filling the guide in good light, and run the scan again.' };
+            var rp3 = B.verifyPalmprintProfile(person.palmProfile, liveCodes);
+            var measured3 = 'Palmprint similarity ' + (rp3.similarity === null ? 'n/a' : rp3.similarity.toFixed(3)) + ' (threshold ' + rp3.threshold + ', best of ' + person.palmProfile.codes.length + ' enrolled print codes x ' + liveCodes.length + ' live codes), live movement check passed in recorded clip';
+            return { r: rp3, measured: measured3 };
+          }
           var livePalm = B.selectPalmDescriptor(res.results);
           if (!livePalm) return { fail: 'No usable open palm found in the recorded clip. Nothing was verified. Hold one open palm still, fingers spread, filling the guide, and run the scan again.' };
           var storedPalm = person.palmProfile || person.palmDescriptor;
