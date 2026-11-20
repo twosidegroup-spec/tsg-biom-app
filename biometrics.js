@@ -1305,6 +1305,32 @@
   }
   // Enrolment: up to 3 codes, sharpest usable frame in each third of
   // the clip (natural pose variation), returned as base64 strings.
+  /* Majority fusion of aligned palmprint codes (v29): for each code
+     byte (a packed direction pair), the consensus takes the value
+     most input codes carry at that position; ties keep the earliest
+     (sharpest) code's value. Inputs are warp-aligned codes of the
+     same palm, so positions correspond. Session noise - lighting,
+     landmark jitter, phone camera processing - flips individual
+     positions from capture to capture; the values the frames agree
+     on are the palm's stable print. */
+  function palmprintConsensusCode(codes) {
+    var byteSets = (codes || []).map(palmprintCodeBytes).filter(function (b) { return !!b; });
+    if (byteSets.length < 2) return null;
+    var len = byteSets[0].length;
+    for (var i = 1; i < byteSets.length; i++) if (byteSets[i].length !== len) return null;
+    var out = new Uint8Array(len);
+    var n = byteSets.length;
+    for (var idx = 0; idx < len; idx++) {
+      var counts = {}, bestVal = byteSets[0][idx], bestCount = 0;
+      for (var k = 0; k < n; k++) {
+        var v = byteSets[k][idx];
+        counts[v] = (counts[v] || 0) + 1;
+        if (counts[v] > bestCount) { bestCount = counts[v]; bestVal = v; }
+      }
+      out[idx] = bestVal;
+    }
+    return out;
+  }
   function selectPalmprintProfileCodes(frames) {
     var usable = palmprintUsableOpenFrames(frames);
     if (usable.length < 2) return null;
@@ -1338,7 +1364,21 @@
     }
     if (picks.length < 2) return null;
     var out = picks.map(function (u) { return palmprintCodeToBase64(u.code); });
-    return out.indexOf(null) >= 0 ? null : out;
+    if (out.indexOf(null) >= 0) return null;
+    // v29: bank majority-fused consensus codes alongside the singles.
+    // The user's phone read 24/24 verification frames with readable
+    // codes yet his best pair scored 0.302 - capture was perfect and
+    // the per-frame codes themselves are what vary between sessions.
+    // A live code compared against the fused template scores the
+    // palm's stable print instead of one capture's noise.
+    var bySharp = picks.slice().sort(function (a, b) { return b.sharpness - a.sharpness; });
+    [bySharp, bySharp.slice(0, 3)].forEach(function (set) {
+      if (set.length < 2) return;
+      var cons = palmprintConsensusCode(set.map(function (u) { return u.code; }));
+      var b64 = (cons && palmprintCodeSane(cons)) ? palmprintCodeToBase64(cons) : null;
+      if (b64 && out.indexOf(b64) < 0) out.push(b64);
+    });
+    return out;
   }
   // Verification codes from collected frames (v20): the ROI is
   // pre-aligned on the wrist -> middle-MCP axis at warp time, so each
@@ -1742,6 +1782,7 @@
     verifyPalmprintProfile: verifyPalmprintProfile,
     palmprintUsableOpenFrames: palmprintUsableOpenFrames,
     selectPalmprintProfileCodes: selectPalmprintProfileCodes,
+    palmprintConsensusCode: palmprintConsensusCode,
     selectPalmprintLiveCodes: selectPalmprintLiveCodes,
     palmFramePose: palmFramePose,
     palmFramingHint: palmFramingHint,
