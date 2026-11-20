@@ -514,6 +514,44 @@
     }
     return { pass: true, reason: 'Live movement sequence completed in order inside the window (' + sequence.label + ', ' + (completedMs / 1000).toFixed(1) + 's).', sequence: sequence.id, completedMs: completedMs };
   }
+  /* Streaming enrolment judge (v22). The burst-chain enrolment cannot
+     use the clip window above: measures accumulate across bursts that
+     are separated by analysis time, and the user can only perform the
+     next stage after the prompt changes - which happens after the
+     previous burst is analysed. Judged by the 3.5 s clip window, a
+     prompt-following human needs the whole sequence inside ~14
+     recorded measures while one burst alone records 12, so enrolment
+     stalled silently until the deadline (his phone, 2026-11-20: the
+     looping test video passes because it cycles continuously; a human
+     following prompts cannot). The streaming judge keeps the two
+     properties that carry the anti-replay weight - the sequence is
+     freshly randomised per enrolment and the stages must occur IN
+     ORDER - and replaces the total window with a per-stage budget of
+     recorded measures: each stage must first be met within
+     STREAM_STAGE_BUDGET measures of the previous stage's first met
+     measure (40 measures = 10 s of recorded frames at 250 ms). */
+  var STREAM_STAGE_BUDGET = 40;
+  function evaluateMovementSequenceStreaming(measures, sequence) {
+    var fail = function (reason) { return { pass: false, reason: reason, sequence: sequence ? sequence.id : null, completedMs: null }; };
+    if (!sequence || !sequence.stages || !sequence.stages.length) return fail('No liveness sequence was issued for this scan.');
+    if (!measures || measures.length < 3) return fail('Movement check needs a few seconds of hand movement - follow the prompts shown during the recording.');
+    var stageIdx = 0, firstIdx = -1, lastIdx = -1, prevIdx = 0;
+    for (var i = 0; i < measures.length && stageIdx < sequence.stages.length; i++) {
+      if (palmStageMet(sequence.stages[stageIdx], measures[i])) {
+        if (firstIdx < 0) firstIdx = i;
+        if (i - prevIdx > STREAM_STAGE_BUDGET) {
+          return fail('The movement sequence was followed too slowly between stages (' + sequence.label + '). Follow each prompt as soon as it appears - a pre-recorded video cannot match the issued sequence and pace.');
+        }
+        prevIdx = i;
+        lastIdx = i;
+        stageIdx++;
+      }
+    }
+    if (stageIdx < sequence.stages.length) {
+      return fail('The movement sequence was not completed in order (' + sequence.label + '). Follow each prompt as it appears during the recording.');
+    }
+    return { pass: true, reason: 'Live movement sequence completed in order, each stage inside its recorded-frame budget (' + sequence.label + ').', sequence: sequence.id, completedMs: (lastIdx - firstIdx) * 250 };
+  }
 
   /* ------------- Screen-spoof detector (v18) ---------------------------
      A video replay presents the hand on another device's screen. Three
@@ -1556,6 +1594,7 @@
     palmTilt: palmTilt,
     palmStageMet: palmStageMet,
     evaluateMovementSequence: evaluateMovementSequence,
+    evaluateMovementSequenceStreaming: evaluateMovementSequenceStreaming,
     screenSpoofCheck: screenSpoofCheck,
     fieldTestStats: fieldTestStats,
     fieldTestCsv: fieldTestCsv,

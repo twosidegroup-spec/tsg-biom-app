@@ -537,10 +537,31 @@
       var self = this;
       this.init();
       return new Promise(function (resolve) {
-        self.pending = resolve;
-        self.hands.send({ image: image }).catch(function () {
-          if (self.pending === resolve) { self.pending = null; resolve(null); }
-        });
+        // Orphan guard: a caller still waiting when a new call arrives
+        // is released with null - a silently replaced resolver would
+        // hang that caller forever.
+        if (self.pending) { var stale = self.pending; self.pending = null; stale(null); }
+        var doneFlag = false;
+        var finish = function (lm) {
+          if (doneFlag) return;
+          doneFlag = true;
+          clearTimeout(to);
+          if (self.pending === finish) self.pending = null;
+          resolve(lm);
+        };
+        // Dropped-frame timeout + rebuild: if onResults never fires
+        // for a frame (the MediaPipe graph can drop one), the old code
+        // waited forever and the whole scan froze with no message -
+        // the v21 phone enrolment stall, 2026-11-20. After 4 s the
+        // frame counts as no-hand and the Hands instance is rebuilt,
+        // because a wedged graph stays wedged.
+        var to = setTimeout(function () {
+          try { if (self.hands && self.hands.close) self.hands.close(); } catch (e) {}
+          self.hands = null;
+          finish(null);
+        }, 4000);
+        self.pending = finish;
+        self.hands.send({ image: image }).catch(function () { finish(null); });
       });
     }
   };
@@ -807,24 +828,25 @@
       return Math.min(idx, sequence.stages.length - 1);
     }
     function done() {
-      return B.evaluateMovementSequence(measures, sequence, 250).pass && B.palmprintUsableOpenFrames(results).length >= 2;
+      return B.evaluateMovementSequenceStreaming(measures, sequence).pass && B.palmprintUsableOpenFrames(results).length >= 2;
     }
     function finish() {
       setRing($('palmRing'), 'off');
       var sp = tracker.state();
       return {
         results: results,
-        movement: B.evaluateMovementSequence(measures, sequence, 250),
+        movement: B.evaluateMovementSequenceStreaming(measures, sequence),
         spoof: sp,
         lightTag: sp.lightTag,
         elapsedMs: Date.now() - t0
       };
     }
     function analyseBurst(frames) {
+      var live = true;
       var chain = Promise.resolve();
       frames.forEach(function (frame) {
         chain = chain.then(function () {
-          if (tracker.state().spoof || done()) return;
+          if (!live || tracker.state().spoof || done()) return;
           if (analysed % 3 === 0) tracker.add(frame);
           return analysePalmFrame(frame).then(function (r) {
             analysed++;
@@ -844,7 +866,12 @@
           });
         });
       });
-      return chain;
+      // Watchdog: a burst normally finishes in seconds (each frame is
+      // bounded by the PalmProc timeout). If anything still wedges,
+      // abandon the burst instead of freezing the enrolment silently;
+      // the live flag stops the abandoned chain pushing late results.
+      var watchdog = waitMs(75000).then(function () { live = false; });
+      return Promise.race([chain, watchdog]);
     }
     function cycle() {
       if (tracker.state().spoof || done()) return finish();
@@ -854,7 +881,19 @@
         if (statusEl) statusEl.textContent = 'No hand was seen by this camera - switching to the other camera and trying once more.';
         return swapCamera().then(function () { return cycle(); }, function () { return cycle(); });
       }
-      if (statusEl) statusEl.textContent = 'Auto-capture — ' + (B.PALM_STAGE_PROMPTS[sequence.stages[stageIdxNow()]] || '') + ' Keep the whole hand inside the ring, about 30 cm away.';
+      if (statusEl) {
+        // Live feedback, not a frozen prompt (v22): say plainly whether
+        // a hand has been seen and what is missing, so a stall is
+        // visible and correctable instead of silent.
+        var seenHand = results.some(function (x) { return typeof x.openness === 'number'; });
+        if (analysed >= 12 && !seenHand) {
+          statusEl.textContent = 'No hand seen yet — hold your open palm inside the ring, facing the camera, about 30 cm away.';
+        } else if (analysed >= 24 && seenHand && stageIdxNow() === 0) {
+          statusEl.textContent = 'Hand seen — now open it wide: fingers spread, palm flat, facing the camera.';
+        } else {
+          statusEl.textContent = 'Auto-capture — ' + (B.PALM_STAGE_PROMPTS[sequence.stages[stageIdxNow()]] || '') + ' Keep the whole hand inside the ring, about 30 cm away.';
+        }
+      }
       return recordBurst(3000).then(analyseBurst).then(cycle);
     }
     setRing($('palmRing'), 'on');
