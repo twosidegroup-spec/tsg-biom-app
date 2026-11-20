@@ -14,11 +14,17 @@
      matching code do not read reliably against a new one. Bump
      APP_DATA_VERSION together with the service-worker shell on any
      build that changes enrolment or matching. */
-  var APP_DATA_VERSION = 'v26';
+  var APP_DATA_VERSION = 'v27';
+  /* DEVELOPMENT ONLY (his order, 2026-11-20): the wipe below runs
+     only in development builds. A commercial build ships with
+     BUILD_MODE set to 'commercial' and never wipes - real customer
+     registrations, transactions and logs must persist across every
+     update. Flipping this flag is a deliberate release step. */
+  var BUILD_MODE = 'development';
   var dataWipeReload = false;
   try {
     var DV_KEY = 'tsgbiom_data_version';
-    if (localStorage.getItem(DV_KEY) !== APP_DATA_VERSION) {
+    if (BUILD_MODE !== 'commercial' && localStorage.getItem(DV_KEY) !== APP_DATA_VERSION) {
       if (sessionStorage.getItem(DV_KEY + '_wiped') === APP_DATA_VERSION) {
         // Already reloaded once for this version (the delete was
         // blocked): stamp and boot rather than loop.
@@ -895,7 +901,17 @@
       return Math.min(idx, sequence.stages.length - 1);
     }
     function done() {
-      return B.evaluateMovementSequenceStreaming(measures, sequence).pass && B.palmprintUsableOpenFrames(results).length >= 2;
+      // Finish only when the profile selector would bank at least 3
+      // codes (v27): usable frames within the selector's own band
+      // (maxOpen - 0.30). On the verified rig, enrolments that banked
+      // 2 codes verified at 0.310-0.353 against the same palm, while
+      // the 3-code enrolment verified at 0.513 - the extra enrolled
+      // code is real matching headroom, bought with extra bursts.
+      if (!B.evaluateMovementSequenceStreaming(measures, sequence).pass) return false;
+      var usable = B.palmprintUsableOpenFrames(results);
+      if (usable.length < 3) return false;
+      var maxOpen = Math.max.apply(null, usable.map(function (u) { return u.openness; }));
+      return usable.filter(function (u) { return u.openness >= maxOpen - 0.30; }).length >= 3;
     }
     function finish() {
       setRing($('palmRing'), 'off');
@@ -929,7 +945,7 @@
             setRing($('palmRing'), isLock ? 'locked' : 'on');
             if (isLock && !locked) { locked = true; Snd.tick(); }
             if (!isLock) locked = false;
-            if (statusEl) statusEl.textContent = 'Auto-capture — ' + (B.PALM_STAGE_PROMPTS[sequence.stages[stageIdxNow()]] || '') + ' Keep the whole hand inside the ring, about 30 cm away.';
+            if (statusEl) statusEl.textContent = 'Step ' + (stageIdxNow() + 1) + ' of ' + sequence.stages.length + ' — ' + (B.PALM_STAGE_PROMPTS[sequence.stages[stageIdxNow()]] || '') + ' Keep the whole hand inside the ring, about 30 cm away.';
           });
         });
       });
@@ -961,10 +977,18 @@
         } else if (analysed >= 24 && seenHand && stageIdxNow() === 0) {
           statusEl.textContent = 'Hand seen — now open it wide: fingers spread, palm flat, facing the camera.';
         } else {
-          statusEl.textContent = 'Auto-capture — ' + (B.PALM_STAGE_PROMPTS[sequence.stages[stageIdxNow()]] || '') + ' Keep the whole hand inside the ring, about 30 cm away.';
+          statusEl.textContent = 'Step ' + (stageIdxNow() + 1) + ' of ' + sequence.stages.length + ' — ' + (B.PALM_STAGE_PROMPTS[sequence.stages[stageIdxNow()]] || '') + ' Keep the whole hand inside the ring, about 30 cm away.';
         }
       }
-      return recordBurst(2400).then(analyseBurst).then(cycle);
+      // Persona-style pacing (v27, his order): short 1.5 s capture
+      // bursts analysed immediately, so the step prompt advances
+      // every couple of seconds and the flow finishes the moment the
+      // last step ticks - guided and automatic, no long dead waits.
+      // Capture and analysis stay separated in time on purpose: the
+      // v20.2 rig measurement showed concurrent inference starving
+      // the grab timer on slow processors and phase-locking the
+      // sampling to one point of the movement cycle.
+      return recordBurst(1500).then(analyseBurst).then(cycle);
     }
     setRing($('palmRing'), 'on');
     return cycle();

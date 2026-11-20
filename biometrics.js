@@ -810,7 +810,21 @@
   var PALMPRINT_KERNEL_SIZE = 5;    // EDCC gabor_kernel_size
   var PALMPRINT_CODE_LEN = PALMPRINT_SIZE * PALMPRINT_SIZE; // 4096 at size 64
   var PALMPRINT_ROI_SIZE = 128;     // canonical warped ROI side (px)
-  var PALMPRINT_THRESHOLD = 0.36;   // Calibrated 2026-11-20 TWICE. (1) Synthetic probes
+  var PALMPRINT_THRESHOLD = 0.32;   // RECALIBRATED 2026-11-20 (v27) for the STREAMING
+                                    // pipeline: on the verified rig (own server, served
+                                    // code checked), genuine scores for the same palm
+                                    // through the shipped streaming enrol/verify path
+                                    // measured {0.513, 0.406, 0.353, 0.353, 0.349, 0.344,
+                                    // 0.310} - the 0.36 line sat inside the genuine
+                                    // distribution and failed 5 of 7 genuine attempts,
+                                    // matching the user's phone experience. Streaming
+                                    // impostor on the same rig: 0.214-0.236; the static
+                                    // calibration impostor max below is 0.261, so 0.32
+                                    // keeps >= 0.059 clearance over every impostor ever
+                                    // measured on this engine while passing 6 of 7
+                                    // genuine rig runs. The 20-person field test
+                                    // (zero false accepts) remains the gate before sale.
+                                    // ORIGINAL calibration 2026-11-20 TWICE. (1) Synthetic probes
                                     // (tests/palmprint.test.js) through the product decision rule.
                                     // (2) REALISTIC-IMAGE calibration (tests/e2e, 5 photorealistic
                                     // palms, re-capture variants +-4px / +-8% brightness, product
