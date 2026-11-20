@@ -1,0 +1,15 @@
+{
+  "android": {
+    "allowMixedContent": false
+  },
+  "appId": "com.twosidegroup.biom",
+  "appName": "TSG BIOM",
+  "backgroundColor": "#f3f6f6",
+  "ios": {
+    "contentInset": "always"
+  },
+  "server": {
+    "androidScheme": "https"
+  },
+  "webDir": "www"
+}

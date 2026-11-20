@@ -1,0 +1,23 @@
+{
+  "dependencies": {
+    "@capacitor/core": "^6.1.2"
+  },
+  "description": "TSG BIOM - hardware-free palm biometrics (regBIOM + takeBIOM). One codebase: live web app plus Capacitor native shells for Android and iOS.",
+  "devDependencies": {
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/cli": "^6.1.2",
+    "@capacitor/ios": "^6.1.2"
+  },
+  "name": "tsg-biom-app",
+  "private": true,
+  "scripts": {
+    "cap:add-android": "npx cap add android",
+    "cap:add-ios": "npx cap add ios",
+    "cap:open-android": "npx cap open android",
+    "cap:open-ios": "npx cap open ios",
+    "cap:sync": "npm run stage && cap sync",
+    "stage": "node stage-www.js",
+    "cap:add:android": "npm run stage && cap add android"
+  },
+  "version": "1.0.0"
+}

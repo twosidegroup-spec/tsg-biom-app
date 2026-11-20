@@ -177,10 +177,11 @@
       <p class="camnote flashnote" data-flash-note="enrollPalm"></p>
       <div class="camwrap"><video id="palmVideo" autoplay playsinline muted></video>
         <div class="guide"><div class="hand"></div></div>
+        <div class="palmring" id="palmRing"></div>
         <div class="camstatus" id="palmStatus">Camera not started.</div></div>
       <div class="row" style="margin-top:12px">
         <div><button class="btn" id="palmStart">Start Camera</button></div>
-        <div><button class="btn primary" id="palmCapture" disabled>Record Palm Clip</button></div>
+        <div><button class="btn primary" id="palmCapture" disabled>Auto-Capture Palm</button></div>
         <div><button class="btn danger" id="palmSkip" type="button">Skip Palm</button></div>
       </div>
       <div id="palmMsg" style="margin-top:12px"></div>
@@ -259,6 +260,7 @@
       <p class="camnote flashnote" data-flash-note="terminal"></p>
       <div class="camwrap" style="margin-top:14px"><video id="termVideo" autoplay playsinline muted></video>
         <div class="guide"><div class="oval" id="termGuide"></div></div>
+        <div class="palmring" id="termRing"></div>
         <div class="camstatus" id="termStatus">Camera not started.</div></div>
       <div class="row" style="margin-top:12px">
         <div><button class="btn big" id="termStart">Start Camera</button></div>

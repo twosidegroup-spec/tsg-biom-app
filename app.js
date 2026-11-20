@@ -142,6 +142,26 @@
           throw e3;
         });
       }
+      // Capture tuning (v21): ask the track for continuous auto-focus
+      // and continuous auto-exposure, metered on the centre of the
+      // frame where the guide ring sits, so palm creases stay sharp
+      // instead of the lens hunting to the background. Every key is
+      // capability-gated: Android Chrome exposes focusMode on many
+      // devices, iOS Safari exposes almost none of this - unsupported
+      // keys are skipped silently and the stream runs as before.
+      function applyCaptureTuning(stream) {
+        try {
+          var track = stream && stream.getVideoTracks && stream.getVideoTracks()[0];
+          if (!track || !track.getCapabilities || !track.applyConstraints) return Promise.resolve();
+          var caps = track.getCapabilities() || {};
+          var adv = {};
+          if (caps.focusMode && caps.focusMode.indexOf('continuous') !== -1) adv.focusMode = 'continuous';
+          if (caps.exposureMode && caps.exposureMode.indexOf('continuous') !== -1) adv.exposureMode = 'continuous';
+          if (caps.pointsOfInterest) adv.pointsOfInterest = [{ x: 0.5, y: 0.5 }];
+          if (!Object.keys(adv).length) return Promise.resolve();
+          return track.applyConstraints({ advanced: [adv] }).catch(function () {});
+        } catch (e) { return Promise.resolve(); }
+      }
       var p = openCamera().then(function (stream) {
         if (token !== Cam._token) { // a newer start superseded this one
           stream.getTracks().forEach(function (t) { t.stop(); });
@@ -159,6 +179,8 @@
             return applyFlashForKey(viewKey).then(function () { return stream; });
           }
           return stream;
+        }).then(function () {
+          return applyCaptureTuning(stream).then(function () { return stream; });
         });
       });
       this._starting = p;
@@ -562,29 +584,6 @@
     } catch (e) { return { texture: null, sharpness: 0 }; }
   }
 
-  function recordPalmClip(video, statusEl, durationMs, sequence) {
-    var frames = [];
-    var t0 = Date.now();
-    var stages = (sequence && sequence.stages && sequence.stages.length) ? sequence.stages : ['open', 'close', 'open'];
-    return new Promise(function (resolve) {
-      var iv = setInterval(function () {
-        var el = Date.now() - t0;
-        var f = grabVideoFrame(video);
-        if (f) frames.push(f);
-        // Timed stage prompts: coach the ISSUED liveness sequence (v18:
-        // randomised per scan) in step with the recording — one stage
-        // per third of the clip, each shown while its stage is due.
-        if (statusEl) {
-          var frac = durationMs ? el / durationMs : 1;
-          var stageIdx = Math.min(stages.length - 1, Math.floor(frac * stages.length));
-          var stage = B.PALM_STAGE_PROMPTS[stages[stageIdx]] || stages[stageIdx];
-          statusEl.textContent = 'Recording palm clip... ' + Math.max(0, Math.ceil((durationMs - el) / 1000)) + 's - keep the whole hand inside the frame, about 30 cm away. ' + stage;
-        }
-        if (el >= durationMs) { clearInterval(iv); resolve(frames); }
-      }, 250);
-    });
-  }
-
   /* Palmprint ROI + EDCC codes from a recorded frame (v9): the landmarks
      locate the palm square, the warp cuts it out, the encoder reads the
      print itself. Returns { code, codeM } (codeM = the mirror twin's
@@ -625,128 +624,402 @@
       return chk;
     } catch (e) { return null; }
   }
-  function processPalmClip(frames, statusEl, sequence) {
-    var results = [];
-    var spoofChecks = [];
-    function analyseFrame(frame, idx) {
-      return PalmProc.landmarks(frame).then(function (lm) {
-        if (!lm) { results[idx] = { openness: null, descriptor: null, code: null, codeM: null, roi: null, sharpness: 0, texture: null, spread: null, tilt: null }; return; }
-        var openness = B.palmOpenness(lm);
-        var descriptor = B.palmDescriptorFromLandmarks(lm);
-        var meas = descriptor ? palmFrameMeasures(frame, frame.width, frame.height, lm) : { texture: null, sharpness: 0 };
-        var codes = (descriptor && typeof openness === 'number' && openness >= B.PALM_OPEN_MIN) ? palmCodesFromFrame(frame, lm) : null;
-        results[idx] = { openness: openness, descriptor: descriptor, code: codes ? codes.code : null, codeM: codes ? codes.codeM : null, roi: codes ? codes.roi : null, sharpness: meas.sharpness, texture: meas.texture, spread: B.palmSpread(lm), tilt: B.palmTilt(lm) };
+  /* ================= v20: instant speed + Show & Pay =================
+     Registration is a live auto-capture stream (no fixed clips): the
+     issued movement sequence is still required - it is the enrolment
+     liveness - but the app captures continuously and finishes the
+     moment the sequence completes with enough fully-open codes.
+     Checkout is Show & Pay: no movement sequence at all. The customer
+     holds an open palm like tapping a card; frames stream in rapid
+     bursts of three, the v19 screen-lattice coherence gate samples
+     them, passive liveness reads the natural micro-shift across the
+     burst poses, and matching runs per frame (in a Web Worker) with
+     an early exit the moment two consecutive frames match. */
+
+  function waitMs(ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); }
+
+  /* Instant audio (Web Audio, no files) + voice confirmation. Every
+     call is guarded: a device without audio simply stays silent. */
+  var Snd = {
+    ctx: null,
+    ac: function () {
+      try {
+        if (!this.ctx) { var AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null; this.ctx = new AC(); }
+        if (this.ctx.state === 'suspended') this.ctx.resume();
+        return this.ctx;
+      } catch (e) { return null; }
+    },
+    tone: function (freq, at, dur, type, vol) {
+      var ac = this.ac(); if (!ac) return;
+      try {
+        var o = ac.createOscillator(), g = ac.createGain();
+        o.type = type || 'sine'; o.frequency.value = freq;
+        g.gain.setValueAtTime(0.0001, at);
+        g.gain.exponentialRampToValueAtTime(vol || 0.15, at + 0.012);
+        g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+        o.connect(g); g.connect(ac.destination);
+        o.start(at); o.stop(at + dur + 0.03);
+      } catch (e) {}
+    },
+    chime: function () { var ac = this.ac(); if (!ac) return; var t = ac.currentTime; this.tone(987.77, t, 0.10, 'sine', 0.16); this.tone(1318.51, t + 0.085, 0.16, 'sine', 0.16); },
+    tick: function () { var ac = this.ac(); if (!ac) return; this.tone(1567.98, ac.currentTime, 0.035, 'sine', 0.07); },
+    buzz: function () {
+      var ac = this.ac();
+      if (ac) { var t = ac.currentTime; this.tone(164.81, t, 0.08, 'square', 0.08); this.tone(164.81, t + 0.13, 0.08, 'square', 0.08); }
+      try { if (navigator.vibrate) navigator.vibrate([50, 40, 50]); } catch (e) {}
+    },
+    speak: function (text) {
+      try {
+        if (!('speechSynthesis' in window)) return;
+        var u = new SpeechSynthesisUtterance(text);
+        u.rate = 1.05;
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(u);
+      } catch (e) {}
+    }
+  };
+
+  /* Palmprint matching in a Web Worker (source assembled from the
+     real biometrics functions, so the worker runs the shipping
+     comparer). Any worker failure or silence falls back to the main
+     thread - the verdict is identical either way. */
+  var Match = {
+    w: null, tried: false, seq: 0, pending: {},
+    init: function () {
+      if (this.tried) return;
+      this.tried = true;
+      try {
+        var url = URL.createObjectURL(new Blob([B.palmprintWorkerSource()], { type: 'text/javascript' }));
+        this.w = new Worker(url);
+        var self = this;
+        this.w.onmessage = function (e) {
+          var p = self.pending[e.data.id];
+          if (p) { delete self.pending[e.data.id]; p(e.data.result); }
+        };
+        this.w.onerror = function () { self.w = null; };
+      } catch (e) { this.w = null; }
+    },
+    verify: function (profile, liveCodes) {
+      this.init();
+      if (!this.w) return Promise.resolve(B.verifyPalmprintProfile(profile, liveCodes));
+      var self = this;
+      var id = ++this.seq;
+      return new Promise(function (resolve) {
+        var done = false;
+        var finishWith = function (r) {
+          if (done) return;
+          done = true;
+          resolve(r || B.verifyPalmprintProfile(profile, liveCodes));
+        };
+        var to = setTimeout(function () { delete self.pending[id]; finishWith(null); }, 5000);
+        self.pending[id] = function (r) { clearTimeout(to); finishWith(r); };
+        try { self.w.postMessage({ id: id, profile: profile, liveCodes: liveCodes }); }
+        catch (e) { clearTimeout(to); delete self.pending[id]; finishWith(null); }
       });
     }
-    var chain = Promise.resolve();
-    frames.forEach(function (frame, idx) {
-      chain = chain.then(function () {
-        if (statusEl) statusEl.textContent = 'Analysing palm clip... frame ' + (idx + 1) + ' of ' + frames.length + '.';
-        if (idx % 3 === 0) { var s = spoofSample(frame); if (s) spoofChecks.push(s); }
-        return analyseFrame(frame, idx);
-      });
+  };
+
+  function setRing(el, state) {
+    if (!el) return;
+    el.classList.toggle('on', state !== 'off');
+    el.classList.toggle('locked', state === 'locked');
+  }
+
+  /* One streamed frame, analysed: landmarks, openness, EDCC codes
+     (aligned + mirror), texture/sharpness, and the palm pose used by
+     passive liveness. Same frame-result shape the clip pipeline used. */
+  function analysePalmFrame(frame) {
+    return PalmProc.landmarks(frame).then(function (lm) {
+      if (!lm) return { openness: null, descriptor: null, code: null, codeM: null, roi: null, sharpness: 0, texture: null, spread: null, tilt: null, pose: null };
+      var openness = B.palmOpenness(lm);
+      var descriptor = B.palmDescriptorFromLandmarks(lm);
+      var meas = descriptor ? palmFrameMeasures(frame, frame.width, frame.height, lm) : { texture: null, sharpness: 0 };
+      // EDCC codes are gated on landmarks + openness + the ROI/code
+      // sanity checks inside palmCodesFromFrame — NOT on the legacy
+      // geometry descriptor. That descriptor's strict reach bands
+      // reject most genuinely open palms on real camera landmarks
+      // (measured in E2E, 2026-11-20: 24/24 frames had landmarks but
+      // only 4/24 passed the descriptor gate), which starved both
+      // enrolment and verification of codes. The descriptor is still
+      // computed for legacy geometry profiles only.
+      var codes = (typeof openness === 'number' && openness >= B.PALM_OPEN_MIN) ? palmCodesFromFrame(frame, lm) : null;
+      return { openness: openness, descriptor: descriptor, code: codes ? codes.code : null, codeM: codes ? codes.codeM : null, roi: codes ? codes.roi : null, sharpness: meas.sharpness, texture: meas.texture, spread: B.palmSpread(lm), tilt: B.palmTilt(lm), pose: B.palmFramePose(lm) };
     });
-    return chain.then(function () {
-      // Rescue pass (v17): frames where the detector found no hand get
-      // one more attempt at a lower detection confidence before they
-      // are given up - on real phones the first pass misses frames that
-      // a slightly easier threshold catches, and every missed frame is
-      // a frame the movement check and the matcher never see.
-      var missed = [];
-      var detected = 0;
-      results.forEach(function (r, i) { if (r && r.descriptor) detected++; else if (r) missed.push(i); });
-      // v19 trim: the rescue pass costs a second full analysis per
-      // missed frame on a slow phone (the long "second look" tail).
-      // With 10+ detected frames the sequence, codes and match already
-      // have plenty - only rescue when the hand was genuinely scarce.
-      if (!missed.length || detected >= 10 || !PalmProc.hands) return null;
-      PalmProc.hands.setOptions({ minDetectionConfidence: 0.3 });
-      var rescue = Promise.resolve();
-      missed.forEach(function (idx) {
-        rescue = rescue.then(function () {
-          if (statusEl) statusEl.textContent = 'Analysing palm clip... second look at frame ' + (idx + 1) + '.';
-          return analyseFrame(frames[idx], idx);
+  }
+
+  /* Spoof sampling shared by both v20 streams: the scan is a screen
+     replay when at least half the sampled frames (and at least two)
+     carry screen traces - the v18/v19 aggregation rule, unchanged. */
+  function makeSpoofTracker() {
+    var checks = [];
+    return {
+      add: function (frame) { var s = spoofSample(frame); if (s) checks.push(s); },
+      state: function () {
+        var flagged = checks.filter(function (c) { return c.spoof; });
+        var meanB = checks.length ? checks.reduce(function (s, c) { return s + c.meanBrightness; }, 0) / checks.length : null;
+        return {
+          spoof: checks.length > 0 && flagged.length >= Math.max(2, Math.ceil(checks.length / 2)),
+          score: checks.reduce(function (m, c) { return Math.max(m, c.score); }, 0),
+          reasons: flagged.reduce(function (acc, c) { return acc.concat(c.reasons); }, []),
+          framesChecked: checks.length, framesFlagged: flagged.length,
+          lightTag: meanB === null ? null : meanB > 150 ? 'bright' : meanB >= 80 ? 'indoor' : 'dim'
+        };
+      }
+    };
+  }
+
+  /* Instant auto-capture registration (v20): streams frames from the
+     live camera; the issued randomised sequence remains the enrolment
+     liveness gate, judged on the streamed measures with the same
+     index-based window as the clip pipeline. Finishes the moment the
+     sequence passes with at least two usable fully-open codes banked.
+     Returns the same shape capturePalmResults returned. */
+  function streamEnrolPalm(video, statusEl, sequence, swapCamera) {
+    var t0 = Date.now();
+    var results = [];
+    var measures = [];
+    var tracker = makeSpoofTracker();
+    var analysed = 0, swapped = false, locked = false;
+    var deadline = t0 + 180000;
+    // Burst-chain capture (v20.2): each burst RECORDS ~3 s of frames at
+    // 250 ms with no inference running (grabs stay phase-true), then
+    // analyses them in order while the next burst records. Separating
+    // capture from analysis in time is not optional on slow processors:
+    // concurrent inference starves the grab timer and phase-locks the
+    // sampling to one point of the movement cycle (measured on the test
+    // rig: 44 grabs in 100 s, openness frozen at ~1.88, the fist phase
+    // never sampled). The user simply keeps following the prompts; the
+    // chain finishes the moment the accumulated measures complete the
+    // sequence with two usable open-palm codes banked.
+    function recordBurst(ms) {
+      var frames = [];
+      return new Promise(function (resolve) {
+        var iv = setInterval(function () {
+          var f = grabVideoFrame(video);
+          if (f) frames.push(f);
+        }, 250);
+        setTimeout(function () { clearInterval(iv); resolve(frames); }, ms);
+      });
+    }
+    function stageIdxNow() {
+      var idx = 0;
+      for (var i = 0; i < measures.length && idx < sequence.stages.length; i++) if (B.palmStageMet(sequence.stages[idx], measures[i])) idx++;
+      return Math.min(idx, sequence.stages.length - 1);
+    }
+    function done() {
+      return B.evaluateMovementSequence(measures, sequence, 250).pass && B.palmprintUsableOpenFrames(results).length >= 2;
+    }
+    function finish() {
+      setRing($('palmRing'), 'off');
+      var sp = tracker.state();
+      return {
+        results: results,
+        movement: B.evaluateMovementSequence(measures, sequence, 250),
+        spoof: sp,
+        lightTag: sp.lightTag,
+        elapsedMs: Date.now() - t0
+      };
+    }
+    function analyseBurst(frames) {
+      var chain = Promise.resolve();
+      frames.forEach(function (frame) {
+        chain = chain.then(function () {
+          if (tracker.state().spoof || done()) return;
+          if (analysed % 3 === 0) tracker.add(frame);
+          return analysePalmFrame(frame).then(function (r) {
+            analysed++;
+            results.push(r);
+            // Movement measures come from EVERY frame with landmarks:
+            // the descriptor gate only accepts open-hand geometry, so
+            // gating measures on it silently drops the fist frames the
+            // close stage exists to see (found in E2E, 2026-11-20: the
+            // open stage registered, close never could). The sequence
+            // evaluator is the liveness judge, not the descriptor gate.
+            if (typeof r.openness === 'number') measures.push({ openness: r.openness, spread: r.spread, tilt: r.tilt });
+            var isLock = !!(r.code && B.palmprintCodeSane(r.code));
+            setRing($('palmRing'), isLock ? 'locked' : 'on');
+            if (isLock && !locked) { locked = true; Snd.tick(); }
+            if (!isLock) locked = false;
+            if (statusEl) statusEl.textContent = 'Auto-capture — ' + (B.PALM_STAGE_PROMPTS[sequence.stages[stageIdxNow()]] || '') + ' Keep the whole hand inside the ring, about 30 cm away.';
+          });
         });
       });
-      return rescue.then(function () {
-        PalmProc.hands.setOptions({ minDetectionConfidence: 0.5 });
-      }, function () {
-        PalmProc.hands.setOptions({ minDetectionConfidence: 0.5 });
-      });
-    }).then(function () {
-      var series = [];
-      var measures = [];
-      results.forEach(function (r) { if (typeof r.openness === 'number' && isFinite(r.openness)) { series.push(r.openness); measures.push({ openness: r.openness, spread: r.spread, tilt: r.tilt }); } });
-      var usable = B.palmUsableOpenFrames(results);
-      var bestTexture = null, bestSharp = -1;
-      usable.forEach(function (u) { if (u.texture && u.sharpness > bestSharp) { bestSharp = u.sharpness; bestTexture = u.texture; } });
-      // Movement: from v18 the issued randomised sequence is the gate
-      // (order + 3.5s window); without a sequence the legacy cycle rule
-      // applies. Spoof: aggregate the sampled frame checks - the scan
-      // is a screen replay when at least half the sampled frames (and
-      // at least two) carry screen traces.
-      var movement = sequence ? B.evaluateMovementSequence(measures, sequence, 250) : B.evaluatePalmMovement(series);
-      var spoofFrames = spoofChecks.filter(function (c) { return c.spoof; });
-      var spoof = {
-        spoof: spoofChecks.length > 0 && spoofFrames.length >= Math.max(2, Math.ceil(spoofChecks.length / 2)),
-        score: spoofChecks.reduce(function (m, c) { return Math.max(m, c.score); }, 0),
-        reasons: spoofFrames.reduce(function (acc, c) { return acc.concat(c.reasons); }, []),
-        framesChecked: spoofChecks.length, framesFlagged: spoofFrames.length
-      };
-      var meanB = spoofChecks.length ? spoofChecks.reduce(function (s, c) { return s + c.meanBrightness; }, 0) / spoofChecks.length : null;
-      var lightTag = meanB === null ? null : meanB > 150 ? 'bright' : meanB >= 80 ? 'indoor' : 'dim';
-      return { results: results, movement: movement, bestTexture: bestTexture, usableCount: usable.length, spoof: spoof, lightTag: lightTag };
-    });
-  }
-  var palmScanBusy = false;
-
-  /* Record + analyse palm clips with the v16 toughness fixes:
-     enrolment always takes TWO clips (a wider enrolled pose set lifts
-     genuine match scores, and enrolment is a one-time step); the
-     terminal takes a second clip automatically when the first one's
-     movement check failed or it produced no usable open-palm frames,
-     so a slow or imperfect first attempt is not a dead end. Movement
-     passes when either clip completes the open - close - open cycle. */
-  function capturePalmResults(video, statusEl, twoClips, swapCamera, sequence) {
-    function oneClip() {
-      return recordPalmClip(video, statusEl, 4500, sequence).then(function (frames) {
-        return processPalmClip(frames, statusEl, sequence);
-      });
+      return chain;
     }
-    function merge(r1, r2) {
-      return {
-        results: r1.results.concat(r2.results),
-        movement: r1.movement.pass ? r1.movement : r2.movement,
-        bestTexture: r1.bestTexture || r2.bestTexture,
-        usableCount: r1.usableCount + r2.usableCount,
-        spoof: (r2.spoof && r2.spoof.spoof) ? r2.spoof : r1.spoof,
-        lightTag: r2.lightTag || r1.lightTag
-      };
-    }
-    function secondClip(r1, note) {
-      if (statusEl) statusEl.textContent = note;
-      return new Promise(function (resolve) { setTimeout(resolve, 1200); }).then(oneClip).then(function (r2) { return merge(r1, r2); });
-    }
-    return oneClip().then(function (r1) {
-      // Spoof verdicts are FINAL (v18): a flagged screen replay is
-      // never retried, re-recorded or camera-swapped - it is rejected
-      // and logged by the caller.
-      if (r1.spoof && r1.spoof.spoof) return r1;
-      // Zero-hand rescue (v17): if NO frame in the clip produced a hand
-      // at all, the likeliest cause is the camera itself - a lens the
-      // detector cannot work with, a black feed, a covered lens. When
-      // the caller provides a camera swap, switch to the other camera
-      // and record once more before reporting failure.
-      var anyHand = r1.results.some(function (r) { return !!r.descriptor; });
-      if (!anyHand && swapCamera) {
+    function cycle() {
+      if (tracker.state().spoof || done()) return finish();
+      if (Date.now() > deadline) return finish();
+      if (!swapped && swapCamera && analysed >= 12 && results.every(function (x) { return typeof x.openness !== 'number'; })) {
+        swapped = true;
         if (statusEl) statusEl.textContent = 'No hand was seen by this camera - switching to the other camera and trying once more.';
-        return swapCamera().then(function () { return secondClip(r1, 'Other camera on - same movement again: follow the prompts on screen.'); });
+        return swapCamera().then(function () { return cycle(); }, function () { return cycle(); });
       }
-      var needSecond = twoClips || !r1.movement.pass || !r1.usableCount;
-      if (!needSecond) return r1;
-      return secondClip(r1, twoClips ? 'Clip 1 done - once more, same movement: follow the prompts.' : 'One more try - follow the prompts shown on screen, promptly and in order.');
-    });
+      if (statusEl) statusEl.textContent = 'Auto-capture — ' + (B.PALM_STAGE_PROMPTS[sequence.stages[stageIdxNow()]] || '') + ' Keep the whole hand inside the ring, about 30 cm away.';
+      return recordBurst(3000).then(analyseBurst).then(cycle);
+    }
+    setRing($('palmRing'), 'on');
+    return cycle();
   }
+
+  /* Show & Pay checkout (v20): no movement sequence. Rapid bursts of
+     three frames; per-frame matching in the worker with the two-frame
+     early exit; passive liveness on the burst poses; the coherence
+     spoof gate sampled per burst. Fail-closed throughout. */
+  function streamVerifyPalm(video, statusEl, person, people, swapCamera, fieldRec) {
+    var t0 = Date.now();
+    var isV3 = B.palmprintProfileSane(person.palmProfile);
+    var tracker = makeSpoofTracker();
+    var frames = [];
+    var poses = [];
+    var matchState = { streak: 0, best: null };
+    var win = null;
+    var bursts = 0, analysed = 0, swapped = false, locked = false;
+    var MAXF = 24, deadline = t0 + 90000;
+
+    function finish(out) { setRing($('termRing'), 'off'); return out; }
+    function impostorMaxFor(codes) {
+      var chain = Promise.resolve(null);
+      (people || []).forEach(function (p) {
+        if (p.id === person.id || !B.palmprintProfileSane(p.palmProfile)) return;
+        chain = chain.then(function (cur) {
+          return Match.verify(p.palmProfile, codes).then(function (ro) {
+            var s = ro && typeof ro.similarity === 'number' ? ro.similarity : null;
+            return s !== null && (cur === null || s > cur) ? s : cur;
+          });
+        });
+      });
+      return chain;
+    }
+    function spoofOut(sp) {
+      logVerification(person, 'palm', 'Spoof score ' + sp.score.toFixed(2) + ' - ' + sp.reasons.join('; '), 'Spoof / Screen Replay Detected');
+      fieldRec(null, null, 'fail', 'rejected', sp.lightTag);
+      Snd.buzz();
+      return finish({ fail: 'Spoof / Screen Replay Detected — the scan showed a screen or a recording, not a live hand (' + sp.reasons.join('; ') + '). Nothing was verified. Present the real hand, live in front of the camera.' });
+    }
+    function livenessFailOut(lv) {
+      fieldRec(null, null, 'fail', 'rejected', tracker.state().lightTag);
+      Snd.buzz();
+      return finish({ fail: lv.verdict === 'static'
+        ? 'Liveness check failed: the palm did not move naturally at all — a still photo or a frozen image cannot be used. Nothing was verified. Present the real hand, held live in front of the camera.'
+        : 'Liveness check failed: the view changed too abruptly for one held hand. Nothing was verified. Hold one open palm steady, inside the ring.' });
+    }
+    function verifiedOut() {
+      return impostorMaxFor(win.codes).then(function (impMax) {
+        fieldRec(win.res.similarity, impMax, 'pass', 'verified', tracker.state().lightTag);
+        var measured = 'Palmprint similarity ' + win.res.similarity.toFixed(3) + ' (threshold ' + win.res.threshold + ', best of ' + person.palmProfile.codes.length + ' enrolled print codes x ' + win.codes.length + ' live codes), passive liveness passed (natural micro-shift across rapid frames), Show & Pay streaming scan with two-frame early exit';
+        return finish({ r: win.res, measured: measured, latencyMs: Date.now() - t0 });
+      });
+    }
+    function finalOut() {
+      var sp = tracker.state();
+      if (sp.spoof) return spoofOut(sp);
+      var lv = B.passiveLivenessCheck(poses);
+      if (!isV3) {
+        var livePalm = B.selectPalmDescriptor(frames);
+        if (!livePalm) { fieldRec(null, null, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag); return finish({ fail: 'No usable open palm found in the scan. Nothing was verified. Hold one open palm still, fingers spread, inside the ring in good light, and run the scan again.' }); }
+        var bestTexture = null, bestSharp = -1;
+        B.palmUsableOpenFrames(frames).forEach(function (u) { if (u.texture && u.sharpness > bestSharp) { bestSharp = u.sharpness; bestTexture = u.texture; } });
+        var rp = B.verifyPalmProfile(person.palmProfile || person.palmDescriptor, { geometry: livePalm, texture: bestTexture });
+        fieldRec(null, null, lv.pass ? 'pass' : 'fail', rp.verified ? 'verified' : 'rejected', sp.lightTag);
+        var measuredL = 'Geometry distance ' + (rp.distance === null ? 'n/a' : rp.distance.toFixed(3)) + ' (threshold ' + rp.threshold + ')' +
+          (rp.textureSimilarity !== null && rp.textureSimilarity !== undefined ? ', palm texture similarity ' + rp.textureSimilarity.toFixed(3) + ' (realness floor ' + rp.textureThreshold + ')' : ', no texture gate (legacy enrollment)') +
+          ', passive liveness ' + lv.verdict + ', Show & Pay streaming scan';
+        return finish({ r: rp, measured: measuredL, latencyMs: Date.now() - t0 });
+      }
+      var liveCodes = B.selectPalmprintLiveCodes(frames);
+      if (!liveCodes) { fieldRec(null, null, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag); return finish({ fail: 'No usable open palm with readable print detail found in the scan. Nothing was verified. Hold one open palm still, fingers spread, inside the ring in good light, and run the scan again.' }); }
+      return Match.verify(person.palmProfile, liveCodes).then(function (res) {
+        return impostorMaxFor(liveCodes).then(function (impMax) {
+          var out = res;
+          if (res && res.verified) {
+            // Threshold reached on the collected set without two
+            // CONSECUTIVE matching frames: Show & Pay does not upgrade
+            // a single-frame match into a payment. Denial, reason stated.
+            out = { ok: true, verified: false, similarity: res.similarity, threshold: res.threshold, reason: 'Matched on a single frame only - Show & Pay requires two consecutive matching frames. Hold the palm steady a moment longer and scan again.' };
+          }
+          fieldRec(res ? res.similarity : null, impMax, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag);
+          var measured = 'Palmprint similarity ' + (res && typeof res.similarity === 'number' ? res.similarity.toFixed(3) : 'n/a') + ' (threshold ' + B.PALMPRINT_THRESHOLD + ', best of ' + person.palmProfile.codes.length + ' enrolled print codes x ' + liveCodes.length + ' live codes), passive liveness ' + lv.verdict + ', Show & Pay streaming scan';
+          return finish({ r: out, measured: measured, latencyMs: Date.now() - t0 });
+        });
+      });
+    }
+    function burst() {
+      bursts++;
+      var snaps = [];
+      function grab(i) {
+        var f = grabVideoFrame(video);
+        if (f) snaps.push(f);
+        if (i < 2) return waitMs(130).then(function () { return grab(i + 1); });
+        return Promise.resolve();
+      }
+      return grab(0).then(function () {
+        // Every snap feeds the spoof tracker (was: only the middle
+        // snap). The two-frame match win can complete inside a single
+        // burst, so the gate needs its evidence at burst speed.
+        snaps.forEach(function (f) { tracker.add(f); });
+        var chain = Promise.resolve();
+        snaps.forEach(function (frame) {
+          chain = chain.then(function () {
+            return analysePalmFrame(frame).then(function (r) {
+              analysed++;
+              frames.push(r);
+              if (r.pose) { poses.push(r.pose); if (poses.length > 6) poses.shift(); }
+              var sane = !!(r.code && B.palmprintCodeSane(r.code));
+              if (sane && !locked) { locked = true; Snd.tick(); setRing($('termRing'), 'locked'); }
+              if (!isV3 || win) return;
+              if (sane) {
+                var codes = r.codeM ? [r.code, r.codeM] : [r.code];
+                return Match.verify(person.palmProfile, codes).then(function (res) {
+                  var score = res && typeof res.similarity === 'number' ? res.similarity : null;
+                  matchState = B.streamMatchUpdate(matchState, score);
+                  if (matchState.done) win = { res: res, codes: codes };
+                });
+              }
+              matchState = B.streamMatchUpdate(matchState, null);
+            });
+          });
+        });
+        return chain;
+      });
+    }
+    function loop() {
+      var sp = tracker.state();
+      if (sp.spoof) return spoofOut(sp);
+      var lv = B.passiveLivenessCheck(poses);
+      // A match may not be honoured until the spoof gate has examined
+      // at least three frames. The two-frame win can complete inside
+      // the first burst, before the tracker's aggregation rule (at
+      // least two flagged frames) can ever fire - found by the E2E
+      // replay leg, 2026-11-20: a screen replay of the enrolled palm
+      // was VERIFIED at 0.445 while every replay frame, checked
+      // directly against the detector, trips it. The detector was
+      // right; the win simply outran the gate.
+      if (win && lv.pass && sp.framesChecked >= 3) return verifiedOut();
+      if (win && lv.pass && statusEl) statusEl.textContent = 'Palm matched — confirming this is a live hand, not a screen…';
+      if (lv.verdict === 'static' && bursts >= 2) return livenessFailOut(lv);
+      if (lv.verdict === 'erratic') return livenessFailOut(lv);
+      if (!isV3 && lv.pass && B.palmprintUsableOpenFrames(frames).length >= 3) return finalOut();
+      if (analysed >= MAXF || Date.now() > deadline) {
+        if (win) {
+          fieldRec(win.res.similarity, null, 'fail', 'rejected', sp.lightTag);
+          Snd.buzz();
+          return finish({ fail: 'Liveness could not be confirmed: the palm matched, but no natural micro-movement was observed. Nothing was verified. Present the real hand, held live — do not use a photo or a recording.' });
+        }
+        return finalOut();
+      }
+      if (!swapped && swapCamera && bursts >= 6 && frames.every(function (x) { return typeof x.openness !== 'number'; })) {
+        swapped = true;
+        if (statusEl) statusEl.textContent = 'No hand was seen by this camera - switching to the other camera and trying once more.';
+        return swapCamera().then(function () { return loop(); }, function () { return loop(); });
+      }
+      if (statusEl) statusEl.textContent = 'Show & Pay scanning — hold the open palm inside the ring, like tapping a card.';
+      return burst().then(function () { return waitMs(700); }).then(loop);
+    }
+    setRing($('termRing'), 'on');
+    return loop();
+  }
+
+  var palmScanBusy = false;
 
   /* ---------------- Fingerprint through camera --------------------------- */
   function captureFinger(video, origCanvas, ridgeCanvas) {
@@ -974,7 +1247,7 @@
   function resetPalmEnroll() { /* clip enrolment keeps no partial state */ }
   function startPalmCamera() {
     Cam.start($('palmVideo'), camFacing.enrollPalm, 'enrollPalm').then(function () {
-      $('palmStatus').textContent = 'Camera on - tap Record Palm Clip, hold the phone about 30 cm away so your whole hand fits inside the frame. The app records two short clips and shows a movement sequence on screen - it is picked at random each time; just follow each prompt as it appears.';
+      $('palmStatus').textContent = 'Camera on - tap Auto-Capture Palm, hold the phone about 30 cm away so your whole hand fits inside the ring. The app watches live and captures by itself: follow the movement prompts as they appear (the sequence is picked at random each time), and it finishes the moment the movement is complete.';
       $('palmCapture').disabled = false;
     }).catch(function (e) { $('palmMsg').innerHTML = cameraErrorHTML(e); $('palmStatus').textContent = 'Camera blocked.'; });
   }
@@ -986,38 +1259,42 @@
     $('palmCapture').disabled = true;
     $('palmMsg').innerHTML = '';
     var sequence = B.PALM_SEQUENCES[Math.floor(Math.random() * B.PALM_SEQUENCES.length)];
-    capturePalmResults($('palmVideo'), $('palmStatus'), true, function () {
+    streamEnrolPalm($('palmVideo'), $('palmStatus'), sequence, function () {
       camFacing.enrollPalm = camFacing.enrollPalm === 'user' ? 'environment' : 'user';
       syncCamToggle('enrollPalm');
       return Cam.start($('palmVideo'), camFacing.enrollPalm, 'enrollPalm');
-    }, sequence).then(function (res) {
+    }).then(function (res) {
       palmScanBusy = false;
       if (res.spoof && res.spoof.spoof) {
         DB.put('logs', { ts: Date.now(), personId: '', personName: '(enrolment attempt)', store: '', method: 'palm', measured: 'Spoof score ' + res.spoof.score.toFixed(2) + ' - ' + res.spoof.reasons.join('; '), result: 'Spoof / Screen Replay Detected' });
         $('palmMsg').innerHTML = '<div class="error">Spoof / Screen Replay Detected — the scan showed a screen or a recording, not a live hand (' + esc(res.spoof.reasons.join('; ')) + '). Nothing was stored. Enrolment requires the real hand, live in front of the camera.</div>';
         $('palmCapture').disabled = false;
+        Snd.buzz();
         return;
       }
       if (!res.movement.pass) {
-        $('palmMsg').innerHTML = '<div class="error">Movement check failed in both clips: ' + esc(res.movement.reason) + ' Nothing was stored. Record again and complete the movement sequence shown in the prompts, in order, inside each recording.</div>';
+        $('palmMsg').innerHTML = '<div class="error">Movement check failed: ' + esc(res.movement.reason) + ' Nothing was stored. Try again and complete the movement sequence shown in the prompts, in order, while the app watches.</div>';
         $('palmCapture').disabled = false;
+        Snd.buzz();
         return;
       }
       var codes = B.selectPalmprintProfileCodes(res.results);
       if (!codes) {
-        $('palmMsg').innerHTML = '<div class="error">No usable open palm with readable print detail found in the clip. Nothing was stored. Hold one open palm still, fingers spread, filling the guide in good light, and record again.</div>';
+        $('palmMsg').innerHTML = '<div class="error">No usable open palm with readable print detail was captured. Nothing was stored. Hold one open palm still, fingers spread, inside the ring in good light, and try again.</div>';
         $('palmCapture').disabled = false;
         return;
       }
       enroll.palm = { v: 3, codes: codes };
       Cam.stop();
-      $('palmStatus').textContent = 'Palm clip analysed.';
-      $('palmMsg').innerHTML = '<div class="success">Palm enrolled from live recorded clips: movement check passed, and ' + codes.length + ' palmprint codes (EDCC competitive code — the palm\'s own print pattern) were read from the two clips\' best fully-open frames.</div>';
+      $('palmStatus').textContent = 'Palm captured.';
+      $('palmMsg').innerHTML = '<div class="success">Palm enrolled by instant auto-capture in ' + (res.elapsedMs / 1000).toFixed(1) + ' s: movement check passed, and ' + codes.length + ' palmprint codes (EDCC competitive code — the palm\'s own print pattern) were read from the best fully-open frames.</div>';
+      Snd.chime();
+      Snd.speak('Palm registered');
       advanceFrom('palm');
     }).catch(function (e) {
       palmScanBusy = false;
       $('palmCapture').disabled = false;
-      $('palmMsg').innerHTML = '<div class="error">Palm clip failed: ' + esc(e && e.message ? e.message : e) + ' Nothing was stored.</div>';
+      $('palmMsg').innerHTML = '<div class="error">Palm capture failed: ' + esc(e && e.message ? e.message : e) + ' Nothing was stored.</div>';
     });
   });
   $('palmSkip').addEventListener('click', function () {
@@ -1146,7 +1423,7 @@
       Cam.start($('termVideo'), camFacing[termFacingKey(method)], termFacingKey(method)).then(function () {
         status.textContent = method === 'finger' ? 'Camera on - fingertip 5-8 cm away, filling the guide.' : 'Camera on - position for the scan, then Run Scan.';
         $('termScan').disabled = false;
-        if (method === 'palm') status.textContent = 'Camera on - tap SCAN, keep the whole hand inside the frame about 30 cm away, and follow the movement prompts shown during the recording - the sequence is picked at random for each scan and must be completed promptly, in order.';
+        if (method === 'palm') status.textContent = 'Camera on - tap SCAN and the customer holds an open palm toward the camera, inside the ring, about 30 cm away - like tapping a card. No movement routine at checkout: Show & Pay reads the palm as it streams.';
       }).catch(function (e) { $('termResult').innerHTML = cameraErrorHTML(e); status.textContent = 'Camera blocked.'; });
     });
   }
@@ -1210,58 +1487,28 @@
         if (palmScanBusy) return null;
         palmScanBusy = true;
         $('termScan').disabled = true;
-        var sequence = B.PALM_SEQUENCES[Math.floor(Math.random() * B.PALM_SEQUENCES.length)];
-        $('termResult').innerHTML = '<div class="notice">Recording palm clip — this scan has issued a random live sequence (' + esc(sequence.label) + '). Follow the prompts on the camera view, in order and promptly...</div>';
-        attempt = capturePalmResults($('termVideo'), $('termStatus'), false, function () {
+        $('termResult').innerHTML = '<div class="notice">Show &amp; Pay — the customer simply holds an open palm toward the camera, like tapping a card. Scanning...</div>';
+        var fieldRec = function (genuineScore, impostorMax, liveness, result, lightTag) {
+          if (!fieldModeOn()) return;
+          writeFieldRecord({
+            ts: Date.now(), biomId: person.id, camera: currentCameraTag(termFacingKey('palm')),
+            lighting: lightTag || '', genuineScore: genuineScore, impostorMax: impostorMax,
+            liveness: liveness, spoofTag: $('fieldAttemptTag').value, result: result
+          });
+        };
+        attempt = streamVerifyPalm($('termVideo'), $('termStatus'), person, people, function () {
           var k = termFacingKey($('termMethod').value);
           camFacing[k] = camFacing[k] === 'user' ? 'environment' : 'user';
           syncCamToggle('terminal');
           return Cam.start($('termVideo'), camFacing[k], 'terminal');
-        }, sequence).then(function (res) {
+        }, fieldRec).then(function (out) {
           palmScanBusy = false;
           $('termScan').disabled = false;
-          var fieldRec = function (genuineScore, impostorMax, liveness, result) {
-            if (!fieldModeOn()) return;
-            writeFieldRecord({
-              ts: Date.now(), biomId: person.id, camera: currentCameraTag(termFacingKey('palm')),
-              lighting: res.lightTag || '', genuineScore: genuineScore, impostorMax: impostorMax,
-              liveness: liveness, spoofTag: $('fieldAttemptTag').value, result: result
-            });
-          };
-          if (res.spoof && res.spoof.spoof) {
-            var spoofMeasured = 'Spoof score ' + res.spoof.score.toFixed(2) + ' - ' + res.spoof.reasons.join('; ');
-            logVerification(person, 'palm', spoofMeasured, 'Spoof / Screen Replay Detected');
-            fieldRec(null, null, 'fail', 'rejected');
-            return { fail: 'Spoof / Screen Replay Detected — the scan showed a screen or a recording, not a live hand (' + res.spoof.reasons.join('; ') + '). Nothing was verified. Present the real hand, live in front of the camera.' };
-          }
-          if (!res.movement.pass) { fieldRec(null, null, 'fail', 'rejected'); return { fail: 'Movement check not completed in either recording attempt - nothing was verified. During the recording the customer must follow the issued sequence (' + sequence.label + ') as prompted, in order and inside the time window. A still photo or a pre-recorded video cannot pass. (' + res.movement.reason + ')' }; }
-          if (B.palmprintProfileSane(person.palmProfile)) {
-            var liveCodes = B.selectPalmprintLiveCodes(res.results);
-            if (!liveCodes) { fieldRec(null, null, 'pass', 'rejected'); return { fail: 'No usable open palm with readable print detail found in the recorded clip. Nothing was verified. Hold one open palm still, fingers spread, filling the guide in good light, and run the scan again.' }; }
-            var rp3 = B.verifyPalmprintProfile(person.palmProfile, liveCodes);
-            var impostorMax = null;
-            people.forEach(function (p) {
-              if (p.id === person.id || !B.palmprintProfileSane(p.palmProfile)) return;
-              var ro = B.verifyPalmprintProfile(p.palmProfile, liveCodes);
-              if (ro && typeof ro.similarity === 'number' && (impostorMax === null || ro.similarity > impostorMax)) impostorMax = ro.similarity;
-            });
-            fieldRec(rp3.similarity, impostorMax, 'pass', rp3.verified ? 'verified' : 'rejected');
-            var measured3 = 'Palmprint similarity ' + (rp3.similarity === null ? 'n/a' : rp3.similarity.toFixed(3)) + ' (threshold ' + rp3.threshold + ', best of ' + person.palmProfile.codes.length + ' enrolled print codes x ' + liveCodes.length + ' live codes), live movement sequence ' + sequence.id + ' passed in recorded clip';
-            return { r: rp3, measured: measured3 };
-          }
-          var livePalm = B.selectPalmDescriptor(res.results);
-          if (!livePalm) { fieldRec(null, null, 'pass', 'rejected'); return { fail: 'No usable open palm found in the recorded clip. Nothing was verified. Hold one open palm still, fingers spread, filling the guide, and run the scan again.' }; }
-          var storedPalm = person.palmProfile || person.palmDescriptor;
-          var rp = B.verifyPalmProfile(storedPalm, { geometry: livePalm, texture: res.bestTexture });
-          fieldRec(null, null, 'pass', rp.verified ? 'verified' : 'rejected');
-          var palmMeasured = 'Geometry distance ' + (rp.distance === null ? 'n/a' : rp.distance.toFixed(3)) + ' (threshold ' + rp.threshold + ', best of ' + (person.palmProfile ? person.palmProfile.geometry.length : 1) + ' enrolled captures)' +
-            (rp.textureSimilarity !== null && rp.textureSimilarity !== undefined ? ', palm texture similarity ' + rp.textureSimilarity.toFixed(3) + ' (realness floor ' + rp.textureThreshold + ')' : ', no texture gate (legacy enrollment)') +
-            ', live movement sequence ' + sequence.id + ' passed in recorded clip';
-          return { r: rp, measured: palmMeasured };
+          return out;
         }).catch(function (e) {
           palmScanBusy = false;
           $('termScan').disabled = false;
-          return { fail: 'Palm clip failed: ' + (e && e.message ? e.message : e) + ' Nothing was verified.' };
+          return { fail: 'Palm scan failed: ' + (e && e.message ? e.message : e) + ' Nothing was verified.' };
         });
       } else {
         var cap;
@@ -1277,17 +1524,24 @@
 
       return Promise.resolve(attempt).then(function (out) {
         if (!out) return;
-        if (out.fail) { $('termResult').innerHTML = '<div class="error">' + esc(out.fail) + '</div>'; return; }
+        if (out.fail) { if (method === 'palm') Snd.buzz(); $('termResult').innerHTML = '<div class="error">' + esc(out.fail) + '</div>'; return; }
         var r = out.r;
         var verified = r.ok === true && r.verified === true; // fail closed: only an explicit pass verifies
         return logVerification(person, method, out.measured, verified ? 'Verified' : 'Denied').then(function () {
           var html;
+          // v20 latency line: the exact end-to-end scan time, shown on
+          // the confirmation card (palm streaming scans carry it).
+          var latencyLine = (typeof out.latencyMs === 'number')
+            ? '<div class="who">' + (verified ? 'Verified' : 'Scanned') + ' in ' + out.latencyMs.toLocaleString() + ' ms' + (r && typeof r.similarity === 'number' ? ' • Score ' + r.similarity.toFixed(2) : '') + '</div>'
+            : '';
           if (!verified) {
-            html = '<div class="resultbig bad"><div class="verdict">NOT VERIFIED</div><div class="who">' + esc(person.name) + ' — ' + esc(METHOD_LABEL[method]) + ' scan did not match</div><div class="meas">' + esc(r.reason) + '<br>Measured: ' + esc(out.measured) + '</div></div>';
+            html = '<div class="resultbig bad"><div class="verdict">NOT VERIFIED</div><div class="who">' + esc(person.name) + ' — ' + esc(METHOD_LABEL[method]) + ' scan did not match</div>' + latencyLine + '<div class="meas">' + esc(r.reason) + '<br>Measured: ' + esc(out.measured) + '</div></div>';
             $('termResult').innerHTML = html;
+            if (method === 'palm') Snd.buzz();
             return;
           }
-          html = '<div class="resultbig ok"><div class="verdict">VERIFIED</div><div class="who">' + esc(person.name) + ' (' + esc(person.id) + ')</div><div class="meas">Measured: ' + esc(out.measured) + '</div></div>';
+          if (method === 'palm') Snd.chime();
+          html = '<div class="resultbig ok"><div class="verdict">VERIFIED</div><div class="who">' + esc(person.name) + ' (' + esc(person.id) + ')</div>' + latencyLine + '<div class="meas">Measured: ' + esc(out.measured) + '</div></div>';
           // Palm Loyalty (live mode, v18): every verified palm scan
           // earns points - 1 per BDT 10 on a payment, 5 for a visit
           // scan - credited to the customer's Biom ID record.
@@ -1303,6 +1557,7 @@
           if (amount > 0) {
             if (!person.walletProvider) {
               $('termResult').innerHTML = html + loyaltyLine + '<div class="error" style="margin-top:10px">Biom Pay not created: this person has no linked bKash / Nagad wallet.</div>';
+              if (method === 'palm') Snd.speak('Palm recognized');
               return;
             }
             var createPay = function () {
@@ -1322,6 +1577,7 @@
                     '<b>Store:</b> ' + esc(tx.store) + '<br><b>Authorized by:</b> ' + esc(METHOD_LABEL[method]) + ' scan — ' + esc(out.measured) + '<br>' +
                     '<b>Status:</b> ' + esc(tx.status) + '</div></div>';
                   toast('Biom Pay authorized: ' + tx.id);
+                  if (method === 'palm') Snd.speak('Palm recognized, payment complete');
                 });
               });
             };
@@ -1330,6 +1586,7 @@
             // confirmation is required, so nothing is recorded as paid.
             if (person.limits && person.limits.perTx && amount > person.limits.perTx) {
               $('termResult').innerHTML = html + loyaltyLine + '<div class="error" style="margin-top:10px">Biom Pay not created: BDT ' + amount.toLocaleString() + ' exceeds this customer\'s biometric-only per-transaction limit of BDT ' + person.limits.perTx.toLocaleString() + '. PIN confirmation is required above the limit.</div>';
+              if (method === 'palm') Snd.speak('Palm recognized');
               return;
             }
             if (person.limits && person.limits.daily) {
@@ -1338,6 +1595,7 @@
                 var todaySum = txs.filter(function (t) { return t.personId === person.id && t.ts >= dayStart.getTime(); }).reduce(function (s, t) { return s + Number(t.amount || 0); }, 0);
                 if (todaySum + amount > person.limits.daily) {
                   $('termResult').innerHTML = html + loyaltyLine + '<div class="error" style="margin-top:10px">Biom Pay not created: this payment would take today\'s total to BDT ' + (todaySum + amount).toLocaleString() + ', above this customer\'s biometric-only daily limit of BDT ' + person.limits.daily.toLocaleString() + '. PIN confirmation is required above the limit.</div>';
+                  if (method === 'palm') Snd.speak('Palm recognized');
                   return;
                 }
                 return createPay();
@@ -1346,6 +1604,7 @@
             return createPay();
           }
           $('termResult').innerHTML = html + loyaltyLine;
+          if (method === 'palm') Snd.speak('Palm recognized');
         });
       });
     }).catch(function (e) { $('termResult').innerHTML = '<div class="error">Scan failed: ' + esc(e && e.message ? e.message : e) + '</div>'; });

@@ -1029,11 +1029,19 @@
 
   /* --- Palm ROI extraction: landmarks locate, they do not identify ---
      Palm frame built in PIXEL space (landmark coords are per-axis
-     normalised, so geometry must be computed after scaling): u runs
-     along the knuckle line (index MCP -> pinky MCP), v runs from the
-     knuckles toward the wrist. The ROI square has side 1.7 x knuckle
-     span, centred 0.42 side-lengths toward the wrist from the knuckle
-     line — the central palm, where the principal print lines live. */
+     normalised, so geometry must be computed after scaling). v20
+     alignment: the frame's v axis is the wrist -> middle-finger MCP
+     axis (landmarks 0 -> 9), the hand's own vertical; u is its
+     perpendicular, oriented from the index side toward the pinky side.
+     Aligning on this axis before encoding cancels the hand's in-plane
+     rotation at the source, which is what lets verification work with
+     2 code variants per frame (aligned + mirror) instead of the v16
+     set of 18 with rotation twins. The ROI square has side 1.7 x
+     knuckle span, centred 0.42 side-lengths toward the wrist from the
+     knuckle line — the central palm, where the principal lines live.
+     NOTE: codes enrolled before v20 were warped on the old knuckle-
+     line frame; they still decode, but genuine scores against v20
+     live codes drop - re-enrolment is the clean path. */
   function palmRoiCornersPx(w, h, landmarks) {
     if (!landmarks || landmarks.length !== 21 || !w || !h) return null;
     var pts = [];
@@ -1042,14 +1050,20 @@
       if (!p || !isFinite(Number(p.x)) || !isFinite(Number(p.y))) return null;
       pts.push({ x: Number(p.x) * w, y: Number(p.y) * h });
     }
-    var A = pts[5], Bp = pts[17], W = pts[0];
+    var A = pts[5], Bp = pts[17], W = pts[0], M = pts[9];
     var mx = (A.x + Bp.x) / 2, my = (A.y + Bp.y) / 2;
-    var ux = Bp.x - A.x, uy = Bp.y - A.y;
-    var span = Math.hypot(ux, uy);
+    var kx = Bp.x - A.x, ky = Bp.y - A.y;
+    var span = Math.hypot(kx, ky);
     if (!(span >= 0.10 * Math.min(w, h))) return null; // hand too small / partial
-    ux /= span; uy /= span;
-    var vx = -uy, vy = ux;
-    if ((W.x - mx) * vx + (W.y - my) * vy < 0) { vx = -vx; vy = -vy; }
+    // v axis: middle MCP -> wrist (the hand's vertical, pointing from
+    // the fingers toward the wrist).
+    var vx = W.x - M.x, vy = W.y - M.y;
+    var vlen = Math.hypot(vx, vy);
+    if (!(vlen >= 0.05 * Math.min(w, h))) return null; // collapsed hand geometry
+    vx /= vlen; vy /= vlen;
+    // u axis: perpendicular to v, oriented index side -> pinky side.
+    var ux = -vy, uy = vx;
+    if (kx * ux + ky * uy < 0) { ux = -ux; uy = -uy; }
     var side = 1.7 * span;
     var cx = mx + vx * 0.42 * side, cy = my + vy * 0.42 * side;
     var hs = side / 2;
@@ -1183,40 +1197,109 @@
     var out = picks.map(function (u) { return palmprintCodeToBase64(u.code); });
     return out.indexOf(null) >= 0 ? null : out;
   }
-  // Verification: the 2 sharpest usable live codes.
+  // Verification codes from collected frames (v20): the ROI is
+  // pre-aligned on the wrist -> middle-MCP axis at warp time, so each
+  // frame needs only its own code and its mirror twin (a front-camera
+  // enrolment and a back-camera verification capture mirror images of
+  // the same palm). The v16 rotation twins are gone: alignment at the
+  // source replaces tolerance by variant multiplication, cutting the
+  // per-frame comparison count from 18 live codes to 2.
   function selectPalmprintLiveCodes(frames) {
     var usable = palmprintUsableOpenFrames(frames);
     if (!usable.length) return null;
     usable.sort(function (a, b) { return b.sharpness - a.sharpness; });
-    // Top 3 live frames (v13 raised this from 2 after E2E score swings).
-    // Each frame contributes, in order (v15/v16):
-    //   1-2. its own code and its mirror twin — a front-camera enrolment
-    //        and a back-camera verification (or the reverse) capture
-    //        mirror images of the same palm, which can never match
-    //        without the twin;
-    //   3-6. small-rotation twins (+/-5 degrees, plain and mirrored),
-    //        encoded from the frame's retained ROI — a real hand is
-    //        presented a few degrees rotated between sessions and the
-    //        EDCC code alone is not rotation-tolerant.
-    // Best-of over the widened set is bounded by the impostor checks in
-    // the test suites and the E2E battery, re-run before v16 shipped.
     var out = [];
     usable.slice(0, 3).forEach(function (u) {
       out.push(u.code);
       if (u.codeM) out.push(u.codeM);
-      if (u.roi) {
-        var flipped = flipGrayHorizontal(u.roi, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
-        [5, -5].forEach(function (deg) {
-          var rc = palmprintEncode(rotateGray(u.roi, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE, deg), PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
-          if (rc && palmprintCodeSane(rc)) out.push(rc);
-          if (flipped) {
-            var rm = palmprintEncode(rotateGray(flipped, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE, deg), PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
-            if (rm && palmprintCodeSane(rm)) out.push(rm);
-          }
-        });
-      }
     });
     return out;
+  }
+
+  /* --- v20 streaming helpers (Show & Pay + auto-capture enrolment) --- */
+
+  /* Palm pose from landmarks: centre = midpoint of the knuckle line,
+     span = knuckle span, both in normalised frame coords. Used by the
+     passive-liveness micro-shift check. */
+  function palmFramePose(landmarks) {
+    if (!landmarks || landmarks.length !== 21) return null;
+    var a = landmarks[5], b = landmarks[17];
+    if (!a || !b || !isFinite(Number(a.x)) || !isFinite(Number(a.y)) || !isFinite(Number(b.x)) || !isFinite(Number(b.y))) return null;
+    return {
+      cx: (Number(a.x) + Number(b.x)) / 2,
+      cy: (Number(a.y) + Number(b.y)) / 2,
+      span: Math.hypot(Number(b.x) - Number(a.x), Number(b.y) - Number(a.y))
+    };
+  }
+
+  /* Passive liveness over a few rapid frames (Show & Pay, v20): a live
+     hand held toward a camera is never perfectly still - it drifts by
+     small, natural amounts. A frozen digital frame (paused video,
+     screen-held still image fed as a static picture) shows shifts at
+     detector-noise level only; a waved printout or a swapped scene
+     jumps wildly. Returns { pass, verdict, maxShift, spanChange }:
+       'natural'      - micro-shift in the live range: pass.
+       'static'       - no real movement: fail (photo / frozen frame).
+       'erratic'      - jumps too large for one held hand: fail.
+       'inconclusive' - between the bands: caller keeps collecting.
+     Honest scope: this catches frozen/static presentations. The
+     screen-lattice coherence gate is what blocks phone-screen replay;
+     a high-quality printed photo of the enrolled palm remains the
+     residual risk the field test exists to measure. */
+  var PASSIVE_STATIC_EPS = 0.0006;   // max centre shift below this = frozen
+  var PASSIVE_NATURAL_MIN = 0.0020;  // centre shift at/above this = natural
+  var PASSIVE_ERRATIC_MAX = 0.09;    // centre shift above this = scene jump
+  function passiveLivenessCheck(poses) {
+    var list = (poses || []).filter(function (p) { return p && isFinite(p.cx) && isFinite(p.cy) && isFinite(p.span) && p.span > 0; });
+    if (list.length < 3) return { pass: false, verdict: 'inconclusive', maxShift: 0, spanChange: 0 };
+    var maxShift = 0, spanChange = 0;
+    for (var i = 1; i < list.length; i++) {
+      var d = Math.hypot(list[i].cx - list[i - 1].cx, list[i].cy - list[i - 1].cy);
+      if (d > maxShift) maxShift = d;
+    }
+    for (var j = 0; j < list.length; j++) {
+      var sc = Math.abs(list[j].span - list[0].span) / list[0].span;
+      if (sc > spanChange) spanChange = sc;
+    }
+    if (maxShift > PASSIVE_ERRATIC_MAX || spanChange > 0.30) return { pass: false, verdict: 'erratic', maxShift: maxShift, spanChange: spanChange };
+    if (maxShift < PASSIVE_STATIC_EPS && spanChange < 0.002) return { pass: false, verdict: 'static', maxShift: maxShift, spanChange: spanChange };
+    if (maxShift >= PASSIVE_NATURAL_MIN || spanChange >= 0.006) return { pass: true, verdict: 'natural', maxShift: maxShift, spanChange: spanChange };
+    return { pass: false, verdict: 'inconclusive', maxShift: maxShift, spanChange: spanChange };
+  }
+
+  /* Streaming early-exit rule (v20): the checkout completes the
+     millisecond TWO CONSECUTIVE analysed frames each score at or
+     above the match threshold. A frame with no usable code (fist
+     phase, hand withdrawn) or a below-threshold score breaks the
+     streak - consecutiveness is in capture order, not best-of. Pure
+     state transition so the rule is unit-testable without a camera. */
+  function streamMatchUpdate(state, score) {
+    var streak = state && typeof state.streak === 'number' ? state.streak : 0;
+    var best = state && typeof state.best === 'number' ? state.best : null;
+    if (typeof score === 'number' && isFinite(score)) {
+      if (best === null || score > best) best = score;
+      streak = score >= PALMPRINT_THRESHOLD ? streak + 1 : 0;
+    } else {
+      streak = 0;
+    }
+    return { streak: streak, best: best, done: streak >= 2 };
+  }
+
+  /* Self-contained Web Worker source for palmprint matching (v20):
+     assembled from the real functions above (their own source text),
+     so the worker runs exactly the shipping comparer - no second
+     implementation to drift. The app falls back to the main thread
+     whenever a worker cannot start or answer. */
+  function palmprintWorkerSource() {
+    var consts = 'var PALMPRINT_SIZE=' + PALMPRINT_SIZE +
+      ';var PALMPRINT_CODE_LEN=' + PALMPRINT_CODE_LEN +
+      ';var PALMPRINT_DIRECTIONS=' + PALMPRINT_DIRECTIONS +
+      ';var PALMPRINT_MAX_DIR_SHARE=' + PALMPRINT_MAX_DIR_SHARE +
+      ';var PALMPRINT_THRESHOLD=' + PALMPRINT_THRESHOLD + ';';
+    var fns = [palmprintCodeFromBase64, palmprintCodeBytes, palmprintCodeSane, edccScoreAtShift, palmprintSimilarity, normalisePalmprintProfile, verifyPalmprintProfile];
+    var body = fns.map(function (f) { return f.toString(); }).join('\n');
+    var handler = 'onmessage=function(e){var d=e.data||{};var r=null;try{r=verifyPalmprintProfile(d.profile,d.liveCodes);}catch(err){r=null;}postMessage({id:d.id,result:r});};';
+    return consts + '\n' + body + '\n' + handler;
   }
 
   /* ---- Fingerprint through camera: image processing on real pixels ---- */
@@ -1489,6 +1572,10 @@
     palmprintUsableOpenFrames: palmprintUsableOpenFrames,
     selectPalmprintProfileCodes: selectPalmprintProfileCodes,
     selectPalmprintLiveCodes: selectPalmprintLiveCodes,
+    palmFramePose: palmFramePose,
+    passiveLivenessCheck: passiveLivenessCheck,
+    streamMatchUpdate: streamMatchUpdate,
+    palmprintWorkerSource: palmprintWorkerSource,
     laplacianVariance: laplacianVariance,
     contrastStretch: contrastStretch,
     sharpen: sharpen,
