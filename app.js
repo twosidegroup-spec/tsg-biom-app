@@ -527,7 +527,9 @@
       if (this.hands) return;
       var self = this;
       this.hands = new Hands({ locateFile: function (f) { return 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/' + f; } });
-      this.hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+      // v25 A/B: lite landmark model (complexity 0) - the full model
+      // is the per-frame bottleneck on a budget phone CPU.
+      this.hands.setOptions({ maxNumHands: 1, modelComplexity: 0, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
       this.hands.onResults(function (res) {
         var p = self.pending; self.pending = null;
         if (p) p((res.multiHandLandmarks && res.multiHandLandmarks[0]) ? res.multiHandLandmarks[0] : null);
@@ -609,15 +611,41 @@
      locate the palm square, the warp cuts it out, the encoder reads the
      print itself. Returns { code, codeM } (codeM = the mirror twin's
      code, v15) or null. */
+  var roiScratch = null;
   function palmCodesFromFrame(frame, lm) {
     try {
       var w = frame.width, h = frame.height;
-      if (!w || !h) return null;
-      var ctx = frame.getContext('2d');
-      var img = ctx.getImageData(0, 0, w, h).data;
-      var gray = new Array(w * h);
-      for (var i = 0; i < w * h; i++) gray[i] = Math.round(0.299 * img[i * 4] + 0.587 * img[i * 4 + 1] + 0.114 * img[i * 4 + 2]);
-      var roi = B.palmRoiFromLandmarks(gray, w, h, lm);
+      if (!w || !h || !lm || lm.length !== 21) return null;
+      // v25: crop around the hand (landmark bbox + 1.3 knuckle-spans of
+      // margin, which covers the whole ROI square) and run the
+      // grayscale pass on the crop only. The old code converted every
+      // pixel of a ~960px frame on every analysed frame - a real cost
+      // on a phone CPU, for a warp that only ever reads the palm area.
+      // Landmarks are re-based into crop space; the warp output is the
+      // same palm square.
+      var minX = 1, minY = 1, maxX = 0, maxY = 0, i, p;
+      for (i = 0; i < 21; i++) {
+        p = lm[i];
+        if (!p || !isFinite(Number(p.x)) || !isFinite(Number(p.y))) return null;
+        if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+      }
+      var spanPx = Math.hypot((Number(lm[17].x) - Number(lm[5].x)) * w, (Number(lm[17].y) - Number(lm[5].y)) * h);
+      if (!(spanPx > 0)) return null;
+      var margin = spanPx * 1.3;
+      var ox = Math.max(0, Math.floor(minX * w - margin)), oy = Math.max(0, Math.floor(minY * h - margin));
+      var ex = Math.min(w, Math.ceil(maxX * w + margin)), ey = Math.min(h, Math.ceil(maxY * h + margin));
+      var cw = ex - ox, ch = ey - oy;
+      if (!(cw >= 40 && ch >= 40)) return null;
+      if (!roiScratch) roiScratch = document.createElement('canvas');
+      roiScratch.width = cw; roiScratch.height = ch;
+      var ctx = roiScratch.getContext('2d');
+      ctx.drawImage(frame, ox, oy, cw, ch, 0, 0, cw, ch);
+      var img = ctx.getImageData(0, 0, cw, ch).data;
+      var gray = new Array(cw * ch);
+      for (i = 0; i < cw * ch; i++) gray[i] = Math.round(0.299 * img[i * 4] + 0.587 * img[i * 4 + 1] + 0.114 * img[i * 4 + 2]);
+      var clm = lm.map(function (q) { return { x: (Number(q.x) * w - ox) / cw, y: (Number(q.y) * h - oy) / ch, z: q.z }; });
+      var roi = B.palmRoiFromLandmarks(gray, cw, ch, clm);
       if (!roi) return null;
       var code = B.palmprintEncode(roi, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE);
       var flipped = B.flipGrayHorizontal(roi, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE);
@@ -900,7 +928,7 @@
           statusEl.textContent = 'Auto-capture — ' + (B.PALM_STAGE_PROMPTS[sequence.stages[stageIdxNow()]] || '') + ' Keep the whole hand inside the ring, about 30 cm away.';
         }
       }
-      return recordBurst(3000).then(analyseBurst).then(cycle);
+      return recordBurst(2400).then(analyseBurst).then(cycle);
     }
     setRing($('palmRing'), 'on');
     return cycle();
@@ -919,7 +947,7 @@
     var matchState = { streak: 0, best: null };
     var win = null;
     var bursts = 0, analysed = 0, swapped = false, locked = false;
-    var lastHint = null;
+    var lastHint = null, coded = 0;
     var MAXF = 24, deadline = t0 + 90000;
 
     function finish(out) { setRing($('termRing'), 'off'); return out; }
@@ -973,7 +1001,7 @@
         return finish({ r: rp, measured: measuredL, latencyMs: Date.now() - t0 });
       }
       var liveCodes = B.selectPalmprintLiveCodes(frames);
-      if (!liveCodes) { fieldRec(null, null, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag); return finish({ fail: 'No usable open palm with readable print detail found in the scan. Nothing was verified. Hold one open palm still, fingers spread, inside the ring in good light, and run the scan again.' }); }
+      if (!liveCodes) { fieldRec(null, null, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag); return finish({ fail: 'No usable open palm with readable print detail found in the scan. Nothing was verified. Hold one open palm still, fingers spread, inside the ring in good light, and run the scan again. (' + analysed + ' frames scanned, ' + coded + ' produced a readable palm code.' + (lastHint ? ' Last guidance shown: ' + lastHint : '') + ')' }); }
       return Match.verify(person.palmProfile, liveCodes).then(function (res) {
         return impostorMaxFor(liveCodes).then(function (impMax) {
           var out = res;
@@ -984,7 +1012,7 @@
             out = { ok: true, verified: false, similarity: res.similarity, threshold: res.threshold, reason: 'Matched on a single frame only - Show & Pay requires two consecutive matching frames. Hold the palm steady a moment longer and scan again.' };
           }
           fieldRec(res ? res.similarity : null, impMax, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag);
-          var measured = 'Palmprint similarity ' + (res && typeof res.similarity === 'number' ? res.similarity.toFixed(3) : 'n/a') + ' (threshold ' + B.PALMPRINT_THRESHOLD + ', best of ' + person.palmProfile.codes.length + ' enrolled print codes x ' + liveCodes.length + ' live codes), passive liveness ' + lv.verdict + ', Show & Pay streaming scan';
+          var measured = 'Palmprint similarity ' + (res && typeof res.similarity === 'number' ? res.similarity.toFixed(3) : 'n/a') + ' (threshold ' + B.PALMPRINT_THRESHOLD + ', best of ' + person.palmProfile.codes.length + ' enrolled print codes x ' + liveCodes.length + ' live codes), passive liveness ' + lv.verdict + ', Show & Pay streaming scan. Diagnostics: ' + analysed + ' frames scanned, ' + coded + ' with a readable code, best single-frame score ' + (matchState.best !== null ? matchState.best.toFixed(3) : 'n/a') + '.';
           return finish({ r: out, measured: measured, latencyMs: Date.now() - t0 });
         });
       });
@@ -1012,6 +1040,7 @@
               if (typeof r.openness === 'number') lastHint = r.framing || null;
               if (r.pose) { poses.push(r.pose); if (poses.length > 6) poses.shift(); }
               var sane = !!(r.code && B.palmprintCodeSane(r.code));
+              if (sane) coded++;
               if (sane && !locked) { locked = true; Snd.tick(); setRing($('termRing'), 'locked'); }
               if (!isV3 || win) return;
               if (sane) {
@@ -1060,7 +1089,7 @@
         return swapCamera().then(function () { return loop(); }, function () { return loop(); });
       }
       if (statusEl) statusEl.textContent = lastHint || 'Show & Pay scanning — hold the open palm inside the ring, like tapping a card.';
-      return burst().then(function () { return waitMs(700); }).then(loop);
+      return burst().then(function () { return waitMs(300); }).then(loop);
     }
     setRing($('termRing'), 'on');
     return loop();
