@@ -21,7 +21,13 @@
    this suite proves a v38 store, and a v37 store through both
    steps, opens under v39 intact and still verifies. The two
    version-string source pins below name the CURRENT version, as
-   they did when they pinned v38. */
+   they did when they pinned v38.
+
+   Extended for v40 (2026-11-23): the chain gains 'v40' (an
+   adoption step — v40 changes only the spoof gate's sampling,
+   not stored data), and this suite proves a v39 store, and a v37
+   store through all three steps, opens under v40 intact and
+   still verifies. */
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -135,8 +141,8 @@ check('MIGRATE a store with a missing logs array keeps the people', Array.isArra
    its migration step is an adoption like v38's. A store written by
    v38 (and one written by v37, through both steps) must open under
    v39 with the person, codes and points intact and still verify. */
-check('CHAIN v39 is the newest link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v39' &&
-  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39', B.BIOM_DATA_VERSIONS.join(','));
+check('CHAIN v40 is the newest link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v40' &&
+  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40', B.BIOM_DATA_VERSIONS.join(','));
 const mig39 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v38', 'v39');
 check('MIGRATE v38->v39 runs the v39 step', mig39.appliedSteps.indexOf('v39') !== -1, mig39.appliedSteps.join(','));
 check('MIGRATE v38->v39 is an adoption: no store rewritten', mig39.changed === false && mig39.changedStores.length === 0,
@@ -155,14 +161,38 @@ const migAgain39 = B.migrateBiomData(mig39.snapshot, 'v39', 'v39');
 check('MIGRATE is idempotent at v39', migAgain39.appliedSteps.length === 0 && migAgain39.changed === false &&
   migAgain39.snapshot.people.length === 1 && migAgain39.snapshot.people[0].loyaltyPoints === 137);
 
+/* ---------- v40: the chain grows again, the data still survives --
+   v40 changes only the screen-spoof gate's sampling (palm-hull
+   masking + coverage); its migration step is an adoption like
+   v38's and v39's. A store written by v39 (and one written by
+   v37, through all three steps) must open under v40 with the
+   person, codes and points intact and still verify. */
+const mig40 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v39', 'v40');
+check('MIGRATE v39->v40 runs the v40 step', mig40.appliedSteps.indexOf('v40') !== -1, mig40.appliedSteps.join(','));
+check('MIGRATE v39->v40 is an adoption: no store rewritten', mig40.changed === false && mig40.changedStores.length === 0,
+  'changedStores=' + JSON.stringify(mig40.changedStores));
+const mp40 = mig40.snapshot.people[0];
+check('SURVIVE v40 person, points and codes intact', !!mp40 && mp40.id === 'TSG-BIO-2841' && mp40.loyaltyPoints === 137 &&
+  JSON.stringify(mp40.palmProfile.codes) === JSON.stringify(enrolledCodes));
+const migChain40 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v37', 'v40');
+check('MIGRATE v37->v40 runs all three steps in order', migChain40.appliedSteps.join(',') === 'v38,v39,v40', migChain40.appliedSteps.join(','));
+check('MIGRATE v37->v40 keeps the person and points', migChain40.snapshot.people.length === 1 && migChain40.snapshot.people[0].loyaltyPoints === 137);
+const rSame40 = B.verifyPalmprintProfile(mp40.palmProfile, probeSame);
+check('VERIFY the v40-migrated profile accepts the same palm', rSame40.verified === true, 'sim=' + (rSame40.similarity && rSame40.similarity.toFixed(3)));
+const rOther40 = B.verifyPalmprintProfile(mp40.palmProfile, probeOther);
+check('VERIFY the v40-migrated profile still rejects another palm', rOther40.verified === false, 'sim=' + (rOther40.similarity && rOther40.similarity.toFixed(3)));
+const migAgain40 = B.migrateBiomData(mig40.snapshot, 'v40', 'v40');
+check('MIGRATE is idempotent at v40', migAgain40.appliedSteps.length === 0 && migAgain40.changed === false &&
+  migAgain40.snapshot.people.length === 1 && migAgain40.snapshot.people[0].loyaltyPoints === 137);
+
 /* ---------- the shipped app source carries no wipe ----------------- */
 const appSrc = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
-check('APP declares the current data version (v39)', appSrc.indexOf("APP_DATA_VERSION = 'v39'") !== -1);
+check('APP declares the current data version (v40)', appSrc.indexOf("APP_DATA_VERSION = 'v40'") !== -1);
 check('APP startup runs the migration', appSrc.indexOf('migrateBiomData') !== -1 && appSrc.indexOf('migrateDbStores') !== -1);
 check('APP contains no database deletion (the retired wipe)', appSrc.indexOf('deleteDatabase') === -1);
 check('APP contains no store-key removal (the retired wipe)', !/removeItem\(\s*'tsgbiom_/.test(appSrc));
 const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
-check('APP shell is v39', swSrc.indexOf('tsg-biom-shell-v39') !== -1);
+check('APP shell is v40', swSrc.indexOf('tsg-biom-shell-v40') !== -1);
 
 console.log(fail === 0 ? 'ALL MIGRATION TESTS PASSED (' + pass + ')' : fail + ' FAILURES, ' + pass + ' passed');
 process.exit(fail === 0 ? 0 : 1);

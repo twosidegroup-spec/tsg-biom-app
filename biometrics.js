@@ -597,10 +597,29 @@
      rectangular frame produces long straight edges spanning the frame
      in both orientations - and (3) GLASS GLARE stay whole-frame: they
      describe the presenting device, not scene texture.
+     v40: when the region carries a palm HULL (palmHullRegionPx —
+     the app's path from v40), two more defences apply. (i) HULL
+     MASKING: only blocks whose CENTRE falls inside the eroded
+     palm silhouette are sampled at all — the v36 square still
+     admitted the surface the hand hovers over, and on 2026-11-23 a
+     glossy printed page inside the square convicted a live scan
+     (density 0.31, coherence 0.82) though the print was never on
+     the palm. (ii) COVERAGE: the grid-ALONE conviction additionally
+     requires the periodic-grid evidence to be present in at least
+     60% of the sampled in-hull blocks (per-block density >= 0.20
+     and per-block coherence >= 0.35, the detector's own presence
+     bars, with a minimum strong-alternation count so a near-empty
+     block cannot vote). A screen displaying a palm carries its
+     lattice across the whole palm; a pattern touching only a
+     minority of the palm — the edge of printed cloth beside the
+     fingers — can still raise the pooled stats through the flat
+     quartile, but it can no longer convict on grid alone. The
+     grid + glare rule (a second, whole-frame physical signal) and
+     the bezel rule are unchanged, as are all bars.
      Heuristic by design: Field Test Mode exists to measure its
      real-world rejection rate. */
   function screenSpoofCheck(gray, w, h, region) {
-    var none = { spoof: false, score: 0, reasons: [], moire: 0, flatMoire: 0, flatCoherence: 0, bezel: false, glare: 0, checked: false, gridScoped: region !== undefined, gridBlocks: 0 };
+    var none = { spoof: false, score: 0, reasons: [], moire: 0, flatMoire: 0, flatCoherence: 0, bezel: false, glare: 0, checked: false, gridScoped: region !== undefined, gridBlocks: 0, gridHull: false, gridCoverage: null, gridPositives: 0 };
     if (!gray || !w || !h || gray.length < w * h || w < 48 || h < 48) return none;
     // Global strong-alternation density (informational).
     var strong = 0, altern = 0, prevSign = 0;
@@ -625,11 +644,18 @@
     // or a region holding fewer than 4 blocks yields no grid evidence
     // at all: flatMoire and flatCoherence stay 0 and the grid rules
     // below cannot fire on this frame.
+    // v40: a region carrying a hull (palmHullRegionPx) switches the
+    // membership test: a block is a candidate iff its CENTRE falls
+    // inside the eroded palm hull. Blocks centred outside the hull
+    // contribute nothing - not to the flat quartile, not to the
+    // pooled stats, not to the coverage fraction.
+    var hullPts = (region && region.hull && region.hull.length >= 3) ? region.hull : null;
     var BS = 16, blocksIdx = [];
     var gridUsable = region === undefined || !!region;
     if (gridUsable) {
       for (var by = 0; by + BS <= h; by += BS) for (var bx = 0; bx + BS <= w; bx += BS) {
-        if (region && (bx < region.x0 || bx + BS > region.x1 || by < region.y0 || by + BS > region.y1)) continue;
+        if (hullPts) { if (!pointInConvexHullPx(bx + BS / 2, by + BS / 2, hullPts)) continue; }
+        else if (region && (bx < region.x0 || bx + BS > region.x1 || by < region.y0 || by + BS > region.y1)) continue;
         var mn = 255, mx = 0;
         for (var yy = 0; yy < BS; yy++) for (var xx = 0; xx < BS; xx++) {
           var v = gray[(by + yy) * w + (bx + xx)];
@@ -707,6 +733,57 @@
       var dd = Math.sqrt(cohDenA[s1] * cohDenB[s1]);
       if (dd > 0) flatCoherence = Math.max(flatCoherence, Math.abs(cohNum[s1] / dd));
     }
+    // v40 COVERAGE (hull-scoped calls only): in how many of the
+    // sampled in-hull blocks is the periodic grid actually PRESENT?
+    // Presence is judged per block with the detector's own bars -
+    // alternation density >= 0.20 and detrended row-pair coherence
+    // >= 0.35, computed exactly as the pooled measures above but
+    // restricted to the single block - plus a floor of 16 strong
+    // alternations so a block with almost no high-frequency energy
+    // (where a density ratio is noise) cannot vote present. The
+    // pooled stats can be carried by a flat minority patch (the
+    // flat quartile prefers it); coverage cannot.
+    function blockGridPresent(bl) {
+      var strong = 0, altern = 0;
+      for (var yy = 0; yy < BS; yy++) {
+        var prev = 0, rowBase = (bl.by + yy) * w + bl.bx;
+        for (var xx = 1; xx < BS; xx++) {
+          var d = gray[rowBase + xx] - gray[rowBase + xx - 1];
+          if (Math.abs(d) >= 12) {
+            strong++;
+            var s = d > 0 ? 1 : -1;
+            if (prev !== 0 && s !== prev) altern++;
+            prev = s;
+          }
+        }
+      }
+      if (strong < 16 || altern / strong < 0.20) return false;
+      var rowsD = [], yy3, xx3;
+      for (yy3 = 0; yy3 < BS; yy3++) {
+        var rb3 = (bl.by + yy3) * w + bl.bx, vals = [];
+        for (xx3 = 0; xx3 < BS; xx3++) vals.push(gray[rb3 + xx3]);
+        rowsD.push(detrendRow(vals));
+      }
+      for (var p = 0; p + 1 < BS; p++) {
+        var A = rowsD[p], Bv = rowsD[p + 1];
+        for (var sh = -SH; sh <= SH; sh++) {
+          var num = 0, dA = 0, dB = 0;
+          for (var i5 = 0; i5 < BS; i5++) {
+            var j = i5 + sh;
+            if (j < 0 || j >= BS) continue;
+            num += A[i5] * Bv[j]; dA += A[i5] * A[i5]; dB += Bv[j] * Bv[j];
+          }
+          var dd2 = Math.sqrt(dA * dB);
+          if (dd2 > 0 && Math.abs(num / dd2) >= 0.35) return true;
+        }
+      }
+      return false;
+    }
+    var gridCoverage = null, gridPositives = 0;
+    if (hullPts && gridUsable) {
+      blocksIdx.forEach(function (bl) { if (blockGridPresent(bl)) gridPositives++; });
+      gridCoverage = blocksIdx.length ? gridPositives / blocksIdx.length : 0;
+    }
     // (2) Bezel: per-row and per-column mean edge strength; a bezel
     // edge spikes one row/column far above the frame's median AND runs
     // across at least 80% of that line - a local bright patch (glare)
@@ -753,9 +830,17 @@
     // instead). Grid-alone in the 0.50s is therefore not evidence of
     // a screen in the environment that matters; bezel, and grid +
     // glare at 0.35, are unchanged.
-    var spoof = bezel || (flatMoire >= 0.20 && flatCoherence >= 0.62) || (flatMoire >= 0.20 && flatCoherence >= 0.35 && glare > 0.05);
+    // v40: in hull mode the grid-ALONE term additionally requires
+    // coverage >= 0.60 - the grid must be present across a clear
+    // majority of the palm, as it is when a screen displays the
+    // palm. gridCoverage is null outside hull mode, where the v36
+    // rule applies untouched. The grid + glare term is NOT gated:
+    // glare is a second physical signal, and that rule is kept
+    // exactly as it was.
+    var gridAlone = flatMoire >= 0.20 && flatCoherence >= 0.62 && (gridCoverage === null || gridCoverage >= 0.60);
+    var spoof = bezel || gridAlone || (flatMoire >= 0.20 && flatCoherence >= 0.35 && glare > 0.05);
     var score = Math.max(bezel ? 0.9 : 0, flatMoire >= 0.20 ? Math.min(1, flatCoherence / 0.5) : flatCoherence * 0.5, Math.min(1, glare / 0.12));
-    return { spoof: spoof, score: spoof ? Math.max(score, 0.6) : score, reasons: reasons, moire: moire, flatMoire: flatMoire, flatCoherence: flatCoherence, bezel: bezel, glare: glare, checked: true, gridScoped: region !== undefined, gridBlocks: blocksIdx.length };
+    return { spoof: spoof, score: spoof ? Math.max(score, 0.6) : score, reasons: reasons, moire: moire, flatMoire: flatMoire, flatCoherence: flatCoherence, bezel: bezel, glare: glare, checked: true, gridScoped: region !== undefined, gridBlocks: blocksIdx.length, gridHull: !!hullPts, gridCoverage: gridCoverage, gridPositives: gridPositives };
   }
 
   /* v36: one entry per distinct reason KIND. The tracker concatenates
@@ -1381,7 +1466,12 @@
      warps out for matching, grown by a small margin (6% of its larger
      side) for warp slop and clamped to the frame. Returns
      {x0, y0, x1, y1} in pixels, or null when no usable ROI square
-     exists (no hand, hand too small, degenerate geometry). */
+     exists (no hand, hand too small, degenerate geometry).
+     v40: the app no longer feeds this box to the spoof gate — the
+     box is much larger than the palm itself, and print/texture
+     inside the square but off the palm still convicted live scans
+     (see palmHullRegionPx below). This box remains for direct
+     callers and the v36 regression suite. */
   function palmRoiRegionPx(w, h, landmarks) {
     var corners = palmRoiCornersPx(w, h, landmarks);
     if (!corners) return null;
@@ -1395,6 +1485,85 @@
     x1 = Math.min(w, Math.ceil(x1 + m)); y1 = Math.min(h, Math.ceil(y1 + m));
     if (!(x1 - x0 >= 16 && y1 - y0 >= 16)) return null;
     return { x0: x0, y0: y0, x1: x1, y1: y1 };
+  }
+  /* Convex hull (Andrew's monotone chain) over pixel points;
+     collinear interior points are dropped, so the result is the
+     minimal vertex set, in order, with no repeated endpoint. */
+  function convexHullPx(points) {
+    var pts = points.slice().sort(function (a, b) { return (a.x - b.x) || (a.y - b.y); });
+    var uniq = [];
+    pts.forEach(function (p) {
+      var last = uniq[uniq.length - 1];
+      if (!last || last.x !== p.x || last.y !== p.y) uniq.push(p);
+    });
+    if (uniq.length < 3) return uniq;
+    function cross(o, a, b) { return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x); }
+    var lower = [], upper = [], i;
+    for (i = 0; i < uniq.length; i++) {
+      while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], uniq[i]) <= 0) lower.pop();
+      lower.push(uniq[i]);
+    }
+    for (i = uniq.length - 1; i >= 0; i--) {
+      while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], uniq[i]) <= 0) upper.pop();
+      upper.push(uniq[i]);
+    }
+    lower.pop(); upper.pop();
+    return lower.concat(upper);
+  }
+  /* Point-in-convex-polygon by consistent edge-cross sign; works
+     for either winding. Points exactly on an edge count as in. */
+  function pointInConvexHullPx(x, y, hull) {
+    var sign = 0;
+    for (var i = 0; i < hull.length; i++) {
+      var a = hull[i], b = hull[(i + 1) % hull.length];
+      var c = (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x);
+      if (c !== 0) {
+        var s = c > 0 ? 1 : -1;
+        if (sign === 0) sign = s;
+        else if (s !== sign) return false;
+      }
+    }
+    return true;
+  }
+  /* The palm region the spoof grid gate may look at (v40): the
+     convex hull of the landmarks that trace the PALM BODY — wrist
+     (0), thumb base (1, 2) and the four knuckle joints (5, 9, 13,
+     17) — eroded 10% toward the hull's vertex centroid, so the
+     sampled area is palm skin with a small safety margin from the
+     silhouette edge. Finger joints and fingertips are NOT palm and
+     are excluded, as is everything the old ROI-square box admitted
+     around the hand (the surface the hand hovers over, the gaps
+     beside the fingers). Returns { hull: [{x, y}...], cx, cy } in
+     pixels, or null when the landmarks are unusable (missing,
+     non-finite, hand too small by the same span bar the ROI uses,
+     or a degenerate/collinear outline) — a null region means the
+     frame carries NO grid evidence, exactly as in v36; the gate
+     never falls back to the square or the whole frame. */
+  function palmHullRegionPx(w, h, landmarks) {
+    if (!landmarks || landmarks.length !== 21 || !w || !h) return null;
+    var pts = [];
+    for (var i = 0; i < 21; i++) {
+      var p = landmarks[i];
+      if (!p || !isFinite(Number(p.x)) || !isFinite(Number(p.y))) return null;
+      pts.push({ x: Number(p.x) * w, y: Number(p.y) * h });
+    }
+    var span = Math.hypot(pts[17].x - pts[5].x, pts[17].y - pts[5].y);
+    if (!(span >= 0.10 * Math.min(w, h))) return null; // hand too small / partial
+    var outline = [0, 1, 2, 5, 9, 13, 17].map(function (idx) { return pts[idx]; });
+    var hull = convexHullPx(outline);
+    if (hull.length < 3) return null;
+    var area2 = 0, cx = 0, cy = 0;
+    hull.forEach(function (pt, i) {
+      var q = hull[(i + 1) % hull.length];
+      area2 += pt.x * q.y - q.x * pt.y;
+      cx += pt.x; cy += pt.y;
+    });
+    if (!(Math.abs(area2) > 1)) return null; // collinear outline: no interior
+    cx /= hull.length; cy /= hull.length;
+    var eroded = hull.map(function (pt) {
+      return { x: cx + (pt.x - cx) * 0.9, y: cy + (pt.y - cy) * 0.9 };
+    });
+    return { hull: eroded, cx: cx, cy: cy };
   }
   function homographyFromQuad(corners) {
     // Maps the unit square (0,0),(1,0),(1,1),(0,1) onto corners TL,TR,BR,BL.
@@ -2155,11 +2324,19 @@
      & Pay win rule (the fast win on the matched pair) and startup
      pre-warming — no stored field changes shape, so its step is
      also the identity, and a v38 enrolment opens under v39 with
-     the person, palm codes and points intact. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39'];
+     the person, palm codes and points intact.
+
+     v39 -> v40 is likewise an ADOPTION: v40 changes only the
+     screen-spoof gate's sampling (palm-hull masking + the coverage
+     requirement for grid-alone conviction) — no stored field
+     changes shape, so its step is also the identity, and a v39
+     enrolment opens under v40 with the person, palm codes and
+     points intact. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
-    'v39': function (snap) { return snap; }
+    'v39': function (snap) { return snap; },
+    'v40': function (snap) { return snap; }
   };
   var BIOM_DATA_STORES = ['people', 'logs', 'transactions', 'meta'];
   function migrateBiomData(snapshot, fromVersion, toVersion) {
@@ -2231,6 +2408,7 @@
     evaluateMovementSequenceStreaming: evaluateMovementSequenceStreaming,
     screenSpoofCheck: screenSpoofCheck,
     palmRoiRegionPx: palmRoiRegionPx,
+    palmHullRegionPx: palmHullRegionPx,
     dedupeSpoofReasons: dedupeSpoofReasons,
     fieldTestStats: fieldTestStats,
     fieldTestCsv: fieldTestCsv,

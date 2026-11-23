@@ -35,7 +35,7 @@
      is skipped, nothing is deleted, and the next launch retries —
      the app boots on the un-migrated data either way, because its
      readers fail closed per record. */
-  var APP_DATA_VERSION = 'v39';
+  var APP_DATA_VERSION = 'v40';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -633,12 +633,19 @@
      it (v18). Returns the detector result plus the frame's mean
      brightness (used for the field-test lighting tag), or null.
      v36: the frame's landmarks scope the detector's grid analysis to
-     the palm region (the ROI square used for matching, plus a small
-     margin) - a screen replay carries its pixel grid in the palm
-     image itself, while patterned surfaces elsewhere in the room
-     must not convict a live scan. No landmarks (or no usable ROI
-     square) passes a null region: that frame then carries no grid
-     evidence either way. Bezel and glare stay whole-frame. */
+     the palm region - a screen replay carries its pixel grid in the
+     palm image itself, while patterned surfaces elsewhere in the room
+     must not convict a live scan.
+     v40: the scope is now the palm HULL (palmHullRegionPx: the convex
+     hull of the palm-body landmarks, eroded 10%), not the ROI square.
+     The square admitted the surface the hand hovers over, and a glossy
+     printed page inside it convicted a live scan on 2026-11-23. Inside
+     the hull the detector additionally requires the grid to cover a
+     clear majority of the palm before it may convict on grid alone.
+     No landmarks (or no usable hull) passes a null region: that frame
+     then carries no grid evidence either way - the gate never falls
+     back to the square or the whole frame. Bezel and glare stay
+     whole-frame. */
   function spoofSample(frame, lm) {
     try {
       if (!spoofScratch) spoofScratch = document.createElement('canvas');
@@ -649,7 +656,7 @@
       var img = ctx.getImageData(0, 0, w, h).data;
       var gray = new Array(w * h), sum = 0;
       for (var i = 0; i < w * h; i++) { var v = Math.round(0.299 * img[i * 4] + 0.587 * img[i * 4 + 1] + 0.114 * img[i * 4 + 2]); gray[i] = v; sum += v; }
-      var region = lm ? B.palmRoiRegionPx(w, h, lm) : null;
+      var region = lm ? B.palmHullRegionPx(w, h, lm) : null;
       var chk = B.screenSpoofCheck(gray, w, h, region);
       chk.meanBrightness = sum / (w * h);
       return chk;
