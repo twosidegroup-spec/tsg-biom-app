@@ -6,58 +6,57 @@
   var STORES = ['GreenCare Pharmacy (CVS)', 'FreshMart Supermarket', 'UrbanStyle Retail', 'City Centre Mall'];
   var PAY_STATUS = 'Biometric Authorised — Pending Provider Settlement';
 
-  /* ---------------- Data version wipe (his order, 2026-11-20) --------
-     Every new build link starts empty: when the app's data version
-     changes, all stored people, transactions and logs from the older
-     build are removed on first open, so a fresh registration is made
-     against the current build only - profiles captured under older
-     matching code do not read reliably against a new one. Bump
-     APP_DATA_VERSION together with the service-worker shell on any
-     build that changes enrolment or matching. */
-  var APP_DATA_VERSION = 'v37';
-  /* DEVELOPMENT ONLY (his order, 2026-11-20): the wipe below runs
-     only in development builds. A commercial build ships with
-     BUILD_MODE set to 'commercial' and never wipes - real customer
-     registrations, transactions and logs must persist across every
-     update. Flipping this flag is a deliberate release step. */
-  var BUILD_MODE = 'development';
-  var dataWipeReload = false;
+  /* ---------------- Data migration (standing order, 2026-11-23) -----
+     "from now keep data dont wipe": an app update NEVER clears the
+     on-device store. When APP_DATA_VERSION moves, the stored people,
+     enrolled palm codes, points, transactions and logs are MIGRATED
+     forward and adopted — B.migrateBiomData (biometrics.js) holds
+     the version chain and the contract every future step must obey
+     (idempotent, preserving; convert fields, never drop rows).
+     Bump APP_DATA_VERSION together with the service-worker shell on
+     any build that changes enrolment or matching, and add a step in
+     biometrics.js if — and only if — the build changes a stored
+     field's shape.
+
+     DO NOT reintroduce a wipe here. The pre-v38 behaviour (every
+     build started empty; the whole IndexedDB database was deleted
+     on first open) was retired by the Chairman's direct order after
+     it forced a fresh enrolment on every update. There is no build
+     mode that wipes: development and commercial builds migrate
+     identically.
+
+     Mechanics: the localStorage snapshot is migrated here, before
+     boot, and only stores the migration actually changed are
+     written back. The IndexedDB copy holds the same record shapes;
+     it is migrated in boot, right after DB.open() (see
+     migrateDbStores below), and likewise only changed stores are
+     written back. The version stamp is written only after the
+     localStorage migration has run; if anything throws, the stamp
+     is skipped, nothing is deleted, and the next launch retries —
+     the app boots on the un-migrated data either way, because its
+     readers fail closed per record. */
+  var APP_DATA_VERSION = 'v38';
+  var DV_KEY = 'tsgbiom_data_version';
+  var dataMigratedFrom = null;
   try {
-    var DV_KEY = 'tsgbiom_data_version';
-    if (BUILD_MODE !== 'commercial' && localStorage.getItem(DV_KEY) !== APP_DATA_VERSION) {
-      if (sessionStorage.getItem(DV_KEY + '_wiped') === APP_DATA_VERSION) {
-        // Already attempted this session: boot as-is rather than loop.
-        // (The DB layer falls back safely if storage is still settling.)
-      } else {
-        sessionStorage.setItem(DV_KEY + '_wiped', APP_DATA_VERSION);
-        ['people', 'logs', 'transactions', 'meta'].forEach(function (s) { try { localStorage.removeItem('tsgbiom_' + s); } catch (e) {} });
-        dataWipeReload = true;
-        var wipeSettled = false;
-        // v31: stamp the version ONLY when the delete actually
-        // completed. The old code stamped + reloaded even when the
-        // deletion was BLOCKED (another open copy of the app holding
-        // the database); the pending deletion then blocked the fresh
-        // DB.open() forever, DB.db stayed null, and the first save
-        // died with 'Cannot read properties of null (reading
-        // transaction)' on the user's phone. On blocked, wait for the
-        // delete to land; past the cap, reload UNSTAMPED so the next
-        // clean launch retries the wipe.
-        var finishWipe = function (stamp) {
-          if (wipeSettled) return; wipeSettled = true;
-          if (stamp) { try { localStorage.setItem(DV_KEY, APP_DATA_VERSION); } catch (e) {} }
-          location.reload();
-        };
-        setTimeout(function () { finishWipe(false); }, 2500);
-        if ('indexedDB' in window) {
-          var wipeReq = indexedDB.deleteDatabase('tsg-biom');
-          wipeReq.onsuccess = function () { finishWipe(true); };
-          wipeReq.onerror = function () { finishWipe(true); };
-          wipeReq.onblocked = function () { /* wait for onsuccess or the cap */ };
-        } else finishWipe(true);
-      }
+    var storedDv = localStorage.getItem(DV_KEY);
+    if (storedDv !== APP_DATA_VERSION) {
+      var lsSnap = {};
+      B.BIOM_DATA_STORES.forEach(function (s) {
+        try { lsSnap[s] = JSON.parse(localStorage.getItem('tsgbiom_' + s) || '[]'); }
+        catch (e) { lsSnap[s] = []; }
+        if (!Array.isArray(lsSnap[s])) lsSnap[s] = [];
+      });
+      var lsMig = B.migrateBiomData(lsSnap, storedDv, APP_DATA_VERSION);
+      lsMig.changedStores.forEach(function (s) {
+        // 'logs' rows are plain array entries in the localStorage
+        // form, so a changed logs array writes back like any store.
+        try { localStorage.setItem('tsgbiom_' + s, JSON.stringify(lsMig.snapshot[s])); } catch (e) {}
+      });
+      dataMigratedFrom = storedDv;
+      try { localStorage.setItem(DV_KEY, APP_DATA_VERSION); } catch (e) {}
     }
-  } catch (e) {}
-  if (dataWipeReload) return;
+  } catch (e) { dataMigratedFrom = null; }
 
   /* ---------------- Storage: IndexedDB with localStorage fallback -------- */
   var DB = {
@@ -141,6 +140,39 @@
     }
   };
 
+  /* IndexedDB-side data migration (v38, see the standing order at
+     APP_DATA_VERSION): runs once per data version, right after
+     DB.open(), under its own stamp ('tsgbiom_db_version') so a
+     launch interrupted between the localStorage migration and this
+     one retries here instead of skipping. Loads the four stores,
+     runs the same B.migrateBiomData chain, and writes back ONLY the
+     stores the migration changed. 'logs' is never written back from
+     here: its IndexedDB store uses autoIncrement keys that getAll()
+     does not return, so putting rows back would duplicate them —
+     a future step that must change log rows needs a dedicated
+     clear-and-rewrite path, not this hook. When DB fell back to
+     localStorage for the session this re-runs over the snapshot the
+     startup block already migrated; the chain is idempotent, so it
+     changes nothing and writes nothing. Resolves true when it ran. */
+  var DBV_KEY = 'tsgbiom_db_version';
+  function migrateDbStores() {
+    var stamped = null;
+    try { stamped = localStorage.getItem(DBV_KEY); } catch (e) {}
+    if (stamped === APP_DATA_VERSION && !dataMigratedFrom) return Promise.resolve(false);
+    return Promise.all(B.BIOM_DATA_STORES.map(function (s) { return DB.all(s); })).then(function (rows) {
+      var snap = {};
+      B.BIOM_DATA_STORES.forEach(function (s, i) { snap[s] = rows[i]; });
+      var mig = B.migrateBiomData(snap, stamped || dataMigratedFrom, APP_DATA_VERSION);
+      var writes = mig.changedStores.filter(function (s) { return s !== 'logs'; }).map(function (s) {
+        return Promise.all(mig.snapshot[s].map(function (row) { return DB.put(s, row); }));
+      });
+      return Promise.all(writes).then(function () {
+        try { localStorage.setItem(DBV_KEY, APP_DATA_VERSION); } catch (e) {}
+        return true;
+      });
+    }).catch(function () { return false; });
+  }
+
   /* ---------------- Small helpers ---------------------------------------- */
   function $(id) { return document.getElementById(id); }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
@@ -193,7 +225,14 @@
       // camera has not released yet: wait briefly and retry the ladder
       // once before giving up.
       function gum(facing, exact) {
-        var v = { width: { ideal: 1280 }, height: { ideal: 720 } };
+        // v38: scanner-appropriate resolution. The scan only ever
+        // reads the palm square (warped to a fixed 128x128 ROI from
+        // landmark geometry, which is scale-normalised), so a
+        // 1280x720 sensor stream bought pixels the pipeline never
+        // uses while every grab, copy and analysis moved them.
+        // 640x480 keeps the palm square at several hundred source
+        // pixels at checkout distance — multiples of the ROI size.
+        var v = { width: { ideal: 640 }, height: { ideal: 480 } };
         if (facing) v.facingMode = exact ? facing : { ideal: facing };
         return navigator.mediaDevices.getUserMedia({ video: v, audio: false });
       }
@@ -411,6 +450,33 @@
      enrolments keep verifying. A single still photo is NOT accepted
      anywhere: with no movement series there is no liveness, so there
      is no scan. */
+  /* Analysis-resolution cap (v38): MediaPipe's palm detector reads
+     a 256px resize of whatever it is sent and the landmark model a
+     fixed-size crop, so input resolution past ~480px on the long
+     side buys almost no landmark quality — but the image is handed
+     to the graph at full size on every analysed frame, and moving
+     those pixels is a real per-frame cost on a phone. Landmarks come
+     back NORMALISED (0..1 of the sent image), so landmarks read from
+     a downscaled copy of a frame address the original frame with
+     the same coordinates: the ROI warp, the texture measures and
+     the spoof region all keep reading the full grabbed frame,
+     unchanged. Only the detector's input shrinks. The scratch
+     canvas follows the same discipline as the verify loop's reused
+     capture canvas: it is redrawn only inside a landmarks() call,
+     and every pipeline awaits a call's results before the next. */
+  var ANALYSIS_MAX = 480;
+  var analysisScratch = null;
+  function analysisImage(image) {
+    var w = image && image.width, h = image && image.height;
+    if (!w || !h || Math.max(w, h) <= ANALYSIS_MAX) return image;
+    var scale = ANALYSIS_MAX / Math.max(w, h);
+    if (!analysisScratch) analysisScratch = document.createElement('canvas');
+    analysisScratch.width = Math.round(w * scale);
+    analysisScratch.height = Math.round(h * scale);
+    analysisScratch.getContext('2d').drawImage(image, 0, 0, analysisScratch.width, analysisScratch.height);
+    return analysisScratch;
+  }
+
   var PalmProc = {
     hands: null, pending: null,
     init: function () {
@@ -453,7 +519,7 @@
           finish(null);
         }, 4000);
         self.pending = finish;
-        self.hands.send({ image: image }).catch(function () { finish(null); });
+        self.hands.send({ image: analysisImage(image) }).catch(function () { finish(null); });
       });
     }
   };
@@ -461,7 +527,10 @@
   function grabVideoFrame(video) {
     var w = video.videoWidth, h = video.videoHeight;
     if (!w || !h) return null;
-    var scale = Math.min(1, 960 / Math.max(w, h));
+    // v38: grab cap matches the scanner resolution requested from
+    // the camera (640) — a device that negotiates a larger stream
+    // anyway is still analysed at scanner size, never at 960.
+    var scale = Math.min(1, 640 / Math.max(w, h));
     var canvas = document.createElement('canvas');
     canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
     canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -477,7 +546,7 @@
   function grabVideoFrameInto(video, canvas) {
     var w = video.videoWidth, h = video.videoHeight;
     if (!w || !h) return null;
-    var scale = Math.min(1, 960 / Math.max(w, h));
+    var scale = Math.min(1, 640 / Math.max(w, h));
     canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
     canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
     return canvas;
@@ -1707,5 +1776,5 @@
   syncCamToggle('terminal');
   ['enrollPalm', 'terminal'].forEach(function (g) { syncFlashToggle(g); });
   fillStoreSelects();
-  DB.open().then(function () { renderDashboard(); fillTerminalPeople(); });
+  DB.open().then(function () { return migrateDbStores(); }).then(function () { renderDashboard(); fillTerminalPeople(); });
 })();

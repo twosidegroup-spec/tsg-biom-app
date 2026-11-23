@@ -2056,6 +2056,73 @@
     return normalised.slice(0, 5) + '-***' + normalised.slice(8);
   }
 
+  /* ================= Stored-data migration (v38) =================
+     STANDING RULE (the Chairman's order, 2026-11-23): "from now keep
+     data dont wipe". App updates MIGRATE the on-device store forward
+     and adopt it; they never clear it. Before v38 every version bump
+     deleted the whole store on first open (people, palm codes,
+     points, transactions, logs) and forced a fresh enrolment — that
+     wipe is retired and must not come back.
+
+     HOW IT WORKS: the app hands migrateBiomData() a plain snapshot
+     of the four stores ({ people, logs, transactions, meta }, each an
+     array of rows exactly as stored) plus the data version that
+     wrote it, and gets back the migrated snapshot. Steps are keyed
+     by the version they upgrade TO and run in BIOM_DATA_VERSIONS
+     order; migrating from a version older than the list (or an
+     unknown one) applies every step in order, so each step MUST be:
+       - IDEMPOTENT: a no-op on data already in its output shape;
+       - PRESERVING: convert fields, never drop a person, a palm
+         code, points, a transaction or a log row to get there. A
+         row the new build cannot read stays stored untouched — the
+         app's readers already fail closed per record.
+     A step that changes rows returns a NEW snapshot object (or sets
+     changed on a store); the identity step returns its input
+     untouched, and the caller writes back only stores whose array
+     identity changed.
+
+     v37 -> v38 is an ADOPTION, not a conversion: v38 changes no
+     stored field (the person shape, the v3 palm-profile shape, the
+     transaction and log shapes are all identical), so the step is
+     the identity — it exists so the chain is explicit and the
+     survival test exercises the real path a future conversion will
+     take. When a future version DOES change a stored field, add its
+     step here and its version to BIOM_DATA_VERSIONS; the app side
+     needs no new plumbing. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38'];
+  var BIOM_DATA_STEPS = {
+    'v38': function (snap) { return snap; }
+  };
+  var BIOM_DATA_STORES = ['people', 'logs', 'transactions', 'meta'];
+  function migrateBiomData(snapshot, fromVersion, toVersion) {
+    var snap = {};
+    BIOM_DATA_STORES.forEach(function (s) {
+      snap[s] = snapshot && Array.isArray(snapshot[s]) ? snapshot[s] : [];
+    });
+    var fromIdx = BIOM_DATA_VERSIONS.indexOf(fromVersion);
+    var toIdx = BIOM_DATA_VERSIONS.indexOf(toVersion);
+    if (toIdx < 0) toIdx = BIOM_DATA_VERSIONS.length - 1;
+    // Unknown/older-than-list writers: start before the first step.
+    var start = fromIdx < 0 ? -1 : fromIdx;
+    var applied = [];
+    for (var i = start + 1; i <= toIdx; i++) {
+      var v = BIOM_DATA_VERSIONS[i];
+      var step = BIOM_DATA_STEPS[v];
+      if (!step) continue;
+      var next = step(snap);
+      if (next && typeof next === 'object') snap = next;
+      applied.push(v);
+    }
+    var changedStores = [];
+    BIOM_DATA_STORES.forEach(function (s) {
+      if (!snapshot || snap[s] !== snapshot[s]) changedStores.push(s);
+    });
+    return {
+      snapshot: snap, appliedSteps: applied,
+      changedStores: changedStores, changed: changedStores.length > 0
+    };
+  }
+
   var api = {
     FACE_THRESHOLD: FACE_THRESHOLD,
     FACE_MIN_NORM: FACE_MIN_NORM,
@@ -2136,7 +2203,10 @@
     histogramSimilarity: histogramSimilarity,
     verifyFingerprint: verifyFingerprint,
     normaliseWalletNumber: normaliseWalletNumber,
-    maskWalletNumber: maskWalletNumber
+    maskWalletNumber: maskWalletNumber,
+    migrateBiomData: migrateBiomData,
+    BIOM_DATA_VERSIONS: BIOM_DATA_VERSIONS,
+    BIOM_DATA_STORES: BIOM_DATA_STORES
   };
 
   global.TSGBiometrics = api;
