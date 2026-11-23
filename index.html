@@ -24,7 +24,8 @@
 </header>
 
 <nav class="nav" id="mainNav">
-  <button data-page="dashboard" class="active"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>Home</button>
+  <button data-page="wallet" class="active"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10.5h18"/><circle cx="16.6" cy="15" r="1.1"/></svg>Wallet</button>
+  <button data-page="dashboard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>Home</button>
   <button data-page="enroll"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="8" r="3.5"/><path d="M4 20c.6-3.2 3-5 6-5s5.4 1.8 6 5"/><path d="M18.5 5v6M15.5 8h6"/></svg>regBIOM</button>
   <button data-page="terminal"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M4 12h16"/></svg>takeBIOM</button>
   <button data-page="registry"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5c.5-3 2.7-4.6 5.5-4.6s5 1.6 5.5 4.6"/><path d="M15.5 5.8a3.2 3.2 0 0 1 0 5.9M17.8 15.2c1.6.7 2.5 2 2.8 4"/></svg>People</button>
@@ -32,8 +33,87 @@
 </nav>
 
 <main>
+  <!-- WALLET (DEMO) -->
+  <section class="page active" id="page-wallet">
+    <h1>My Biom Wallet</h1>
+    <p class="sub">Your Biom ID is your wallet account, and your palm is the key. Balances here are <b>demo money inside this app — not real funds</b>. Real bKash / Nagad settlement stays biometric-authorised pending the partner API, exactly as the terminal states.</p>
+
+    <div id="walletLocked" class="card">
+      <h2>Open your wallet</h2>
+      <p class="sub">Scan your palm to open your wallet. A palm that is not registered on this device opens nothing.</p>
+      <button class="btn primary big" id="walletOpenScan">Scan Your Palm to Open Your Wallet</button>
+      <h2 style="margin-top:22px">Registered on this device</h2>
+      <div id="walletProfiles" class="profilecards"></div>
+      <p class="sub" style="margin-top:16px">No palm registered yet? <button class="btn small" data-go="enroll">Register a palm</button> — registration issues your Biom ID and creates your wallet at balance 0.</p>
+    </div>
+
+    <div id="walletHome" class="card hidden">
+      <div class="kv"><b>Wallet owner:</b> <span id="wHomeName"></span><br><b>Biom ID (wallet account):</b> <span id="wHomeId"></span></div>
+      <div class="balancebox">
+        <div class="ballabel">Demo balance</div>
+        <div class="balnum" id="wHomeBalance">BDT 0</div>
+        <div class="balnote">Demo money — not real funds</div>
+      </div>
+      <div id="wHomeMsg" style="margin-top:12px"></div>
+      <div class="row" style="margin-top:14px">
+        <div><button class="btn primary big" id="wAddOpen">Add Money</button></div>
+        <div><button class="btn primary big" id="wSendOpen">Send Money</button></div>
+      </div>
+      <button class="btn" id="wCloseWallet" style="margin-top:12px">Close Wallet / Switch User</button>
+      <h2 style="margin-top:22px">Linked funding accounts</h2>
+      <div id="wHomeAccounts" class="kv"></div>
+      <h2 style="margin-top:22px">Statement</h2>
+      <div id="wHomeStatement"></div>
+    </div>
+
+    <div id="walletAdd" class="card hidden">
+      <h2>Add Money (demo)</h2>
+      <p class="sub">Demo money — not real funds. Nothing here contacts a real account or moves real money. The amount lands in your wallet only after <b>your own palm</b> verifies.</p>
+      <label>Amount (BDT)</label>
+      <input id="wAddAmount" type="number" min="1" placeholder="e.g. 500">
+      <label>From funding account</label>
+      <select id="wAddAccountSelect"></select>
+      <h2 style="margin-top:20px">Link a new funding account</h2>
+      <div class="row">
+        <div><label>Source type</label>
+          <select id="wAddType"><option>bKash</option><option>Nagad</option><option>Bank</option><option>Card</option></select></div>
+        <div><label>Account name / number — a label you choose</label><input id="wAddLabel" placeholder="e.g. My bKash — 01933…"></div>
+      </div>
+      <button class="btn" id="wLinkAccount" style="margin-top:12px">Link This Account</button>
+      <div id="wAddMsg" style="margin-top:12px"></div>
+      <div class="row" style="margin-top:14px">
+        <div><button class="btn" id="wAddBack">Back</button></div>
+        <div><button class="btn primary" id="wAddScan">Scan My Palm to Add</button></div>
+      </div>
+    </div>
+
+    <div id="walletSend" class="card hidden">
+      <h2>Send Money (demo)</h2>
+      <p class="sub">Demo money between wallets on this device. The receiver is found by <b>their palm</b>: if the scanned palm matches no registered Biom ID, no money can be sent — even if you have an account and a balance. Your own palm authorises the send.</p>
+      <label>Amount (BDT)</label>
+      <input id="wSendAmount" type="number" min="1" placeholder="e.g. 200">
+      <div id="wSendMsg" style="margin-top:12px"></div>
+      <button class="btn primary big" id="wSendScanReceiver" style="margin-top:12px">Scan the Receiver's Palm</button>
+      <div id="wSendConfirm" class="hidden" style="margin-top:14px"></div>
+      <button class="btn" id="wSendBack" style="margin-top:12px">Back</button>
+    </div>
+
+    <div id="walletScanCard" class="card hidden">
+      <h2 id="wScanTitle">Palm scan</h2>
+      <p class="sub" id="wScanPrompt"></p>
+      <div class="camwrap"><video id="wScanVideo" autoplay playsinline muted></video>
+        <div class="camstatus" id="wScanStatus">Camera not started.</div></div>
+      <div class="row" style="margin-top:12px">
+        <div><button class="btn" id="wScanStart">Start Camera</button></div>
+        <div><button class="btn primary" id="wScanRun" disabled>Scan</button></div>
+      </div>
+      <div id="wScanMsg" style="margin-top:12px"></div>
+      <button class="btn" id="wScanCancel" style="margin-top:12px">Cancel</button>
+    </div>
+  </section>
+
   <!-- DESK (HOME) -->
-  <section class="page active" id="page-dashboard">
+  <section class="page" id="page-dashboard">
     <h1>TSG Biom Desk</h1>
     <p class="sub">Registration desk and payment counter for this store. Everything is stored <b>on this device</b> — enroll and verify on the same device.</p>
     <div class="desk-actions">
@@ -63,6 +143,7 @@
       <div id="liveFeed" class="kv">No activity yet on this device.</div>
     </div>
     <div class="desklinks">
+      <button class="btn" data-go="wallet">My Wallet</button>
       <button class="btn" data-go="registry">People Registry</button>
       <button class="btn" data-go="logs">Transactions / Logs</button>
       <button class="btn" data-go="stores">Store Modes</button>
@@ -155,7 +236,8 @@
       <h2>Enrollment complete</h2>
       <div id="enrollDoneBody" class="kv"></div>
       <button class="btn" onclick="TSGApp.go('registry')">Open People Registry</button>
-      <button class="btn primary" onclick="TSGApp.go('terminal')">Verify This Person</button>
+      <button class="btn primary" onclick="TSGApp.go('wallet')">Open My Wallet</button>
+      <button class="btn" onclick="TSGApp.go('terminal')">Verify This Person</button>
     </div>
   </section>
 

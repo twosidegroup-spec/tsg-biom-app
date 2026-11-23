@@ -35,7 +35,7 @@
      is skipped, nothing is deleted, and the next launch retries —
      the app boots on the un-migrated data either way, because its
      readers fail closed per record. */
-  var APP_DATA_VERSION = 'v41';
+  var APP_DATA_VERSION = 'v42';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -319,7 +319,7 @@
      Palm-only product (v33): the enrolment palm step and the terminal
      each keep their own choice for the whole session. Default Front. */
   var camFacing = {
-    enrollPalm: 'user', termPalm: 'user'
+    enrollPalm: 'user', termPalm: 'user', walletOpen: 'user', walletAct: 'user'
   };
   var camRestarters = {}; // key -> function that (re)starts that view's camera
   function termFacingKey() { return 'termPalm'; }
@@ -359,7 +359,7 @@
      view. Switching camera or stopping the camera resets that view's
      flash to Off (see Cam.stop). */
   var flashState = {
-    enrollPalm: false, termPalm: false
+    enrollPalm: false, termPalm: false, walletOpen: false, walletAct: false
   };
   function flashGroupKey(key) { return key.indexOf('term') === 0 ? 'terminal' : key; }
   function flashKeyForGroup(groupKey) { return groupKey === 'terminal' ? termFacingKey() : groupKey; }
@@ -1330,6 +1330,177 @@
     return loop();
   }
 
+  /* Wallet identification (v42): WHO is this palm? The same
+     streaming gates as Show & Pay — the coherence spoof tracker,
+     passive liveness on the streamed poses, the two-frame rolling
+     window, the v39 fast win on a spoof-clean naturally-shifting
+     pair, MAXF and the deadline — but each frame's probe is scored
+     against EVERY enrolled profile in one multi-profile call, and
+     each candidate keeps its own rolling-window state, updated by
+     the same B.streamMatchUpdate rule the 1:1 stream uses. The
+     candidate whose state completes is the identified person.
+     This is not a second, weaker scan path: the frame-level gates
+     are shared evidence, the per-candidate match rule is identical,
+     and a scan matching no enrolled palm identifies nobody. Used
+     by the demo wallet (open wallet, find a send receiver). */
+  function streamIdentifyPalm(video, statusEl, people, swapCamera) {
+    var t0 = Date.now();
+    var candidates = (people || []).filter(function (p) { return B.palmprintProfileSane(p.palmProfile); });
+    if (!candidates.length) {
+      return Promise.resolve({ fail: 'No palm is registered on this device yet — register a palm first. Registration issues the Biom ID and creates the wallet.' });
+    }
+    var tracker = makeSpoofTracker();
+    var frames = [];
+    var poses = [];
+    var frameSpoof = [];
+    var states = {};
+    var appliedBy = {};
+    candidates.forEach(function (p) { states[p.id] = { streak: 0, best: null }; appliedBy[p.id] = []; });
+    var win = null; // { person, res, fast }
+    var analysed = 0, swapped = false, locked = false;
+    var lastHint = null, coded = 0;
+    var MAXF = 24, deadline = t0 + 90000;
+    var frameCanvas = null;
+    var lastGrabT = -1;
+    var prevMatch = null;
+
+    function spoofOut(sp) {
+      DB.put('logs', { ts: Date.now(), personId: '', personName: '(wallet scan)', store: '', method: 'palm', measured: 'Spoof score ' + sp.score.toFixed(2) + ' - ' + sp.reasons.join('; '), result: 'Spoof / Screen Replay Detected' });
+      Snd.buzz();
+      return { fail: 'Spoof / Screen Replay Detected — the scan showed a screen or a recording, not a live hand (' + sp.reasons.join('; ') + '). Nothing was verified. Present the real hand, live in front of the camera.' };
+    }
+    function livenessFailOut(lv) {
+      Snd.buzz();
+      return { fail: lv.verdict === 'static'
+        ? 'Liveness check failed: the palm did not move naturally at all — a still photo or a frozen image cannot be used. Nothing was verified. Present the real hand, held live in front of the camera.'
+        : 'Liveness check failed: the view changed too abruptly for one held hand. Nothing was verified. Hold one open palm steady in front of the camera.' };
+    }
+    function identifiedOut() {
+      var measured = 'Palmprint similarity ' + win.res.similarity.toFixed(3) + ' (threshold ' + win.res.threshold + ', score-level max: best pair of the winning frame re-encoded at 25 image-level shifts plus the v41 geometric variants against ' + win.person.palmProfile.codes.length + ' individual enrolled print codes), passive liveness passed (' + (win.fast ? 'natural micro-shift between the two matched frames; fast win honoured on the matched pair, both frames spoof-clean' : 'natural micro-shift across rapid frames') + '), wallet identification scan (1:N over ' + candidates.length + ' enrolled palms)';
+      return { person: win.person, r: win.res, measured: measured, latencyMs: Date.now() - t0 };
+    }
+    function finalOut() {
+      var sp = tracker.state();
+      if (sp.spoof) return spoofOut(sp);
+      var lv = B.passiveLivenessCheck(poses);
+      var liveRois = B.selectPalmprintLiveRois(frames);
+      if (!liveRois) {
+        return { fail: 'No usable open palm with readable print detail found in the scan. Nothing was verified. Show one open palm to the camera, fingers spread, in good light, and run the scan again. (' + analysed + ' frames scanned, ' + coded + ' produced a readable palm code.' + (lastHint ? ' Last guidance shown: ' + lastHint : '') + ')' };
+      }
+      return Match.verifyRoisMulti(candidates.map(function (p) { return p.palmProfile; }), liveRois).then(function (results) {
+        var best = null, bestPerson = null;
+        (results || []).forEach(function (ro, i) {
+          if (ro && typeof ro.similarity === 'number' && (best === null || ro.similarity > best.similarity)) { best = ro; bestPerson = candidates[i]; }
+        });
+        if (best && best.verified) {
+          // Same rule as Show & Pay: a single-frame match is not an
+          // identification — the rolling window must complete.
+          return { fail: 'That palm matched ' + bestPerson.name + ' on a single frame only — identification requires two matching frames close together. Hold the palm steady a moment longer and scan again. Nothing was opened.' };
+        }
+        return { fail: 'This palm did not match any registered palm on this device, so nothing was opened and no one was identified. (' + analysed + ' frames scanned, ' + coded + ' with a readable code, best score ' + (best && typeof best.similarity === 'number' ? best.similarity.toFixed(3) : 'n/a') + ' against any enrolled palm.)' };
+      });
+    }
+    function pushApplied(p, score, frameIdx) {
+      var entry = {
+        matched: typeof score === 'number' && score >= B.PALMPRINT_THRESHOLD,
+        pose: (typeof frameIdx === 'number' && frames[frameIdx]) ? frames[frameIdx].pose : null,
+        spoof: (typeof frameIdx === 'number' && frameIdx < frameSpoof.length) ? frameSpoof[frameIdx] : null
+      };
+      appliedBy[p.id].push(entry);
+      return entry;
+    }
+    function applyMatch(results, roi, frameIdx) {
+      candidates.forEach(function (p, i) {
+        var res = results ? results[i] : null;
+        var score = res && typeof res.similarity === 'number' ? res.similarity : null;
+        states[p.id] = B.streamMatchUpdate(states[p.id], score);
+        var entry = pushApplied(p, score, frameIdx);
+        if (states[p.id].done && !win) {
+          win = { person: p, res: res, fast: false };
+          var arr = appliedBy[p.id];
+          var partner = null;
+          for (var k = arr.length - 2; k >= arr.length - 3 && k >= 0; k--) {
+            if (arr[k].matched) { partner = arr[k]; break; }
+          }
+          if (partner && B.streamFastWinCheck(partner, entry).ok) win.fast = true;
+        }
+      });
+    }
+    function waitFreshFrame() {
+      if (lastGrabT < 0) return Promise.resolve();
+      var target = lastGrabT + 0.1;
+      function poll() {
+        if (video.currentTime >= target || Date.now() > deadline) return Promise.resolve();
+        return waitMs(8).then(poll);
+      }
+      return poll();
+    }
+    function step() {
+      return waitFreshFrame().then(function () {
+        if (!frameCanvas) frameCanvas = document.createElement('canvas');
+        var frame = grabVideoFrameInto(video, frameCanvas);
+        if (!frame) return waitMs(60);
+        lastGrabT = video.currentTime;
+        return analysePalmFrame(frame).then(function (r) {
+          analysed++;
+          var sample = tracker.add(frame, r.lm);
+          frames.push(r);
+          frameSpoof.push(sample ? !!sample.spoof : null);
+          var myIdx = frames.length - 1;
+          if (typeof r.openness === 'number') lastHint = r.framing || null;
+          if (r.pose) { poses.push(r.pose); if (poses.length > 6) poses.shift(); }
+          var sane = !!(r.code && B.palmprintCodeSane(r.code));
+          if (sane) coded++;
+          if (sane && !locked) { locked = true; Snd.tick(); }
+          var prev = prevMatch; prevMatch = null;
+          var drained = prev
+            ? prev.promise.then(function (results) { applyMatch(results, prev.roi, prev.frameIdx); })
+            : Promise.resolve();
+          return drained.then(function () {
+            if (sane && r.roi) {
+              prevMatch = { roi: r.roi, frameIdx: myIdx, promise: Match.verifyRoisMulti(candidates.map(function (p) { return p.palmProfile; }), [r.roi]) };
+            } else {
+              applyMatch(null, null, myIdx);
+            }
+          });
+        });
+      });
+    }
+    function loop() {
+      var sp = tracker.state();
+      if (sp.spoof) return spoofOut(sp);
+      var lv = B.passiveLivenessCheck(poses);
+      if (win && win.fast) return identifiedOut();
+      if (win && lv.pass && sp.framesChecked >= 3) return identifiedOut();
+      if (win && lv.pass && statusEl) statusEl.textContent = 'Palm identified — confirming this is a live hand, not a screen…';
+      if (lv.verdict === 'static' && analysed >= 6) return livenessFailOut(lv);
+      if (lv.verdict === 'erratic') return livenessFailOut(lv);
+      if (analysed >= MAXF || Date.now() > deadline) {
+        if (prevMatch) {
+          var prev = prevMatch; prevMatch = null;
+          return prev.promise.then(function (results) { applyMatch(results, prev.roi, prev.frameIdx); return loop(); });
+        }
+        if (win) {
+          Snd.buzz();
+          return { fail: 'Liveness could not be confirmed: the palm matched, but no natural micro-movement was observed. Nothing was verified. Present the real hand, held live — do not use a photo or a recording.' };
+        }
+        return finalOut();
+      }
+      if (!swapped && swapCamera && analysed >= 18 && frames.every(function (x) { return typeof x.openness !== 'number'; })) {
+        swapped = true;
+        lastGrabT = -1;
+        if (statusEl) statusEl.textContent = 'No hand was seen by this camera - switching to the other camera and trying once more.';
+        return swapCamera().then(function () { return loop(); }, function () { return loop(); });
+      }
+      if (statusEl) {
+        var seenHandNow = frames.some(function (x) { return typeof x.openness === 'number'; });
+        statusEl.textContent = lastHint || (seenHandNow ? 'Hand detected — hold steady.' : 'Show an open hand to the camera.');
+      }
+      return step().then(loop);
+    }
+    return loop();
+  }
+
   var palmScanBusy = false;
 
   /* ---------------- Navigation ------------------------------------------- */
@@ -1338,6 +1509,7 @@
     document.querySelectorAll('#mainNav button').forEach(function (b) { b.classList.toggle('active', b.dataset.page === navPage); });
     document.querySelectorAll('section.page').forEach(function (s) { s.classList.toggle('active', s.id === 'page-' + page); });
     if (page !== 'enroll' && page !== 'terminal') { Cam.stop(); }
+    if (page === 'wallet') { renderWallet(); prewarmPalmPipeline(); }
     if (page === 'dashboard') renderDashboard();
     if (page === 'registry') renderRegistry();
     if (page === 'logs') renderLogs();
@@ -1415,6 +1587,9 @@
         walletProvider: enroll.details.walletProvider, walletNumber: enroll.details.walletNumber,
         limits: { perTx: enroll.details.limitPerTx || null, daily: enroll.details.limitDaily || null },
         loyaltyPoints: 0,
+        // v42: registration also creates the person's demonstration
+        // wallet — the Biom ID is the wallet account, balance 0.
+        wallet: B.walletNew(),
         palmProfile: enroll.palm || null,
         enrolledAt: Date.now()
       };
@@ -1426,7 +1601,8 @@
           '<b>Palm:</b> ' + (person.palmProfile && person.palmProfile.v === 3 ? 'Enrolled (palmprint — EDCC competitive code, ' + person.palmProfile.codes.length + ' individual captures, movement-checked)' : 'Not enrolled') + '<br>' +
           '<b>Wallet:</b> ' + (person.walletProvider ? esc(person.walletProvider) + ' ' + esc(B.maskWalletNumber(person.walletNumber)) : 'Not linked') + '<br>' +
           '<b>Biometric-only limits:</b> ' + (person.limits.perTx ? 'BDT ' + person.limits.perTx.toLocaleString() + ' per transaction' : 'No per-transaction limit') + (person.limits.daily ? ', BDT ' + person.limits.daily.toLocaleString() + ' per day' : '') + '<br>' +
-          '<b>Palm Loyalty:</b> Active — 0 points';
+          '<b>Palm Loyalty:</b> Active — 0 points<br>' +
+          '<b>Demo wallet:</b> Created — this Biom ID is the wallet account, balance BDT 0. Open My Wallet and scan this palm to use it. Demo money inside the app, not real funds.';
         enroll = { details: null, palm: null, types: { palm: true } };
         toast('Enrolled: ' + person.id);
         // Voice verdict (v23, his order): spoken ONLY here, after the
@@ -1756,6 +1932,335 @@
     }).catch(function (e) { $('termResult').innerHTML = '<div class="error">Scan failed: ' + esc(e && e.message ? e.message : e) + '</div>'; });
   });
 
+  /* ---------------- Demo wallet (v42) --------------------------------
+     The wallet layer the Chairman ordered 2026-11-23. Every rule
+     about the money itself lives in the B.wallet* store layer in
+     biometrics.js — this section only runs scans and renders. The
+     scans are the EXISTING pipelines: streamIdentifyPalm (1:N) to
+     open a wallet or find a receiver, streamVerifyPalm (1:1) to
+     authorise as a named person. Their outcomes are converted to
+     the authorisation object the store layer consumes
+     ({ verified, personId }); a failed or spoof-rejected scan
+     produces { verified: false } and authorises nothing. */
+  var walletSessionId = null; // Biom ID whose wallet is open (this session only)
+  var walletPeopleCache = [];
+  var walletScanCtx = null;   // { title, prompt, run } for the shared scan card
+  var sendDraft = { amount: null, receiverId: null, receiverName: null };
+
+  function loadWalletPeople() {
+    return DB.all('people').then(function (people) { walletPeopleCache = people; return people; });
+  }
+  function walletSessionPerson() {
+    return walletPeopleCache.find(function (p) { return p.id === walletSessionId; }) || null;
+  }
+  function fmtBDT(n) { return 'BDT ' + Number(n || 0).toLocaleString(); }
+  function walletSwapCamera() {
+    camFacing.walletAct = camFacing.walletAct === 'user' ? 'environment' : 'user';
+    return Cam.start($('wScanVideo'), camFacing.walletAct, 'walletAct');
+  }
+  function authFromVerify(out, personId) {
+    return (out && !out.fail && out.r && out.r.verified === true)
+      ? { verified: true, personId: personId }
+      : { verified: false, personId: null };
+  }
+
+  function renderWallet() {
+    return loadWalletPeople().then(function (people) {
+      var me = walletSessionPerson();
+      $('walletLocked').classList.toggle('hidden', !!me);
+      $('walletHome').classList.toggle('hidden', !me);
+      $('walletAdd').classList.add('hidden');
+      $('walletSend').classList.add('hidden');
+      $('walletScanCard').classList.add('hidden');
+      walletScanCtx = null;
+      if (me) { renderWalletHome(me); return; }
+      renderWalletProfiles(people);
+    });
+  }
+  function renderWalletProfiles(people) {
+    var withPalm = people.filter(function (p) { return personHasMethod(p); });
+    $('walletProfiles').innerHTML = withPalm.length
+      ? withPalm.map(function (p) {
+          return '<button class="profilecard" data-open-wallet="' + esc(p.id) + '"><span class="pc-name">' + esc(p.name) + '</span><span class="pc-id">' + esc(p.id) + '</span><span class="pc-sub">Tap, then scan this person\'s palm — the wallet opens only for their own palm</span></button>';
+        }).join('')
+      : '<p class="sub" style="margin:0">No palm is registered on this device yet. Register a palm first — registration issues the Biom ID and creates the wallet automatically.</p>';
+    document.querySelectorAll('[data-open-wallet]').forEach(function (b) {
+      b.addEventListener('click', function () { openWalletForPerson(b.dataset.openWallet); });
+    });
+  }
+  function renderWalletHome(me) {
+    var w = B.walletEnsurePerson(me).wallet;
+    $('wHomeName').textContent = me.name;
+    $('wHomeId').textContent = me.id;
+    $('wHomeBalance').textContent = fmtBDT(w.balance);
+    $('wHomeAccounts').innerHTML = w.linkedAccounts.length
+      ? w.linkedAccounts.map(function (a) { return '<div><b>' + esc(a.type) + '</b> — ' + esc(a.label) + '</div>'; }).join('')
+      : '<span style="color:var(--muted)">No funding account linked yet — Add Money will ask you to link one.</span>';
+    var rows = w.statement.slice().reverse().map(function (e) {
+      var when = '<div class="smeta">' + esc(fmtTime(e.ts)) + ' · Ref ' + esc(e.ref) + ' · Balance after: ' + fmtBDT(e.balanceAfter) + '</div>';
+      if (e.kind === 'add') {
+        return '<div class="stmtrow"><div><b>Money added (demo)</b><div class="smeta">From ' + esc(e.accountType) + ' — ' + esc(e.accountLabel) + '</div>' + when + '</div><div class="amt in">+ ' + fmtBDT(e.amount) + '</div></div>';
+      }
+      if (e.kind === 'send') {
+        return '<div class="stmtrow"><div><b>Sent (demo)</b><div class="smeta">To ' + esc(e.counterpartyName) + ' (' + esc(e.counterpartyId) + ')</div>' + when + '</div><div class="amt out">− ' + fmtBDT(e.amount) + '</div></div>';
+      }
+      return '<div class="stmtrow"><div><b>Received (demo)</b><div class="smeta">From ' + esc(e.counterpartyName) + ' (' + esc(e.counterpartyId) + ')</div>' + when + '</div><div class="amt in">+ ' + fmtBDT(e.amount) + '</div></div>';
+    }).join('');
+    $('wHomeStatement').innerHTML = rows || '<p class="sub" style="margin:0">No demo transactions yet.</p>';
+  }
+
+  /* Shared wallet scan card: one camera surface, the caller's run()
+     performs the scan and its outcome handling. */
+  function showWalletScan(ctx) {
+    walletScanCtx = ctx;
+    $('walletScanCard').classList.remove('hidden');
+    $('wScanTitle').textContent = ctx.title;
+    $('wScanPrompt').textContent = ctx.prompt;
+    $('wScanMsg').innerHTML = '';
+    $('wScanStatus').textContent = 'Camera not started.';
+    $('wScanRun').disabled = true;
+    $('walletScanCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  function hideWalletScan() {
+    $('walletScanCard').classList.add('hidden');
+    walletScanCtx = null;
+    Cam.stop();
+  }
+  function walletScanFailed(out) {
+    $('wScanMsg').innerHTML = '<div class="error">' + esc(out && out.fail ? out.fail : 'The scan did not verify. Nothing was authorised.') + '</div>';
+    $('wScanRun').disabled = false;
+    Snd.buzz();
+  }
+  $('wScanStart').addEventListener('click', function () {
+    Cam.start($('wScanVideo'), camFacing.walletAct, 'walletAct').then(function () {
+      prewarmPalmPipeline();
+      $('wScanRun').disabled = false;
+      $('wScanStatus').textContent = 'Camera on — tap Scan, then show the open palm to the camera, anywhere in the frame.';
+    }).catch(function (e) { $('wScanMsg').innerHTML = cameraErrorHTML(e); $('wScanStatus').textContent = 'Camera blocked.'; });
+  });
+  $('wScanRun').addEventListener('click', function () {
+    if (!walletScanCtx || palmScanBusy) return;
+    palmScanBusy = true;
+    $('wScanRun').disabled = true;
+    var ctx = walletScanCtx;
+    Promise.resolve()
+      .then(function () { return ctx.run(); })
+      .catch(function (e) { walletScanFailed({ fail: 'Scan failed: ' + (e && e.message ? e.message : e) }); })
+      .then(function () { palmScanBusy = false; });
+  });
+  $('wScanCancel').addEventListener('click', function () {
+    if (palmScanBusy) return;
+    hideWalletScan();
+    renderWallet();
+  });
+
+  /* Open a wallet: the scan is the key, always. The generic route
+     identifies the palm (1:N); a profile card names the person and
+     the scan must verify as THAT person (1:1). */
+  $('walletOpenScan').addEventListener('click', function () {
+    showWalletScan({
+      title: 'Open your wallet — palm scan',
+      prompt: 'Show your open palm to the camera. If it matches a registered palm, that person\'s wallet opens. A palm that is not registered opens nothing.',
+      run: function () {
+        return DB.all('people').then(function (people) {
+          return streamIdentifyPalm($('wScanVideo'), $('wScanStatus'), people, walletSwapCamera).then(function (out) {
+            if (!out || out.fail || !out.person) { walletScanFailed(out); return; }
+            walletSessionId = out.person.id;
+            hideWalletScan();
+            return renderWallet().then(function () {
+              $('wHomeMsg').innerHTML = '<div class="success">Wallet opened for ' + esc(out.person.name) + ' (' + esc(out.person.id) + ').<br><span style="color:var(--muted)">' + esc(out.measured) + '</span></div>';
+              toast('Wallet opened: ' + out.person.id);
+              Snd.chime();
+              Snd.speak('Wallet open');
+            });
+          });
+        });
+      }
+    });
+  });
+  function openWalletForPerson(personId) {
+    var person = walletPeopleCache.find(function (p) { return p.id === personId; });
+    if (!person) return;
+    showWalletScan({
+      title: 'Open ' + person.name + '\'s wallet',
+      prompt: 'Scan ' + person.name + '\'s palm. The wallet opens only if the palm verifies as ' + person.name + ' (' + person.id + ') — nobody else\'s palm can open it.',
+      run: function () {
+        return DB.all('people').then(function (people) {
+          var fresh = people.find(function (p) { return p.id === personId; }) || person;
+          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, walletSwapCamera, function () {}).then(function (out) {
+            var auth = authFromVerify(out, personId);
+            if (!auth.verified) { walletScanFailed(out); return; }
+            walletSessionId = personId;
+            hideWalletScan();
+            return renderWallet().then(function () {
+              $('wHomeMsg').innerHTML = '<div class="success">Wallet opened for ' + esc(fresh.name) + ' (' + esc(fresh.id) + ').<br><span style="color:var(--muted)">' + esc(out.measured) + '</span></div>';
+              toast('Wallet opened: ' + fresh.id);
+              Snd.chime();
+              Snd.speak('Wallet open');
+            });
+          });
+        });
+      }
+    });
+  }
+  $('wCloseWallet').addEventListener('click', function () {
+    walletSessionId = null;
+    Cam.stop();
+    renderWallet();
+    toast('Wallet closed.');
+  });
+
+  /* Add Money: amount -> funding account -> OWN palm authorises. */
+  function renderAddAccounts(me, selectedId) {
+    var w = B.walletEnsurePerson(me).wallet;
+    $('wAddAccountSelect').innerHTML = w.linkedAccounts.length
+      ? w.linkedAccounts.map(function (a) { return '<option value="' + esc(a.id) + '"' + (a.id === selectedId ? ' selected' : '') + '>' + esc(a.type) + ' — ' + esc(a.label) + '</option>'; }).join('')
+      : '<option value="">No funding account linked yet — add one below</option>';
+  }
+  $('wAddOpen').addEventListener('click', function () {
+    var me = walletSessionPerson();
+    if (!me) return;
+    $('walletHome').classList.add('hidden');
+    $('walletAdd').classList.remove('hidden');
+    $('wAddMsg').innerHTML = '';
+    renderAddAccounts(me, null);
+  });
+  $('wAddBack').addEventListener('click', function () { renderWallet(); });
+  $('wLinkAccount').addEventListener('click', function () {
+    var me = walletSessionPerson();
+    if (!me) return;
+    var res = B.walletAddLinkedAccount(me, $('wAddType').value, $('wAddLabel').value, Date.now());
+    if (!res.ok) { $('wAddMsg').innerHTML = '<div class="error">' + esc(res.error) + '</div>'; return; }
+    DB.put('people', res.person).then(function () { return loadWalletPeople(); }).then(function () {
+      renderAddAccounts(walletSessionPerson(), res.account.id);
+      $('wAddLabel').value = '';
+      $('wAddMsg').innerHTML = '<div class="success">Funding account linked: ' + esc(res.account.type) + ' — ' + esc(res.account.label) + ' (demo link — no real account was contacted).</div>';
+    }).catch(function (e) { $('wAddMsg').innerHTML = '<div class="error">Could not save the account on this device: ' + esc(e.message || e) + '</div>'; });
+  });
+  $('wAddScan').addEventListener('click', function () {
+    var me = walletSessionPerson();
+    if (!me) return;
+    var amt = B.walletValidateAmount($('wAddAmount').value);
+    if (!amt.ok) { $('wAddMsg').innerHTML = '<div class="error">' + esc(amt.error) + '</div>'; return; }
+    var accountId = $('wAddAccountSelect').value;
+    if (!accountId) { $('wAddMsg').innerHTML = '<div class="error">Link a funding account first — Add Money needs an account to add from.</div>'; return; }
+    showWalletScan({
+      title: 'Add money — confirm with your own palm',
+      prompt: 'Scan YOUR OWN palm to add ' + fmtBDT(amt.amount) + ' of demo money to your wallet. Another person\'s palm, or no match, adds nothing.',
+      run: function () {
+        return DB.all('people').then(function (people) {
+          var fresh = people.find(function (p) { return p.id === me.id; }) || me;
+          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, walletSwapCamera, function () {}).then(function (out) {
+            var auth = authFromVerify(out, fresh.id);
+            if (!auth.verified) { walletScanFailed(out); return; }
+            return DB.nextSeq('demoSeq', 1).then(function (seq) {
+              var res = B.walletApplyAddMoney(fresh, amt.amount, accountId, auth, Date.now(), B.walletDemoRef(seq));
+              if (!res.ok) { $('wScanMsg').innerHTML = '<div class="error">' + esc(res.error) + '</div>'; $('wScanRun').disabled = false; return; }
+              return DB.put('people', res.person).then(function () {
+                hideWalletScan();
+                return renderWallet();
+              }).then(function () {
+                $('wHomeMsg').innerHTML = '<div class="success">' + fmtBDT(res.entry.amount) + ' of demo money added from ' + esc(res.entry.accountType) + ' — ' + esc(res.entry.accountLabel) + '. New demo balance: ' + fmtBDT(res.entry.balanceAfter) + '.<br>Reference: ' + esc(res.entry.ref) + ' (demo reference — not a ' + esc(res.entry.accountType) + ' transaction ID).</div>';
+                toast('Demo money added');
+                Snd.chime();
+              });
+            });
+          });
+        });
+      }
+    });
+  });
+
+  /* Send Money: amount -> RECEIVER's palm identifies them -> the
+     sender's OWN palm authorises. The store layer re-checks every
+     rule at apply time (receiver registered, not self, amount
+     within balance, authorisation is the sender). */
+  $('wSendOpen').addEventListener('click', function () {
+    var me = walletSessionPerson();
+    if (!me) return;
+    sendDraft = { amount: null, receiverId: null, receiverName: null };
+    $('walletHome').classList.add('hidden');
+    $('walletSend').classList.remove('hidden');
+    $('wSendMsg').innerHTML = '';
+    $('wSendConfirm').classList.add('hidden');
+    $('wSendConfirm').innerHTML = '';
+  });
+  $('wSendBack').addEventListener('click', function () { renderWallet(); });
+  $('wSendScanReceiver').addEventListener('click', function () {
+    var me = walletSessionPerson();
+    if (!me) return;
+    var amt = B.walletValidateAmount($('wSendAmount').value);
+    if (!amt.ok) { $('wSendMsg').innerHTML = '<div class="error">' + esc(amt.error) + '</div>'; return; }
+    sendDraft.amount = amt.amount;
+    showWalletScan({
+      title: 'Send money — scan the receiver\'s palm',
+      prompt: 'The RECEIVER shows their open palm. The scan finds their Biom ID — if the palm matches no registered palm, no money can be sent.',
+      run: function () {
+        return DB.all('people').then(function (people) {
+          return streamIdentifyPalm($('wScanVideo'), $('wScanStatus'), people, walletSwapCamera).then(function (out) {
+            if (!out || out.fail || !out.person) { walletScanFailed(out); return; }
+            if (out.person.id === me.id) {
+              $('wScanMsg').innerHTML = '<div class="error">That is your own palm — you cannot send money to yourself. Scan the receiver\'s palm.</div>';
+              $('wScanRun').disabled = false;
+              Snd.buzz();
+              return;
+            }
+            sendDraft.receiverId = out.person.id;
+            sendDraft.receiverName = out.person.name;
+            hideWalletScan();
+            $('walletSend').classList.remove('hidden');
+            renderSendConfirm();
+          });
+        });
+      }
+    });
+  });
+  function renderSendConfirm() {
+    var me = walletSessionPerson();
+    if (!me || !sendDraft.receiverId) return;
+    var w = B.walletEnsurePerson(me).wallet;
+    $('wSendConfirm').classList.remove('hidden');
+    $('wSendConfirm').innerHTML =
+      '<div class="notice"><b>Receiver found:</b> ' + esc(sendDraft.receiverName) + ' (' + esc(sendDraft.receiverId) + ')<br>' +
+      '<b>Amount:</b> ' + fmtBDT(sendDraft.amount) + ' (demo money)<br>' +
+      '<b>Your demo balance:</b> ' + fmtBDT(w.balance) + (sendDraft.amount > w.balance ? '<br><b>That is more than your balance — the send will be blocked.</b>' : '') + '</div>' +
+      '<button class="btn primary big" id="wSendAuthorise" style="margin-top:12px">Scan My Palm to Send</button>';
+    $('wSendAuthorise').addEventListener('click', authoriseSend);
+  }
+  function authoriseSend() {
+    var me = walletSessionPerson();
+    if (!me || !sendDraft.receiverId) return;
+    showWalletScan({
+      title: 'Send money — authorise with your own palm',
+      prompt: 'Scan YOUR OWN palm to send ' + fmtBDT(sendDraft.amount) + ' of demo money to ' + sendDraft.receiverName + ' (' + sendDraft.receiverId + '). Only your palm can authorise a send from your wallet.',
+      run: function () {
+        return DB.all('people').then(function (people) {
+          var freshSender = people.find(function (p) { return p.id === me.id; }) || me;
+          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), freshSender, people, walletSwapCamera, function () {}).then(function (out) {
+            var auth = authFromVerify(out, freshSender.id);
+            if (!auth.verified) { walletScanFailed(out); return; }
+            return DB.nextSeq('demoSeq', 1).then(function (seq) {
+              var res = B.walletApplySend(people, freshSender.id, sendDraft.receiverId, sendDraft.amount, auth, Date.now(), B.walletDemoRef(seq));
+              if (!res.ok) { $('wScanMsg').innerHTML = '<div class="error">' + esc(res.error) + '</div>'; $('wScanRun').disabled = false; return; }
+              // The transfer was computed atomically from the one
+              // snapshot above; persist both updated records.
+              return DB.put('people', res.sender).then(function () { return DB.put('people', res.receiver); }).then(function () {
+                var sentAmount = sendDraft.amount, sentTo = sendDraft.receiverName, sentToId = sendDraft.receiverId, sentRef = res.senderEntry.ref, newBal = res.senderEntry.balanceAfter;
+                sendDraft = { amount: null, receiverId: null, receiverName: null };
+                hideWalletScan();
+                return renderWallet().then(function () {
+                  $('wHomeMsg').innerHTML = '<div class="success">Sent ' + fmtBDT(sentAmount) + ' of demo money to ' + esc(sentTo) + ' (' + esc(sentToId) + '). New demo balance: ' + fmtBDT(newBal) + '.<br>Reference: ' + esc(sentRef) + ' (demo reference — not a real payment).</div>';
+                  toast('Demo money sent');
+                  Snd.chime();
+                });
+              });
+            });
+          });
+        });
+      }
+    });
+  }
+
   /* ---------------- Registry & logs -------------------------------------- */
   function renderRegistry() {
     var q = ($('registrySearch').value || '').toLowerCase();
@@ -1849,5 +2354,5 @@
   syncCamToggle('terminal');
   ['enrollPalm', 'terminal'].forEach(function (g) { syncFlashToggle(g); });
   fillStoreSelects();
-  DB.open().then(function () { return migrateDbStores(); }).then(function () { renderDashboard(); fillTerminalPeople(); });
+  DB.open().then(function () { return migrateDbStores(); }).then(function () { renderDashboard(); fillTerminalPeople(); renderWallet(); });
 })();

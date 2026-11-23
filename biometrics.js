@@ -2420,6 +2420,191 @@
     return normalised.slice(0, 5) + '-***' + normalised.slice(8);
   }
 
+  /* ================= Demo wallet (v42) =================
+     The demonstration wallet layer the Chairman ordered 2026-11-23:
+     every registered person has a wallet whose account ID is their
+     Biom ID, created at registration with balance 0. The wallet
+     functions below are the STORE LAYER — pure functions over the
+     plain person rows, so the app UI and this test suite exercise
+     exactly the same rules. The UI never moves demo money except
+     through walletApplyAddMoney / walletApplySend.
+
+     HONESTY (standing real-only rule): this is DEMONSTRATION money
+     inside the app. References are DEMO-prefixed and never shaped
+     like a bKash / Nagad TrxID; real provider settlement remains
+     biometric-authorised pending partner API, exactly as the
+     terminal's Biom Pay records already state.
+
+     THE RULES, enforced here (not just in the UI):
+       - A wallet opens only for a verified palm scan; the scan is
+         the key. These functions consume the verify pipeline's
+         result as an authorisation object { verified, personId } —
+         there is no second, weaker scan path for wallet actions.
+       - Add Money credits only when the authorisation verifies as
+         the wallet's OWN owner and a linked funding account is
+         named. Another person's palm, or no match, credits nothing.
+       - Send Money resolves the receiver from the identification
+         scan. A palm matching NO registered Biom ID resolves to
+         null and the send is impossible — even when the sender has
+         an account and a balance.
+       - Amount must be a positive number and no more than the
+         sender's balance (a balance of 0 sends nothing). No partial
+         transfer, no negative balance.
+       - Sending to yourself is blocked.
+       - A completed transfer is computed from ONE snapshot of the
+         people store: the sender debit and the receiver credit and
+         both statement entries come out of the same call, so the
+         two sides can never disagree about amount or reference. */
+  var WALLET_ACCOUNT_TYPES = ['bKash', 'Nagad', 'Bank', 'Card'];
+  function walletRound(n) { return Math.round(n * 100) / 100; }
+  function walletCopyRow(row) {
+    var copy = {};
+    if (row && typeof row === 'object') Object.keys(row).forEach(function (k) { copy[k] = row[k]; });
+    return copy;
+  }
+  function walletNew() { return { balance: 0, statement: [], linkedAccounts: [] }; }
+  function walletSane(w) {
+    return !!w && typeof w === 'object' &&
+      typeof w.balance === 'number' && isFinite(w.balance) && w.balance >= 0 &&
+      Array.isArray(w.statement) && Array.isArray(w.linkedAccounts);
+  }
+  /* Fill a missing or partially-formed wallet, preserving whatever
+     is already valid in it (a real balance, statement rows, linked
+     accounts are never discarded). Returns the SAME person object
+     when the wallet is already sane, so callers can detect the
+     no-change case by identity — the v42 migration relies on it. */
+  function walletEnsurePerson(person) {
+    if (!person || typeof person !== 'object') return person;
+    if (walletSane(person.wallet)) return person;
+    var w = walletNew();
+    var old = person.wallet;
+    if (old && typeof old === 'object') {
+      if (typeof old.balance === 'number' && isFinite(old.balance) && old.balance >= 0) w.balance = old.balance;
+      if (Array.isArray(old.statement)) w.statement = old.statement;
+      if (Array.isArray(old.linkedAccounts)) w.linkedAccounts = old.linkedAccounts;
+    }
+    var copy = walletCopyRow(person);
+    copy.wallet = w;
+    return copy;
+  }
+  function walletValidateAmount(raw) {
+    var n = typeof raw === 'string' ? Number(raw.trim()) : raw;
+    if (typeof n !== 'number' || isNaN(n) || !isFinite(n)) {
+      return { ok: false, code: 'INVALID_AMOUNT', error: 'Enter the amount as a number.' };
+    }
+    n = walletRound(n);
+    if (!(n > 0)) {
+      return { ok: false, code: 'INVALID_AMOUNT', error: 'The amount must be more than zero.' };
+    }
+    return { ok: true, amount: n };
+  }
+  /* Demo references are honest demo references: DEMO-prefixed,
+     never formatted to imitate a provider TrxID. */
+  function walletDemoRef(seq) { return 'DEMO-' + seq; }
+  /* The authorisation an action consumes is the EXISTING verify
+     pipeline's outcome, modelled as { verified: true, personId }.
+     Anything else — a failed scan, a spoof rejection, a scan that
+     verified as somebody else — authorises nothing. */
+  function walletAuthorised(authResult, personId) {
+    return !!authResult && authResult.verified === true && !!personId && authResult.personId === personId;
+  }
+  function walletAddLinkedAccount(person, type, label, ts) {
+    if (!person || typeof person !== 'object') return { ok: false, code: 'NO_PERSON', error: 'No wallet owner was found.' };
+    if (WALLET_ACCOUNT_TYPES.indexOf(type) === -1) {
+      return { ok: false, code: 'BAD_ACCOUNT_TYPE', error: 'Choose the account type: bKash, Nagad, Bank or Card.' };
+    }
+    var lbl = String(label == null ? '' : label).trim();
+    if (!lbl) return { ok: false, code: 'BAD_ACCOUNT_LABEL', error: 'Give the account a name or number so you can recognise it.' };
+    var p = walletEnsurePerson(person);
+    var acct = {
+      id: 'ACCT-' + (p.wallet.linkedAccounts.length + 1) + '-' + String(ts || 0),
+      type: type, label: lbl, linkedAt: ts || 0
+    };
+    var copy = walletCopyRow(p);
+    copy.wallet = { balance: p.wallet.balance, statement: p.wallet.statement, linkedAccounts: p.wallet.linkedAccounts.concat([acct]) };
+    return { ok: true, person: copy, account: acct };
+  }
+  function walletApplyAddMoney(person, amountRaw, accountId, authResult, ts, ref) {
+    if (!person || typeof person !== 'object') return { ok: false, code: 'NO_PERSON', error: 'No wallet owner was found.' };
+    var amt = walletValidateAmount(amountRaw);
+    if (!amt.ok) return amt;
+    var p = walletEnsurePerson(person);
+    var acct = null;
+    p.wallet.linkedAccounts.forEach(function (a) { if (a && a.id === accountId) acct = a; });
+    if (!acct) return { ok: false, code: 'NO_ACCOUNT', error: 'Link a funding account first — Add Money needs an account to add from.' };
+    if (!walletAuthorised(authResult, p.id)) {
+      return { ok: false, code: 'AUTH_FAILED', error: 'Your own palm did not verify, so no money was added. Only the wallet owner\'s palm can add money to this wallet.' };
+    }
+    var entry = {
+      ref: ref, ts: ts, kind: 'add', amount: amt.amount,
+      balanceAfter: walletRound(p.wallet.balance + amt.amount),
+      accountType: acct.type, accountLabel: acct.label,
+      note: 'Demo money added inside the app — not real funds.'
+    };
+    var copy = walletCopyRow(p);
+    copy.wallet = { balance: entry.balanceAfter, statement: p.wallet.statement.concat([entry]), linkedAccounts: p.wallet.linkedAccounts };
+    return { ok: true, person: copy, entry: entry };
+  }
+  /* The receiver of a send is whoever the identification scan
+     resolved. A scan matching no registered palm resolves to null —
+     and with no receiver there is nothing to send to. */
+  function walletResolveReceiver(people, identifiedId) {
+    if (!identifiedId || !Array.isArray(people)) return null;
+    var found = null;
+    people.forEach(function (p) { if (p && p.id === identifiedId) found = p; });
+    return found;
+  }
+  function walletApplySend(people, senderId, receiverId, amountRaw, authResult, ts, ref) {
+    if (!Array.isArray(people)) return { ok: false, code: 'NO_STORE', error: 'The people store could not be read.' };
+    var sender = null;
+    people.forEach(function (p) { if (p && p.id === senderId) sender = p; });
+    if (!sender) return { ok: false, code: 'SENDER_NOT_FOUND', error: 'Your wallet could not be found. Open your wallet again and retry.' };
+    var receiver = walletResolveReceiver(people, receiverId);
+    if (!receiver) {
+      return { ok: false, code: 'RECEIVER_NOT_REGISTERED', error: 'Receiver not registered: that palm matches no registered Biom ID on this device, so no money can be sent.' };
+    }
+    if (receiver.id === sender.id) {
+      return { ok: false, code: 'SELF_SEND', error: 'You cannot send money to yourself.' };
+    }
+    var amt = walletValidateAmount(amountRaw);
+    if (!amt.ok) return amt;
+    var s = walletEnsurePerson(sender);
+    var r = walletEnsurePerson(receiver);
+    if (amt.amount > s.wallet.balance) {
+      return { ok: false, code: 'INSUFFICIENT_BALANCE', error: 'Insufficient balance: your demo balance is BDT ' + s.wallet.balance + ', so BDT ' + amt.amount + ' cannot be sent. No money moved.' };
+    }
+    if (!walletAuthorised(authResult, s.id)) {
+      return { ok: false, code: 'AUTH_FAILED', error: 'Your own palm did not verify, so nothing was sent.' };
+    }
+    var senderEntry = {
+      ref: ref, ts: ts, kind: 'send', amount: amt.amount,
+      counterpartyId: r.id, counterpartyName: r.name,
+      balanceAfter: walletRound(s.wallet.balance - amt.amount),
+      note: 'Demo transfer inside the app — not a real payment.'
+    };
+    var receiverEntry = {
+      ref: ref, ts: ts, kind: 'receive', amount: amt.amount,
+      counterpartyId: s.id, counterpartyName: s.name,
+      balanceAfter: walletRound(r.wallet.balance + amt.amount),
+      note: 'Demo transfer inside the app — not a real payment.'
+    };
+    var newSender = null, newReceiver = null;
+    var newPeople = people.map(function (p) {
+      if (p && p.id === s.id) {
+        newSender = walletCopyRow(s);
+        newSender.wallet = { balance: senderEntry.balanceAfter, statement: s.wallet.statement.concat([senderEntry]), linkedAccounts: s.wallet.linkedAccounts };
+        return newSender;
+      }
+      if (p && p.id === r.id) {
+        newReceiver = walletCopyRow(r);
+        newReceiver.wallet = { balance: receiverEntry.balanceAfter, statement: r.wallet.statement.concat([receiverEntry]), linkedAccounts: r.wallet.linkedAccounts };
+        return newReceiver;
+      }
+      return p;
+    });
+    return { ok: true, people: newPeople, sender: newSender, receiver: newReceiver, senderEntry: senderEntry, receiverEntry: receiverEntry };
+  }
+
   /* ================= Stored-data migration (v38) =================
      STANDING RULE (the Chairman's order, 2026-11-23): "from now keep
      data dont wipe". App updates MIGRATE the on-device store forward
@@ -2472,13 +2657,34 @@
      re-encodes in PALMPRINT_GEO_VARIANTS) — enrolled codes are
      read exactly as before and benefit from the fix unchanged,
      so its step is also the identity, and a v40 enrolment opens
-     under v41 with the person, palm codes and points intact. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41'];
+     under v41 with the person, palm codes and points intact.
+
+     v41 -> v42 is a CONVERSION, the first since the chain began:
+     v42 adds the demonstration wallet, so every person row gains
+     a wallet (balance 0, empty statement, no linked accounts) via
+     walletEnsurePerson. Every existing field — name, palm codes,
+     points, limits, the linked provider wallet — is carried over
+     untouched; only the people store is rewritten, and only when
+     at least one person actually lacked a sane wallet. A person
+     who already HAS a sane wallet (any store written by v42
+     itself) is returned by identity, so this step can never reset
+     a balance or wipe a statement, and re-running it is a no-op. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
     'v40': function (snap) { return snap; },
-    'v41': function (snap) { return snap; }
+    'v41': function (snap) { return snap; },
+    'v42': function (snap) {
+      var changed = false;
+      var people = snap.people.map(function (p) {
+        var ensured = walletEnsurePerson(p);
+        if (ensured !== p) changed = true;
+        return ensured;
+      });
+      if (!changed) return snap;
+      return { people: people, logs: snap.logs, transactions: snap.transactions, meta: snap.meta };
+    }
   };
   var BIOM_DATA_STORES = ['people', 'logs', 'transactions', 'meta'];
   function migrateBiomData(snapshot, fromVersion, toVersion) {
@@ -2597,6 +2803,17 @@
     verifyFingerprint: verifyFingerprint,
     normaliseWalletNumber: normaliseWalletNumber,
     maskWalletNumber: maskWalletNumber,
+    WALLET_ACCOUNT_TYPES: WALLET_ACCOUNT_TYPES,
+    walletNew: walletNew,
+    walletSane: walletSane,
+    walletEnsurePerson: walletEnsurePerson,
+    walletValidateAmount: walletValidateAmount,
+    walletDemoRef: walletDemoRef,
+    walletAuthorised: walletAuthorised,
+    walletAddLinkedAccount: walletAddLinkedAccount,
+    walletApplyAddMoney: walletApplyAddMoney,
+    walletResolveReceiver: walletResolveReceiver,
+    walletApplySend: walletApplySend,
     migrateBiomData: migrateBiomData,
     BIOM_DATA_VERSIONS: BIOM_DATA_VERSIONS,
     BIOM_DATA_STORES: BIOM_DATA_STORES

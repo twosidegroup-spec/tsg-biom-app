@@ -132,6 +132,22 @@ select.personlist option{padding:12px 10px}
 .resultbig.bad{background:#fdeeee;border:2px solid #e5534b;color:#8f1d1d}
 .receipt{background:#fff;border:2px solid var(--teal);border-radius:22px;padding:22px;margin-top:14px;box-shadow:var(--shadow)}
 .receipt .rhead{font-size:21px;font-weight:800;margin-bottom:10px;color:var(--teal)}
+/* --- Demo wallet (v42): profile cards, balance box, statement --- */
+.profilecards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}
+.profilecard{background:#fbfcfc;border:1px solid var(--line);border-radius:16px;padding:14px 16px;text-align:left;cursor:pointer;color:var(--text);min-height:48px}
+.profilecard:hover{border-color:var(--accent2)}
+.profilecard .pc-name{display:block;font-size:16px;font-weight:800}
+.profilecard .pc-id{display:block;color:var(--teal);font-weight:700;font-size:13px;margin-top:2px}
+.profilecard .pc-sub{display:block;color:var(--muted);font-size:12.5px;margin-top:4px;line-height:1.45}
+.balancebox{background:#eef5f4;border:1px solid var(--line);border-radius:18px;padding:18px;margin-top:14px;text-align:center}
+.balancebox .ballabel{color:var(--muted);font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:1px}
+.balancebox .balnum{font-size:38px;font-weight:800;color:var(--teal);margin-top:4px}
+.balancebox .balnote{color:var(--warn);font-size:13px;font-weight:700;margin-top:4px}
+.stmtrow{display:flex;justify-content:space-between;gap:12px;padding:10px 2px;border-bottom:1px solid var(--line2);font-size:14px}
+.stmtrow .smeta{color:var(--muted);font-size:12.5px;line-height:1.5}
+.stmtrow .amt{font-weight:800;white-space:nowrap}
+.stmtrow .amt.in{color:var(--ok)}
+.stmtrow .amt.out{color:var(--danger)}
 /* --- Touch targets & simpler forms --- */
 .btn{min-height:48px}
 .camtoggle button{min-height:44px;padding:10px 16px}
