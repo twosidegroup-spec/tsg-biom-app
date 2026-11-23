@@ -574,20 +574,33 @@
      A video replay presents the hand on another device's screen. Three
      physical traces of a screen are measured on the raw grayscale
      frame: (1) PIXEL GRID IN FLAT REGIONS - a display's pixel structure
-     beats against the camera sensor EVERYWHERE, including the frame's
-     flattest areas, while a real scene's fine texture (palm creases)
-     lives only where the texture is. The grid trigger is the signal's
-     PERIODICITY inside the flattest quartile of blocks (v19 - see the
-     note at flatCoherence): alternation density alone false-flagged
-     both a genuine synthetic feed (0.46-0.51) and a real phone
-     (0.27-0.41), because dense texture and sensor noise alternate too.
-     (2) BEZEL - the device's rectangular frame produces long straight
-     edges spanning the frame in both orientations. (3) GLASS GLARE -
-     flat, saturated patches from specular reflection off glass.
+     beats against the camera sensor, while a real scene's fine texture
+     (palm creases) lives only where the texture is. The grid trigger
+     is the signal's PERIODICITY inside the flattest quartile of blocks
+     (v19 - see the note at flatCoherence): alternation density alone
+     false-flagged both a genuine synthetic feed (0.46-0.51) and a real
+     phone (0.27-0.41), because dense texture and sensor noise
+     alternate too.
+     v36: the grid analysis is SCOPED TO THE PALM REGION when the
+     caller passes one (the optional 4th argument, from
+     palmRoiRegionPx). A replay is a picture OF A PALM on a screen, so
+     the grid evidence that matters is the grid inside the palm image
+     itself. The whole-frame version false-convicted a live hand in a
+     real room on 2026-11-23 (density 0.21-0.29, coherence 0.83-0.84 -
+     the flattest blocks were patterned bedding/clothing, not the
+     hand). Background periodicity outside the hand can no longer
+     convict a scan. Region semantics: undefined = legacy whole-frame
+     analysis (direct callers and tests); an object = measure grid
+     stats over the blocks fully inside it only; null = the caller
+     knows no palm region exists in this frame, so grid evidence is
+     not measurable and cannot convict. (2) BEZEL - the device's
+     rectangular frame produces long straight edges spanning the frame
+     in both orientations - and (3) GLASS GLARE stay whole-frame: they
+     describe the presenting device, not scene texture.
      Heuristic by design: Field Test Mode exists to measure its
      real-world rejection rate. */
-  function screenSpoofCheck(gray, w, h) {
-    var none = { spoof: false, score: 0, reasons: [], moire: 0, flatMoire: 0, flatCoherence: 0, bezel: false, glare: 0, checked: false };
+  function screenSpoofCheck(gray, w, h, region) {
+    var none = { spoof: false, score: 0, reasons: [], moire: 0, flatMoire: 0, flatCoherence: 0, bezel: false, glare: 0, checked: false, gridScoped: region !== undefined, gridBlocks: 0 };
     if (!gray || !w || !h || gray.length < w * h || w < 48 || h < 48) return none;
     // Global strong-alternation density (informational).
     var strong = 0, altern = 0, prevSign = 0;
@@ -606,17 +619,28 @@
     var moire = strong > 200 ? altern / strong : 0;
     // Flat-region alternation: range of every 16x16 block, keep the
     // flattest quartile, measure the same density inside those blocks.
+    // v36: when a palm region is passed, only blocks FULLY INSIDE it
+    // are candidates - the grid stats then describe the palm image,
+    // not the room behind the hand. A null region (no palm located)
+    // or a region holding fewer than 4 blocks yields no grid evidence
+    // at all: flatMoire and flatCoherence stay 0 and the grid rules
+    // below cannot fire on this frame.
     var BS = 16, blocksIdx = [];
-    for (var by = 0; by + BS <= h; by += BS) for (var bx = 0; bx + BS <= w; bx += BS) {
-      var mn = 255, mx = 0;
-      for (var yy = 0; yy < BS; yy++) for (var xx = 0; xx < BS; xx++) {
-        var v = gray[(by + yy) * w + (bx + xx)];
-        if (v < mn) mn = v; if (v > mx) mx = v;
+    var gridUsable = region === undefined || !!region;
+    if (gridUsable) {
+      for (var by = 0; by + BS <= h; by += BS) for (var bx = 0; bx + BS <= w; bx += BS) {
+        if (region && (bx < region.x0 || bx + BS > region.x1 || by < region.y0 || by + BS > region.y1)) continue;
+        var mn = 255, mx = 0;
+        for (var yy = 0; yy < BS; yy++) for (var xx = 0; xx < BS; xx++) {
+          var v = gray[(by + yy) * w + (bx + xx)];
+          if (v < mn) mn = v; if (v > mx) mx = v;
+        }
+        blocksIdx.push({ bx: bx, by: by, range: mx - mn });
       }
-      blocksIdx.push({ bx: bx, by: by, range: mx - mn });
     }
+    if (blocksIdx.length < 4) gridUsable = false;
     blocksIdx.sort(function (a, b) { return a.range - b.range; });
-    var flatBlocks = blocksIdx.slice(0, Math.max(4, Math.floor(blocksIdx.length / 4)));
+    var flatBlocks = gridUsable ? blocksIdx.slice(0, Math.max(4, Math.floor(blocksIdx.length / 4))) : [];
     var fStrong = 0, fAltern = 0;
     flatBlocks.forEach(function (bl) {
       for (var yy2 = 0; yy2 < BS; yy2++) {
@@ -718,7 +742,7 @@
     var glare = blocks ? flatBright / blocks : 0;
     var reasons = [];
     if (bezel) reasons.push('rectangular device bezel edges detected around the hand');
-    if (flatMoire >= 0.20 && flatCoherence >= 0.35) reasons.push('periodic screen pixel-grid pattern detected in the flat regions of the frame (density ' + flatMoire.toFixed(2) + ', grid coherence ' + flatCoherence.toFixed(2) + ')');
+    if (flatMoire >= 0.20 && flatCoherence >= 0.35) reasons.push('periodic screen pixel-grid pattern detected in the ' + (region !== undefined ? 'palm region' : 'flat regions') + ' of the frame (density ' + flatMoire.toFixed(2) + ', grid coherence ' + flatCoherence.toFixed(2) + ')');
     if (glare > 0.05) reasons.push('flat specular glass glare detected (' + Math.round(glare * 100) + '% of frame)');
     // v32: the grid-ALONE bar rises 0.50 -> 0.62. Measured on the
     // user's phone (2026-11-20): his REAL hand at a real terminal was
@@ -731,7 +755,27 @@
     // glare at 0.35, are unchanged.
     var spoof = bezel || (flatMoire >= 0.20 && flatCoherence >= 0.62) || (flatMoire >= 0.20 && flatCoherence >= 0.35 && glare > 0.05);
     var score = Math.max(bezel ? 0.9 : 0, flatMoire >= 0.20 ? Math.min(1, flatCoherence / 0.5) : flatCoherence * 0.5, Math.min(1, glare / 0.12));
-    return { spoof: spoof, score: spoof ? Math.max(score, 0.6) : score, reasons: reasons, moire: moire, flatMoire: flatMoire, flatCoherence: flatCoherence, bezel: bezel, glare: glare, checked: true };
+    return { spoof: spoof, score: spoof ? Math.max(score, 0.6) : score, reasons: reasons, moire: moire, flatMoire: flatMoire, flatCoherence: flatCoherence, bezel: bezel, glare: glare, checked: true, gridScoped: region !== undefined, gridBlocks: blocksIdx.length };
+  }
+
+  /* v36: one entry per distinct reason KIND. The tracker concatenates
+     the reasons of every flagged frame, so one scan used to repeat
+     the grid reason once per flagged frame - identical text, only the
+     measured numbers differed - which read as a doubled fault in the
+     user-facing message (the Chairman's 2026-11-23 screenshot showed
+     it twice). The dedupe key strips the parenthesised measurements
+     and any bare numbers; the first occurrence is kept verbatim,
+     numbers and all. */
+  function dedupeSpoofReasons(reasons) {
+    var seen = {}, out = [];
+    (reasons || []).forEach(function (r) {
+      if (typeof r !== 'string') return;
+      var key = r.replace(/\([^)]*\)/g, '').replace(/\d+(\.\d+)?/g, '#').replace(/\s+/g, ' ').trim().toLowerCase();
+      if (seen[key]) return;
+      seen[key] = true;
+      out.push(r);
+    });
+    return out;
   }
 
   /* ------------- Field-test statistics + CSV (v18) ---------------------
@@ -1331,6 +1375,26 @@
       { x: cx + ux * hs + vx * hs, y: cy + uy * hs + vy * hs },
       { x: cx - ux * hs + vx * hs, y: cy - uy * hs + vy * hs }
     ];
+  }
+  /* The palm region the spoof grid gate may look at (v36): the
+     axis-aligned box around the exact ROI square palmRoiFromLandmarks
+     warps out for matching, grown by a small margin (6% of its larger
+     side) for warp slop and clamped to the frame. Returns
+     {x0, y0, x1, y1} in pixels, or null when no usable ROI square
+     exists (no hand, hand too small, degenerate geometry). */
+  function palmRoiRegionPx(w, h, landmarks) {
+    var corners = palmRoiCornersPx(w, h, landmarks);
+    if (!corners) return null;
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    corners.forEach(function (c) {
+      if (c.x < x0) x0 = c.x; if (c.x > x1) x1 = c.x;
+      if (c.y < y0) y0 = c.y; if (c.y > y1) y1 = c.y;
+    });
+    var m = 0.06 * Math.max(x1 - x0, y1 - y0);
+    x0 = Math.max(0, Math.floor(x0 - m)); y0 = Math.max(0, Math.floor(y0 - m));
+    x1 = Math.min(w, Math.ceil(x1 + m)); y1 = Math.min(h, Math.ceil(y1 + m));
+    if (!(x1 - x0 >= 16 && y1 - y0 >= 16)) return null;
+    return { x0: x0, y0: y0, x1: x1, y1: y1 };
   }
   function homographyFromQuad(corners) {
     // Maps the unit square (0,0),(1,0),(1,1),(0,1) onto corners TL,TR,BR,BL.
@@ -2031,6 +2095,8 @@
     evaluateMovementSequence: evaluateMovementSequence,
     evaluateMovementSequenceStreaming: evaluateMovementSequenceStreaming,
     screenSpoofCheck: screenSpoofCheck,
+    palmRoiRegionPx: palmRoiRegionPx,
+    dedupeSpoofReasons: dedupeSpoofReasons,
     fieldTestStats: fieldTestStats,
     fieldTestCsv: fieldTestCsv,
     PALM_SEQUENCES: PALM_SEQUENCES,

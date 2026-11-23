@@ -14,7 +14,7 @@
      matching code do not read reliably against a new one. Bump
      APP_DATA_VERSION together with the service-worker shell on any
      build that changes enrolment or matching. */
-  var APP_DATA_VERSION = 'v35';
+  var APP_DATA_VERSION = 'v36';
   /* DEVELOPMENT ONLY (his order, 2026-11-20): the wipe below runs
      only in development builds. A commercial build ships with
      BUILD_MODE set to 'commercial' and never wipes - real customer
@@ -547,8 +547,15 @@
   var spoofScratch = null;
   /* Downscale a recorded frame and run the screen-spoof detector on
      it (v18). Returns the detector result plus the frame's mean
-     brightness (used for the field-test lighting tag), or null. */
-  function spoofSample(frame) {
+     brightness (used for the field-test lighting tag), or null.
+     v36: the frame's landmarks scope the detector's grid analysis to
+     the palm region (the ROI square used for matching, plus a small
+     margin) - a screen replay carries its pixel grid in the palm
+     image itself, while patterned surfaces elsewhere in the room
+     must not convict a live scan. No landmarks (or no usable ROI
+     square) passes a null region: that frame then carries no grid
+     evidence either way. Bezel and glare stay whole-frame. */
+  function spoofSample(frame, lm) {
     try {
       if (!spoofScratch) spoofScratch = document.createElement('canvas');
       var w = 160, h = Math.max(48, Math.round(160 * frame.height / frame.width));
@@ -558,7 +565,8 @@
       var img = ctx.getImageData(0, 0, w, h).data;
       var gray = new Array(w * h), sum = 0;
       for (var i = 0; i < w * h; i++) { var v = Math.round(0.299 * img[i * 4] + 0.587 * img[i * 4 + 1] + 0.114 * img[i * 4 + 2]); gray[i] = v; sum += v; }
-      var chk = B.screenSpoofCheck(gray, w, h);
+      var region = lm ? B.palmRoiRegionPx(w, h, lm) : null;
+      var chk = B.screenSpoofCheck(gray, w, h, region);
       chk.meanBrightness = sum / (w * h);
       return chk;
     } catch (e) { return null; }
@@ -727,7 +735,7 @@
      passive liveness. Same frame-result shape the clip pipeline used. */
   function analysePalmFrame(frame) {
     return PalmProc.landmarks(frame).then(function (lm) {
-      if (!lm) return { openness: null, descriptor: null, code: null, codeM: null, roi: null, sharpness: 0, texture: null, spread: null, tilt: null, pose: null, framing: null };
+      if (!lm) return { openness: null, descriptor: null, code: null, codeM: null, roi: null, sharpness: 0, texture: null, spread: null, tilt: null, pose: null, framing: null, lm: null };
       var openness = B.palmOpenness(lm);
       var descriptor = B.palmDescriptorFromLandmarks(lm);
       var meas = descriptor ? palmFrameMeasures(frame, frame.width, frame.height, lm) : { texture: null, sharpness: 0 };
@@ -743,7 +751,7 @@
       // checkout palm yields candidates; enrolment still BANKS only
       // fully-open frames (its selection gate stays at PALM_OPEN_MIN).
       var codes = (typeof openness === 'number' && openness >= B.PALM_LIVE_OPEN_MIN) ? palmCodesFromFrame(frame, lm) : null;
-      return { openness: openness, descriptor: descriptor, code: codes ? codes.code : null, codeM: codes ? codes.codeM : null, roi: codes ? codes.roi : null, sharpness: meas.sharpness, texture: meas.texture, spread: B.palmSpread(lm), tilt: B.palmTilt(lm), pose: B.palmFramePose(lm), framing: B.palmFramingHint(lm) };
+      return { openness: openness, descriptor: descriptor, code: codes ? codes.code : null, codeM: codes ? codes.codeM : null, roi: codes ? codes.roi : null, sharpness: meas.sharpness, texture: meas.texture, spread: B.palmSpread(lm), tilt: B.palmTilt(lm), pose: B.palmFramePose(lm), framing: B.palmFramingHint(lm), lm: lm };
     });
   }
 
@@ -753,14 +761,16 @@
   function makeSpoofTracker() {
     var checks = [];
     return {
-      add: function (frame) { var s = spoofSample(frame); if (s) checks.push(s); },
+      add: function (frame, lm) { var s = spoofSample(frame, lm); if (s) checks.push(s); },
       state: function () {
         var flagged = checks.filter(function (c) { return c.spoof; });
         var meanB = checks.length ? checks.reduce(function (s, c) { return s + c.meanBrightness; }, 0) / checks.length : null;
         return {
           spoof: checks.length > 0 && flagged.length >= Math.max(2, Math.ceil(checks.length / 2)),
           score: checks.reduce(function (m, c) { return Math.max(m, c.score); }, 0),
-          reasons: flagged.reduce(function (acc, c) { return acc.concat(c.reasons); }, []),
+          // v36: one entry per reason kind - two flagged frames no
+          // longer repeat the same reason with different numbers.
+          reasons: B.dedupeSpoofReasons(flagged.reduce(function (acc, c) { return acc.concat(c.reasons); }, [])),
           framesChecked: checks.length, framesFlagged: flagged.length,
           lightTag: meanB === null ? null : meanB > 150 ? 'bright' : meanB >= 80 ? 'indoor' : 'dim'
         };
@@ -846,8 +856,12 @@
       frames.forEach(function (frame) {
         chain = chain.then(function () {
           if (!live || tracker.state().spoof || done()) return;
-          if (analysed % 3 === 0) tracker.add(frame);
+          // v36: the spoof sample is taken AFTER analysis so it can
+          // carry the frame's landmarks and scope its grid analysis
+          // to the palm region; the every-3rd-frame cadence is kept.
+          var sampleThis = (analysed % 3 === 0);
           return analysePalmFrame(frame).then(function (r) {
+            if (sampleThis) tracker.add(frame, r.lm);
             analysed++;
             results.push(r);
             // Movement measures come from EVERY frame with landmarks:
@@ -1009,13 +1023,15 @@
       return grab(0).then(function () {
         // Every snap feeds the spoof tracker (was: only the middle
         // snap). The two-frame match win can complete inside a single
-        // burst, so the gate needs its evidence at burst speed.
-        snaps.forEach(function (f) { tracker.add(f); });
+        // burst, so the gate needs its evidence at burst speed. v36:
+        // each sample is added after its frame is analysed, carrying
+        // the landmarks so the grid gate reads the palm region only.
         var chain = Promise.resolve();
         snaps.forEach(function (frame) {
           chain = chain.then(function () {
             return analysePalmFrame(frame).then(function (r) {
               analysed++;
+              tracker.add(frame, r.lm);
               frames.push(r);
               if (typeof r.openness === 'number') lastHint = r.framing || null;
               if (r.pose) { poses.push(r.pose); if (poses.length > 6) poses.shift(); }
