@@ -35,7 +35,16 @@
    leaving every existing field byte-identical, rewrites only
    the people store, and can never reset a wallet a v42 store
    already carries. (v41's section below stays as written; the
-   chain pins move to v42, as they have at every bump.) */
+   chain pins move to v42, as they have at every bump.)
+
+   Extended for v43 (2026-11-23): the chain gains 'v43' — an
+   ADOPTION step. v43 changes how scans are captured (hands-free
+   auto-start/auto-trigger, guidance, cooldown) and how enrolment
+   banks codes (per-pose; profiles MAY gain an optional poses
+   array on v43 saves), but no stored field changes shape, so a
+   v42 store — wallet balance, statement and linked accounts
+   included — opens under v43 byte-identical. The v43 section
+   below proves exactly that on a wallet-carrying store. */
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -149,8 +158,8 @@ check('MIGRATE a store with a missing logs array keeps the people', Array.isArra
    its migration step is an adoption like v38's. A store written by
    v38 (and one written by v37, through both steps) must open under
    v39 with the person, codes and points intact and still verify. */
-check('CHAIN v42 is the newest link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v42' &&
-  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40,v41,v42', B.BIOM_DATA_VERSIONS.join(','));
+check('CHAIN v43 is the newest link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v43' &&
+  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40,v41,v42,v43', B.BIOM_DATA_VERSIONS.join(','));
 const mig39 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v38', 'v39');
 check('MIGRATE v38->v39 runs the v39 step', mig39.appliedSteps.indexOf('v39') !== -1, mig39.appliedSteps.join(','));
 check('MIGRATE v38->v39 is an adoption: no store rewritten', mig39.changed === false && mig39.changedStores.length === 0,
@@ -257,14 +266,47 @@ check('MIGRATE the v42 step never resets a wallet a v42 store already carries',
   migRestamp42.snapshot.people[0].wallet.balance === 450 && migRestamp42.snapshot.people[0].wallet.statement.length === 1 &&
   migRestamp42.changed === false);
 
+/* ---------- v43: the adoption — a wallet-carrying store survives --
+   v43 changes capture and banking, never stored shapes, so its
+   step is the identity. The store below is a v42 store WITH money
+   in it: a demo balance of 450, one DEMO-1 statement entry and one
+   linked funding account, in the shapes the v42 app writes. After
+   the bump the whole person record — wallet included — must be
+   byte-identical, and no store may be rewritten at all. */
+const v43WalletStore = JSON.parse(JSON.stringify(mig42.snapshot));
+v43WalletStore.people[0].wallet.balance = 450;
+v43WalletStore.people[0].wallet.statement.push({ ref: 'DEMO-1', ts: 1795423600000, kind: 'add', amount: 450, balanceAfter: 450, accountType: 'bKash', accountLabel: 'Personal bKash' });
+v43WalletStore.people[0].wallet.linkedAccounts.push({ id: 'acct-1', type: 'bKash', label: 'Personal bKash' });
+v43WalletStore.meta.push({ key: 'demoSeq', value: 2 });
+const v43PersonBefore = JSON.stringify(v43WalletStore.people[0]);
+const mig43 = B.migrateBiomData(JSON.parse(JSON.stringify(v43WalletStore)), 'v42', 'v43');
+check('MIGRATE v42->v43 runs the v43 step', mig43.appliedSteps.indexOf('v43') !== -1, mig43.appliedSteps.join(','));
+check('MIGRATE v42->v43 is an adoption: no store rewritten', mig43.changed === false && mig43.changedStores.length === 0,
+  'changedStores=' + JSON.stringify(mig43.changedStores));
+const mp43 = mig43.snapshot.people[0];
+check('WALLET v43 balance, statement and linked account byte-identical', JSON.stringify(mp43) === v43PersonBefore,
+  mp43 && 'balance=' + mp43.wallet.balance + ' stmt=' + mp43.wallet.statement.length + ' accts=' + mp43.wallet.linkedAccounts.length);
+check('SURVIVE v43 palm codes byte-identical', !!mp43 && JSON.stringify(mp43.palmProfile.codes) === JSON.stringify(enrolledCodes));
+const migChain43 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v37', 'v43');
+check('MIGRATE v37->v43 runs all six steps in order', migChain43.appliedSteps.join(',') === 'v38,v39,v40,v41,v42,v43', migChain43.appliedSteps.join(','));
+check('MIGRATE v37->v43 keeps the person, points and gains the wallet', migChain43.snapshot.people.length === 1 &&
+  migChain43.snapshot.people[0].loyaltyPoints === 137 && migChain43.snapshot.people[0].wallet.balance === 0);
+const rSame43 = B.verifyPalmprintProfile(mp43.palmProfile, probeSame);
+check('VERIFY the v43-migrated profile accepts the same palm', rSame43.verified === true, 'sim=' + (rSame43.similarity && rSame43.similarity.toFixed(3)));
+const rOther43 = B.verifyPalmprintProfile(mp43.palmProfile, probeOther);
+check('VERIFY the v43-migrated profile still rejects another palm', rOther43.verified === false, 'sim=' + (rOther43.similarity && rOther43.similarity.toFixed(3)));
+const migAgain43 = B.migrateBiomData(mig43.snapshot, 'v43', 'v43');
+check('MIGRATE is idempotent at v43', migAgain43.appliedSteps.length === 0 && migAgain43.changed === false &&
+  migAgain43.snapshot.people[0].wallet.balance === 450 && migAgain43.snapshot.people[0].wallet.statement.length === 1);
+
 /* ---------- the shipped app source carries no wipe ----------------- */
 const appSrc = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
-check('APP declares the current data version (v42)', appSrc.indexOf("APP_DATA_VERSION = 'v42'") !== -1);
+check('APP declares the current data version (v43)', appSrc.indexOf("APP_DATA_VERSION = 'v43'") !== -1);
 check('APP startup runs the migration', appSrc.indexOf('migrateBiomData') !== -1 && appSrc.indexOf('migrateDbStores') !== -1);
 check('APP contains no database deletion (the retired wipe)', appSrc.indexOf('deleteDatabase') === -1);
 check('APP contains no store-key removal (the retired wipe)', !/removeItem\(\s*'tsgbiom_/.test(appSrc));
 const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
-check('APP shell is v42', swSrc.indexOf('tsg-biom-shell-v42') !== -1);
+check('APP shell is v43', swSrc.indexOf('tsg-biom-shell-v43') !== -1);
 
 console.log(fail === 0 ? 'ALL MIGRATION TESTS PASSED (' + pass + ')' : fail + ' FAILURES, ' + pass + ' passed');
 process.exit(fail === 0 ? 0 : 1);

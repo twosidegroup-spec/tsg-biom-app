@@ -1875,7 +1875,7 @@
     var out = [];
     (frames || []).forEach(function (f, i) {
       if (f && typeof f.openness === 'number' && isFinite(f.openness) && f.openness >= gate && palmprintCodeSane(f.code)) {
-        out.push({ index: i, openness: f.openness, code: palmprintCodeBytes(f.code), codeM: (f.codeM && palmprintCodeSane(f.codeM)) ? palmprintCodeBytes(f.codeM) : null, roi: (f.roi && f.roi.length === PALMPRINT_ROI_SIZE * PALMPRINT_ROI_SIZE) ? f.roi : null, sharpness: f.sharpness || 0 });
+        out.push({ index: i, openness: f.openness, code: palmprintCodeBytes(f.code), codeM: (f.codeM && palmprintCodeSane(f.codeM)) ? palmprintCodeBytes(f.codeM) : null, roi: (f.roi && f.roi.length === PALMPRINT_ROI_SIZE * PALMPRINT_ROI_SIZE) ? f.roi : null, sharpness: f.sharpness || 0, poseTag: (typeof f.poseTag === 'string') ? f.poseTag : null, poseDesc: (f.poseDesc && typeof f.poseDesc === 'object') ? f.poseDesc : null });
       }
     });
     return out;
@@ -1950,6 +1950,339 @@
     // the set of real captures the max rule scores against.
     return out;
   }
+  /* ================= v43: multi-angle enrolment ===================
+     The Chairman's choice (2026-11-23): "Rebuild enrolment to capture
+     my palm at many angles." The v41 diagnosis is the reason: the
+     dominant genuine-reject factor is out-of-plane palm TILT — a
+     profile banked from one posture in one sitting carries no code
+     for the tilted presentations a hand naturally makes at payment
+     time, and the probe-side geometric variants only partially
+     recover them. So enrolment now banks the best sharp code per
+     POSE from one continuous guided flow, and an existing profile
+     can gain the missing poses later (top-up) without re-registering.
+
+     A frame's pose is MEASURED from its landmarks (palmPoseTag),
+     never merely assumed from the prompt on screen: the prompts
+     guide the user, the classifier decides what was actually
+     presented. The descriptor is the presentation geometry the warp
+     cannot normalise away: fore (projected wrist -> middle-MCP
+     length over knuckle span — out-of-plane tilt foreshortens it),
+     ang (signed knuckle-line angle in the image plane), span
+     (knuckle span, normalised frame coords — the distance axis),
+     zm (mean MCP depth minus wrist depth, MediaPipe z; its sign
+     splits tilt toward the camera from tilt away when the sensor
+     reports it, and the tag falls back to tiltAway — the common
+     payment presentation — when it does not).
+
+     Measured fixture bands behind the bars below (v43 probe,
+     2026-11-23, the v41 fixture family): same-presentation adjacent
+     captures score ~0.61 against each other; a flat code scores
+     0.218 against the av=0.85 tilted capture, 0.55 against a
+     15-degree in-plane rotation, 0.61-0.63 against a distance
+     change. Code similarity therefore CANNOT certify pose diversity
+     on its own — the descriptor is the diversity axis, and
+     similarity is used only where it is decisive: >= 0.95 is a
+     literal re-capture of the same frame's code, and >= 0.55 (the
+     redundancy bar) marks the most-redundant pair when a full
+     profile must make room. Both limits are stated in the v43
+     report; the field test remains the real-world judge. */
+  var PALMPRINT_PROFILE_MAX_CODES = 6; // the store cap the v16/v30 selectors already bank to
+  var PALMPRINT_POSES = [
+    { id: 'flat', label: 'Flat', prompt: 'Hold your palm flat, facing the camera, fingers spread.' },
+    { id: 'tiltAway', label: 'Tilted away', prompt: 'Now tilt the top of your palm slightly away from the camera, fingers pointing a little away — palm still open.' },
+    { id: 'tiltToward', label: 'Tilted toward', prompt: 'Now tilt the top of your palm slightly toward the camera — palm still open.' },
+    { id: 'angleLeft', label: 'Angled left', prompt: 'Now angle your hand to the left, palm still open and facing the camera.' },
+    { id: 'angleRight', label: 'Angled right', prompt: 'Now angle your hand to the right, palm still open and facing the camera.' },
+    { id: 'distance', label: 'Different distance', prompt: 'Now move your palm a little farther from the camera — or closer, if you started far — palm still open.' }
+  ];
+  var PALMPRINT_POSE_IDS = {};
+  PALMPRINT_POSES.forEach(function (p) { PALMPRINT_POSE_IDS[p.id] = true; });
+  var POSE_DUP_SIM = 0.95;        // at/above this, two codes are the same capture re-banked
+  var POSE_REDUNDANT_SIM = 0.55;  // at/above this, a pair is the most-redundant in a full profile
+  var POSE_DESC_EPS = { fore: 0.04, ang: 5, span: 0.05 }; // same-presentation descriptor window
+
+  function palmPoseDescriptor(landmarks) {
+    if (!landmarks || landmarks.length !== 21) return null;
+    var pts = [];
+    for (var i = 0; i < 21; i++) {
+      var p = landmarks[i];
+      if (!p || !isFinite(Number(p.x)) || !isFinite(Number(p.y))) return null;
+      pts.push({ x: Number(p.x), y: Number(p.y), z: isFinite(Number(p.z)) ? Number(p.z) : null });
+    }
+    function dist(a, b) { return Math.hypot(pts[a].x - pts[b].x, pts[a].y - pts[b].y); }
+    var span = dist(5, 17);
+    if (!(span > 0.02)) return null;
+    var fore = dist(0, 9) / span;
+    var ang = Math.atan2(pts[17].y - pts[5].y, pts[17].x - pts[5].x) * 180 / Math.PI;
+    if (ang > 90) ang -= 180;
+    if (ang < -90) ang += 180;
+    var zm = null;
+    var zs = [pts[5].z, pts[9].z, pts[13].z, pts[17].z, pts[0].z];
+    if (zs.every(function (z) { return z !== null; })) {
+      zm = (zs[0] + zs[1] + zs[2] + zs[3]) / 4 - zs[4];
+    }
+    return { fore: fore, ang: ang, span: span, zm: zm };
+  }
+  /* Classify a presentation against the session's flat baseline
+     (ref = a palmPoseDescriptor of an early flat frame, or null
+     before one exists — without a baseline, tilt and distance are
+     not measurable and the frame reads 'flat' or an angle pose).
+     Priority follows the diagnosis ranking: out-of-plane tilt
+     first, then in-plane angle, then distance. The angle sign is
+     the image-plane rotation of the knuckle line (index -> pinky);
+     left/right are nominal — a front camera and a back camera
+     mirror the user's own left/right, and the banking diversity
+     does not depend on the label's handedness. */
+  function palmPoseTag(landmarks, ref) {
+    var d = palmPoseDescriptor(landmarks);
+    if (!d) return null;
+    if (ref && isFinite(ref.fore) && d.fore <= ref.fore * 0.92) {
+      return (d.zm !== null && d.zm <= -0.015) ? 'tiltToward' : 'tiltAway';
+    }
+    if (d.ang >= 12) return 'angleRight';
+    if (d.ang <= -12) return 'angleLeft';
+    if (ref && isFinite(ref.span) && (d.span <= ref.span * 0.85 || d.span >= ref.span * 1.18)) return 'distance';
+    return 'flat';
+  }
+  /* Two descriptors describe the same presentation when every axis
+     sits inside its window — such codes cover the same geometry
+     and banking both adds no range. */
+  function palmPoseDescriptorsClose(a, b) {
+    if (!a || !b) return false;
+    return Math.abs(a.fore - b.fore) <= POSE_DESC_EPS.fore &&
+      Math.abs(a.ang - b.ang) <= POSE_DESC_EPS.ang &&
+      Math.abs(a.span - b.span) <= POSE_DESC_EPS.span;
+  }
+  /* Guided-enrolment selection: the sharpest usable fully-open
+     frame per measured pose, in PALMPRINT_POSES order. A pose set
+     counts only when the flat pose is banked and at least three
+     poses are covered — anything less is the single-posture
+     profile this rebuild exists to replace, and the caller falls
+     back to selectPalmprintProfileCodes. Returns
+     { codes (base64), poses (descriptor per code), tags } or null. */
+  function selectPalmprintPoseCodes(frames) {
+    var usable = palmprintUsableOpenFrames(frames);
+    var byPose = {};
+    usable.forEach(function (u) {
+      if (!u.poseTag || !PALMPRINT_POSE_IDS[u.poseTag]) return;
+      if (!byPose[u.poseTag] || u.sharpness > byPose[u.poseTag].sharpness) byPose[u.poseTag] = u;
+    });
+    var covered = PALMPRINT_POSES.map(function (p) { return p.id; }).filter(function (id) { return !!byPose[id]; });
+    if (covered.indexOf('flat') === -1 || covered.length < 3) return null;
+    var codes = [], poses = [];
+    for (var i = 0; i < covered.length; i++) {
+      var b64 = palmprintCodeToBase64(byPose[covered[i]].code);
+      if (b64 === null) return null;
+      codes.push(b64);
+      poses.push(byPose[covered[i]].poseDesc || null);
+    }
+    return { codes: codes, poses: poses, tags: covered };
+  }
+  /* The victim when a full profile must make room: a code whose
+     presentation another retained code already covers (descriptor
+     window), else the later member of the pair with the highest
+     mutual similarity at/above the redundancy bar. -1 when every
+     banked code covers distinct geometry — nothing is replaceable
+     and a new candidate must be skipped instead. */
+  function palmprintRedundantVictim(bytes, poses) {
+    var i, j, s;
+    for (i = 0; i < bytes.length; i++) for (j = i + 1; j < bytes.length; j++) {
+      if (poses[i] && poses[j] && palmPoseDescriptorsClose(poses[i], poses[j])) return j;
+    }
+    var bestSim = POSE_REDUNDANT_SIM, victim = -1;
+    for (i = 0; i < bytes.length; i++) for (j = i + 1; j < bytes.length; j++) {
+      s = palmprintSimilarity(bytes[i], bytes[j]);
+      if (s !== null && isFinite(s) && s >= bestSim) { bestSim = s; victim = j; }
+    }
+    return victim;
+  }
+  /* Add-angles top-up (v43): merge a guided session's per-pose
+     codes into an EXISTING profile. The stored codes are carried
+     verbatim (the same base64 strings, never re-encoded); the
+     caller's person object is not touched — identity, Biom ID,
+     wallet and points live outside this function and outside its
+     result. A candidate is skipped when it adds no range: a
+     literal re-capture (similarity >= POSE_DUP_SIM against any
+     banked code) or a presentation a banked code's descriptor
+     already covers. Under the cap, diverse candidates append.
+     At the cap, a diverse candidate replaces only a redundant
+     code (palmprintRedundantVictim); when nothing is redundant
+     it is skipped and the profile stands. One floor always
+     holds: at least two of the codes stored BEFORE the merge
+     survive it — the stored enrolment is the identity anchor,
+     and a top-up widens it, it does not re-found it (a legacy
+     single-posture profile at the cap is six near-identical
+     presentations, so without the floor a full pose set would
+     displace the entire original enrolment in one run; with it,
+     a second top-up run converges the coverage). Returns
+     { codes, poses, added, replaced, skipped, changed, poseSet }
+     or null when the stored profile is not a sane v3 profile. */
+  function mergePalmprintProfileCodes(profile, frames) {
+    var norm = normalisePalmprintProfile(profile);
+    if (!norm) return null;
+    var codes = profile.codes.slice();
+    var bytes = norm.codes.slice();
+    var maxReplace = Math.max(0, codes.length - 2); // the retained-originals floor above
+    var poses = [];
+    for (var i = 0; i < codes.length; i++) {
+      poses.push((Array.isArray(profile.poses) && profile.poses[i] && typeof profile.poses[i] === 'object') ? profile.poses[i] : null);
+    }
+    var sel = selectPalmprintPoseCodes(frames);
+    var out = { codes: codes, poses: poses, added: 0, replaced: 0, skipped: 0, changed: false, poseSet: !!sel };
+    if (!sel) return out;
+    sel.codes.forEach(function (candB64, ci) {
+      var candBytes = palmprintCodeBytes(candB64);
+      var candDesc = sel.poses[ci] || null;
+      if (!candBytes) { out.skipped++; return; }
+      var dup = false;
+      for (var k = 0; k < bytes.length; k++) {
+        var s = palmprintSimilarity(bytes[k], candBytes);
+        if (s !== null && isFinite(s) && s >= POSE_DUP_SIM) { dup = true; break; }
+        if (candDesc && poses[k] && palmPoseDescriptorsClose(candDesc, poses[k])) { dup = true; break; }
+      }
+      if (dup) { out.skipped++; return; }
+      if (bytes.length < PALMPRINT_PROFILE_MAX_CODES) {
+        codes.push(candB64); bytes.push(candBytes); poses.push(candDesc);
+        out.added++;
+        return;
+      }
+      if (out.replaced >= maxReplace) { out.skipped++; return; }
+      var victim = palmprintRedundantVictim(bytes, poses);
+      if (victim === -1) { out.skipped++; return; }
+      codes[victim] = candB64; bytes[victim] = candBytes; poses[victim] = candDesc;
+      out.replaced++;
+    });
+    out.codes = codes; out.poses = poses;
+    out.changed = (out.added + out.replaced) > 0;
+    return out;
+  }
+
+  /* ================= v43: live guidance pill ======================
+     One concise status line for a scan view, mapped from the
+     quality signals the pipelines already compute: the framing
+     hint (hand cut off / too close / too far), the spoof sample's
+     mean luma and glare fraction, openness, and the palm crop's
+     sharpness. GUIDANCE ONLY — this function gates nothing; every
+     rejection still comes from the gates that already exist.
+     Bars: mean luma < 45 reads "too dark" (the spec's figure, and
+     the spoof tracker's own 'dim' tag starts far above it); glare
+     fraction > 0.15 of pixels blown out; sharpness is the
+     laplacian variance palmFrameMeasures reports — measured on
+     the fixture palms at 320-530 sharp, 62-93 after one 3x3 box
+     blur and ~31 after two, so the bar sits at 100: under every
+     sharp capture measured, over every blurred one. The line is
+     advice only; a soft frame is never rejected for it.
+     Returns a string, or null when the frame is clean and stable
+     (the caller then shows its own scanning text). */
+  var PALM_GUIDANCE_DARK_LUMA = 45;
+  var PALM_GUIDANCE_GLARE_FRAC = 0.15;
+  var PALM_GUIDANCE_BLUR = 100;
+  function palmGuidance(info) {
+    if (!info || !info.hasHand) return 'Show an open hand to the camera';
+    if (info.framing) {
+      var f = String(info.framing);
+      if (f.indexOf('Whole hand in view') === 0) return 'Whole hand in view — move back a little';
+      if (f.indexOf('Too close') === 0) return 'Move a little farther';
+      if (f.indexOf('Move the palm a little closer') === 0) return 'Move slightly closer';
+      return f;
+    }
+    if (typeof info.meanLuma === 'number' && isFinite(info.meanLuma) && info.meanLuma < PALM_GUIDANCE_DARK_LUMA) {
+      return 'Too dark — turn on Flash';
+    }
+    if (typeof info.glareFrac === 'number' && isFinite(info.glareFrac) && info.glareFrac > PALM_GUIDANCE_GLARE_FRAC) {
+      return 'Too much glare — angle the hand slightly';
+    }
+    if (typeof info.openness === 'number' && isFinite(info.openness) && info.openness < PALM_LIVE_OPEN_MIN) {
+      return 'Hold open hand naturally — fingers spread';
+    }
+    if (typeof info.sharpness === 'number' && isFinite(info.sharpness) && info.sharpness > 0 && info.sharpness < PALM_GUIDANCE_BLUR) {
+      return 'Hold steady — the image is blurred';
+    }
+    return info.stable ? null : 'Hold steady...';
+  }
+
+  /* ================= v43: hands-free scan session ================
+     The auto-trigger / cooldown state machine the scan views run
+     on. Pure logic (the caller passes timestamps), so the rules
+     are unit-testable without a camera:
+       enter()  — a scan view mounted: the session is scanning.
+                  No click arms anything; the app starts the camera
+                  and the stream on this transition.
+       frame()  — one analysed frame's pose: stability is landmark
+                  velocity at/below velocityMax across consecutive
+                  frames; 'armed' once stableFrames consecutive
+                  frames (counting the first tracked frame) show a
+                  present, steady hand — the auto-trigger condition
+                  the spec asks for (~3 frames).
+       verdict()— a terminal verdict fired: accepted only from
+                  'scanning'; the session enters cooldown for
+                  cooldownMs, during which verdict() refuses — one
+                  presentation can never be processed twice.
+       reset()  — Next Customer: back to 'scanning' instantly,
+                  cooldown cleared, stability forgotten.
+       leave()  — the view closed: 'idle', where verdict() refuses
+                  and frame() reports unarmed.
+     The session judges NO biometric evidence: verdict rules,
+     thresholds and gates stay exactly where they were. */
+  function createScanSession(opts) {
+    opts = opts || {};
+    var cooldownMs = typeof opts.cooldownMs === 'number' ? opts.cooldownMs : 1500;
+    var stableFramesNeeded = typeof opts.stableFrames === 'number' ? opts.stableFrames : 3;
+    var velocityMax = typeof opts.velocityMax === 'number' ? opts.velocityMax : 0.01;
+    var state = 'idle';
+    var stableCount = 0;
+    var lastPose = null;
+    var cooldownUntil = 0;
+    function now(t) { return typeof t === 'number' && isFinite(t) ? t : Date.now(); }
+    function refresh(t) {
+      if (state === 'cooldown' && now(t) >= cooldownUntil) {
+        state = 'scanning'; stableCount = 0; lastPose = null;
+      }
+      return state;
+    }
+    return {
+      enter: function (t) {
+        state = 'scanning'; stableCount = 0; lastPose = null; cooldownUntil = 0;
+        return state;
+      },
+      leave: function () {
+        state = 'idle'; stableCount = 0; lastPose = null; cooldownUntil = 0;
+        return state;
+      },
+      state: function (t) { return refresh(t); },
+      frame: function (info, t) {
+        if (refresh(t) !== 'scanning') return { state: state, armed: false, stableCount: 0 };
+        if (!info || !info.hasHand || !info.pose || !isFinite(info.pose.cx) || !isFinite(info.pose.cy)) {
+          stableCount = 0; lastPose = null;
+          return { state: state, armed: false, stableCount: 0 };
+        }
+        if (!lastPose) {
+          stableCount = 1;
+        } else {
+          var v = Math.hypot(info.pose.cx - lastPose.cx, info.pose.cy - lastPose.cy);
+          stableCount = v <= velocityMax ? stableCount + 1 : 0;
+        }
+        lastPose = { cx: info.pose.cx, cy: info.pose.cy };
+        return { state: state, armed: stableCount >= stableFramesNeeded, stableCount: stableCount };
+      },
+      verdict: function (t) {
+        if (refresh(t) !== 'scanning') return false;
+        state = 'cooldown';
+        cooldownUntil = now(t) + cooldownMs;
+        stableCount = 0; lastPose = null;
+        return true;
+      },
+      reset: function (t) {
+        if (state === 'idle') return state;
+        state = 'scanning'; stableCount = 0; lastPose = null; cooldownUntil = 0;
+        return state;
+      },
+      cooldownRemainingMs: function (t) {
+        return state === 'cooldown' ? Math.max(0, cooldownUntil - now(t)) : 0;
+      }
+    };
+  }
+
   // Verification codes from collected frames (v20): the ROI is
   // pre-aligned on the wrist -> middle-MCP axis at warp time, so each
   // frame needs only its own code and its mirror twin (a front-camera
@@ -2668,13 +3001,24 @@
      at least one person actually lacked a sane wallet. A person
      who already HAS a sane wallet (any store written by v42
      itself) is returned by identity, so this step can never reset
-     a balance or wipe a statement, and re-running it is a no-op. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42'];
+     a balance or wipe a statement, and re-running it is a no-op.
+
+     v42 -> v43 is an ADOPTION: v43 changes how scans are captured
+     (hands-free auto-start/auto-trigger, the guidance pill, the
+     cooldown session) and how enrolment banks codes (per-pose
+     selection; a profile MAY gain an optional poses array aligned
+     with its codes, written only by v43 enrolment/top-up saves —
+     readers ignore it and profiles without it stay fully valid).
+     No stored field changes shape, so its step is the identity,
+     and a v42 store — wallet balance, statement and linked
+     accounts included — opens under v43 byte-identical. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
     'v40': function (snap) { return snap; },
     'v41': function (snap) { return snap; },
+    'v43': function (snap) { return snap; },
     'v42': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
@@ -2780,6 +3124,15 @@
     verifyPalmprintRoisFast: verifyPalmprintRoisFast,
     palmprintUsableOpenFrames: palmprintUsableOpenFrames,
     selectPalmprintProfileCodes: selectPalmprintProfileCodes,
+    PALMPRINT_POSES: PALMPRINT_POSES,
+    PALMPRINT_PROFILE_MAX_CODES: PALMPRINT_PROFILE_MAX_CODES,
+    palmPoseDescriptor: palmPoseDescriptor,
+    palmPoseTag: palmPoseTag,
+    palmPoseDescriptorsClose: palmPoseDescriptorsClose,
+    selectPalmprintPoseCodes: selectPalmprintPoseCodes,
+    mergePalmprintProfileCodes: mergePalmprintProfileCodes,
+    palmGuidance: palmGuidance,
+    createScanSession: createScanSession,
     palmprintConsensusCode: palmprintConsensusCode,
     selectPalmprintLiveCodes: selectPalmprintLiveCodes,
     selectPalmprintLiveRois: selectPalmprintLiveRois,

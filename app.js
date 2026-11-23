@@ -35,7 +35,7 @@
      is skipped, nothing is deleted, and the next launch retries —
      the app boots on the un-migrated data either way, because its
      readers fail closed per record. */
-  var APP_DATA_VERSION = 'v42';
+  var APP_DATA_VERSION = 'v43';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -319,8 +319,13 @@
      Palm-only product (v33): the enrolment palm step and the terminal
      each keep their own choice for the whole session. Default Front. */
   var camFacing = {
-    enrollPalm: 'user', termPalm: 'user', walletOpen: 'user', walletAct: 'user'
+    enrollPalm: 'user', termPalm: 'user', walletOpen: 'user', walletAct: 'user', topup: 'user'
   };
+  /* v43: every camera view's video element, by toggle group key —
+     the wallet scan card and the add-angles view gained toggles of
+     their own, so the old two-way choice became this map. */
+  var CAM_VIDEO_IDS = { enrollPalm: 'palmVideo', terminal: 'termVideo', walletAct: 'wScanVideo', walletOpen: 'wScanVideo', topup: 'topVideo' };
+  function camVideoId(groupKey) { return CAM_VIDEO_IDS[groupKey] || 'termVideo'; }
   var camRestarters = {}; // key -> function that (re)starts that view's camera
   function termFacingKey() { return 'termPalm'; }
   function syncCamToggle(key) {
@@ -340,7 +345,7 @@
           syncCamToggle(groupKey);
           // If this view's camera is live, restart it on the new camera.
           var restart = camRestarters[groupKey];
-          var videoId = groupKey === 'enrollPalm' ? 'palmVideo' : 'termVideo';
+          var videoId = camVideoId(groupKey);
           applyMirror(videoId, b.dataset.facing);
           if (restart && Cam.stream && Cam.video === $(videoId)) restart();
         });
@@ -359,12 +364,12 @@
      view. Switching camera or stopping the camera resets that view's
      flash to Off (see Cam.stop). */
   var flashState = {
-    enrollPalm: false, termPalm: false, walletOpen: false, walletAct: false
+    enrollPalm: false, termPalm: false, walletOpen: false, walletAct: false, topup: false
   };
   function flashGroupKey(key) { return key.indexOf('term') === 0 ? 'terminal' : key; }
   function flashKeyForGroup(groupKey) { return groupKey === 'terminal' ? termFacingKey() : groupKey; }
   function flashVideoId(groupKey) {
-    return groupKey === 'enrollPalm' ? 'palmVideo' : 'termVideo';
+    return camVideoId(groupKey);
   }
   function syncFlashToggle(groupKey) {
     var key = flashKeyForGroup(groupKey);
@@ -837,6 +842,25 @@
      or corrupt a scan. The match worker is constructed here too, so
      its spin-up is also off the scan path. */
   var palmPrewarmStarted = false;
+  /* Warm singleton pipeline (v43): MediaPipe Hands (PalmProc) and
+     the match worker (Match) are created ONCE for the app's whole
+     lifetime and kept warm across every view — tab switches never
+     tear them down or reload the model. Pipeline.start() is the
+     single entry point: boot calls it, and every scan view calls
+     enterScanView() when it mounts. Both are idempotent — the
+     underlying objects guard their own construction — so the only
+     Hands rebuild that exists anywhere is PalmProc's dropped-frame
+     recovery (a wedged MediaPipe graph stays wedged; it is rebuilt
+     after a 4 s frame timeout, never on a view switch). */
+  var Pipeline = {
+    started: false,
+    start: function () {
+      if (this.started) return;
+      this.started = true;
+      prewarmPalmPipeline();
+    },
+    enterScanView: function () { this.start(); }
+  };
   function prewarmPalmPipeline() {
     try { PalmProc.init(); } catch (e) {}
     try { Match.init(); } catch (e) {}
@@ -913,13 +937,24 @@
      v34: free-form scanning - there is no guide overlay and nothing
      to line up; the user simply shows an open hand anywhere in the
      frame and the landmark ROI follows the hand. */
-  function streamEnrolPalm(video, statusEl, sequence, swapCamera) {
+  function streamEnrolPalm(video, statusEl, sequence, swapCamera, control) {
     var t0 = Date.now();
     var results = [];
     var measures = [];
     var tracker = makeSpoofTracker();
     var analysed = 0, swapped = false, locked = false;
     var deadline = t0 + 180000;
+    // v43: the session's flat baseline for the pose classifier —
+    // set from the first fully-open, un-angled frame's descriptor;
+    // until then tilt/distance are not measurable and frames read
+    // 'flat' or an angle pose.
+    var poseRef = null;
+    function poseCoverage() {
+      var usable = B.palmprintUsableOpenFrames(results);
+      var seen = {};
+      usable.forEach(function (u) { if (u.poseTag) seen[u.poseTag] = true; });
+      return B.PALMPRINT_POSES.map(function (p) { return p.id; }).filter(function (id) { return seen[id]; });
+    }
     // Burst-chain capture (v20.2): each burst RECORDS ~3 s of frames at
     // 250 ms with no inference running (grabs stay phase-true), then
     // analyses them in order while the next burst records. Separating
@@ -955,6 +990,15 @@
       if (!B.evaluateMovementSequenceStreaming(measures, sequence).pass) return false;
       var usable = B.palmprintUsableOpenFrames(results);
       if (usable.length < 3) return false;
+      // v43 primary finish: the guided pose set is banked — the
+      // flat pose plus at least three more MEASURED poses (four of
+      // the six), so the profile carries codes for the tilted and
+      // angled presentations the v41 diagnosis indicted. This is
+      // the normal exit and it is reached inside one sitting: the
+      // poses bank opportunistically while the movement sequence
+      // runs, and the angle prompts follow it.
+      var covered = poseCoverage();
+      if (covered.indexOf('flat') !== -1 && covered.length >= 4) return true;
       var maxOpen = Math.max.apply(null, usable.map(function (u) { return u.openness; }));
       var inBand = usable.filter(function (u) { return u.openness >= maxOpen - 0.30; }).length;
       // v30: bank a FULL set, not the minimum. done() previously fired
@@ -964,7 +1008,16 @@
       // scored 0.302. The selector caps at 6 singles, so require 6
       // in-band - with a late fallback: past 150 analysed frames a
       // 3-code profile is better than grinding on to the deadline.
-      return inBand >= 6 || (inBand >= 3 && analysed >= 150);
+      // v43 keeps that late ladder and adds a thinner pose set
+      // (flat + two more) at the same late point; the caller tries
+      // pose selection first and falls back to the classic selector
+      // when no pose set banked, so a difficult session still
+      // enrols instead of grinding to the deadline.
+      if (analysed >= 150) {
+        if (covered.indexOf('flat') !== -1 && covered.length >= 3) return true;
+        return inBand >= 6 || inBand >= 3;
+      }
+      return false;
     }
     function finish() {
       var sp = tracker.state();
@@ -973,6 +1026,7 @@
         movement: B.evaluateMovementSequenceStreaming(measures, sequence),
         spoof: sp,
         lightTag: sp.lightTag,
+        posesCovered: poseCoverage(),
         elapsedMs: Date.now() - t0
       };
     }
@@ -981,7 +1035,7 @@
       var chain = Promise.resolve();
       frames.forEach(function (frame) {
         chain = chain.then(function () {
-          if (!live || tracker.state().spoof || done()) return;
+          if (!live || (control && control.cancelled) || tracker.state().spoof || done()) return;
           // v36: the spoof sample is taken AFTER analysis so it can
           // carry the frame's landmarks and scope its grid analysis
           // to the palm region; the every-3rd-frame cadence is kept.
@@ -990,6 +1044,18 @@
             if (sampleThis) tracker.add(frame, r.lm);
             analysed++;
             results.push(r);
+            // v43: tag the frame with its MEASURED pose (classifier
+            // over the landmarks, against the session's flat
+            // baseline once one exists) so banking groups by what
+            // was actually presented, not by which prompt was up.
+            var pdesc = B.palmPoseDescriptor(r.lm);
+            if (pdesc) {
+              if (!poseRef && typeof r.openness === 'number' && r.openness >= B.PALM_OPEN_MIN && Math.abs(pdesc.ang) < 12) {
+                poseRef = { fore: pdesc.fore, span: pdesc.span };
+              }
+              r.poseDesc = pdesc;
+              r.poseTag = B.palmPoseTag(r.lm, poseRef);
+            }
             // Movement measures come from EVERY frame with landmarks:
             // the descriptor gate only accepts open-hand geometry, so
             // gating measures on it silently drops the fist frames the
@@ -1012,6 +1078,7 @@
       return Promise.race([chain, watchdog]);
     }
     function cycle() {
+      if (control && control.cancelled) { var stopped = finish(); stopped.stopped = true; return stopped; }
       if (tracker.state().spoof || done()) return finish();
       if (Date.now() > deadline) return finish();
       if (!swapped && swapCamera && analysed >= 12 && results.every(function (x) { return typeof x.openness !== 'number'; })) {
@@ -1033,7 +1100,18 @@
           var usableNow = B.palmprintUsableOpenFrames(results);
           var maxOpenNow = usableNow.length ? Math.max.apply(null, usableNow.map(function (u) { return u.openness; })) : 0;
           var bankedNow = usableNow.filter(function (u) { return u.openness >= maxOpenNow - 0.30; }).length;
-          statusEl.textContent = 'Hand detected — hold steady, palm open, fingers spread wide. Capturing print detail: ' + Math.min(bankedNow, 6) + ' of 6 codes.';
+          // v43: once the movement proof passes, the prompts walk
+          // the remaining poses — one continuous sitting, banking
+          // the sharpest fully-open frame per measured pose.
+          var coveredNow = poseCoverage();
+          var nextPose = B.PALMPRINT_POSES.filter(function (p) { return coveredNow.indexOf(p.id) === -1; })[0];
+          if (!nextPose) {
+            statusEl.textContent = 'All angles captured — hold steady, palm open, fingers spread wide.';
+          } else if (coveredNow.length >= 1) {
+            statusEl.textContent = 'Movement complete. Angle ' + (coveredNow.length + 1) + ' of ' + B.PALMPRINT_POSES.length + ' (' + nextPose.label + '): ' + nextPose.prompt;
+          } else {
+            statusEl.textContent = 'Hand detected — hold steady, palm open, fingers spread wide. Capturing print detail: ' + Math.min(bankedNow, 6) + ' of 6 codes.';
+          }
         } else if (analysed >= 12 && !seenHand) {
           statusEl.textContent = 'No hand seen yet — show your open hand to the camera, fingers spread.';
         } else if (lastResult && lastResult.framing) {
@@ -1080,7 +1158,7 @@
      and every rejection path is exactly as before: this change
      only moves how early a WIN may be honoured, never how a
      rejection is reached. */
-  function streamVerifyPalm(video, statusEl, person, people, swapCamera, fieldRec) {
+  function streamVerifyPalm(video, statusEl, person, people, swapCamera, fieldRec, control) {
     var t0 = Date.now();
     var tracker = makeSpoofTracker();
     var frames = [];
@@ -1098,6 +1176,9 @@
     var win = null;
     var analysed = 0, swapped = false, locked = false;
     var lastHint = null, coded = 0;
+    // v43: the latest frame's quality signals, feeding the live
+    // guidance pill (B.palmGuidance) and the caller's scan session.
+    var lastOpen = null, lastSampleB = null, lastGlare = null, lastSharp = null;
     var MAXF = 24, deadline = t0 + 90000;
     // v37 continuous pipeline state: one reused capture canvas (each
     // frame is fully analysed before the next grab), the video-clock
@@ -1238,6 +1319,16 @@
           frameSpoof.push(sample ? !!sample.spoof : null);
           var myIdx = frames.length - 1;
           if (typeof r.openness === 'number') lastHint = r.framing || null;
+          // v43: publish the frame's quality signals — the scan
+          // session reads stability from the pose, the guidance
+          // pill from the rest. Guidance only; no gate reads these.
+          lastOpen = typeof r.openness === 'number' ? r.openness : null;
+          lastSharp = typeof r.sharpness === 'number' ? r.sharpness : null;
+          lastSampleB = sample && typeof sample.meanBrightness === 'number' ? sample.meanBrightness : null;
+          lastGlare = sample && typeof sample.glare === 'number' ? sample.glare : null;
+          if (control && control.onFrame) {
+            try { control.onFrame({ hasHand: typeof r.openness === 'number', pose: r.pose || null, openness: lastOpen, framing: lastHint, sharpness: lastSharp, meanLuma: lastSampleB, glareFrac: lastGlare }); } catch (e) {}
+          }
           if (r.pose) { poses.push(r.pose); if (poses.length > 6) poses.shift(); }
           var sane = !!(r.code && B.palmprintCodeSane(r.code));
           if (sane) coded++;
@@ -1264,6 +1355,10 @@
       });
     }
     function loop() {
+      // v43: the owning view went away (navigation, Next Customer
+      // re-arm, wallet close) — end silently with no verdict, no
+      // log, no field record.
+      if (control && control.cancelled) return finish({ stopped: true, fail: 'Scan stopped.' });
       var sp = tracker.state();
       if (sp.spoof) return spoofOut(sp);
       var lv = B.passiveLivenessCheck(poses);
@@ -1323,7 +1418,10 @@
       }
       if (statusEl) {
         var seenHandNow = frames.some(function (x) { return typeof x.openness === 'number'; });
-        statusEl.textContent = lastHint || (seenHandNow ? 'Hand detected — hold steady.' : 'Show & Pay scanning — show an open hand to the camera.');
+        // v43: the live guidance pill — one concise line mapped
+        // from the quality signals this frame already produced.
+        var guide = B.palmGuidance({ hasHand: seenHandNow, framing: lastHint, openness: lastOpen, meanLuma: lastSampleB, glareFrac: lastGlare, sharpness: lastSharp, stable: false });
+        statusEl.textContent = guide || (seenHandNow ? 'Hand detected — hold steady.' : 'Show & Pay scanning — show an open hand to the camera.');
       }
       return step().then(loop);
     }
@@ -1343,7 +1441,7 @@
      are shared evidence, the per-candidate match rule is identical,
      and a scan matching no enrolled palm identifies nobody. Used
      by the demo wallet (open wallet, find a send receiver). */
-  function streamIdentifyPalm(video, statusEl, people, swapCamera) {
+  function streamIdentifyPalm(video, statusEl, people, swapCamera, control) {
     var t0 = Date.now();
     var candidates = (people || []).filter(function (p) { return B.palmprintProfileSane(p.palmProfile); });
     if (!candidates.length) {
@@ -1359,6 +1457,9 @@
     var win = null; // { person, res, fast }
     var analysed = 0, swapped = false, locked = false;
     var lastHint = null, coded = 0;
+    // v43: the latest frame's quality signals, feeding the live
+    // guidance pill (B.palmGuidance) and the caller's scan session.
+    var lastOpen = null, lastSampleB = null, lastGlare = null, lastSharp = null;
     var MAXF = 24, deadline = t0 + 90000;
     var frameCanvas = null;
     var lastGrabT = -1;
@@ -1448,6 +1549,16 @@
           frameSpoof.push(sample ? !!sample.spoof : null);
           var myIdx = frames.length - 1;
           if (typeof r.openness === 'number') lastHint = r.framing || null;
+          // v43: publish the frame's quality signals — the scan
+          // session reads stability from the pose, the guidance
+          // pill from the rest. Guidance only; no gate reads these.
+          lastOpen = typeof r.openness === 'number' ? r.openness : null;
+          lastSharp = typeof r.sharpness === 'number' ? r.sharpness : null;
+          lastSampleB = sample && typeof sample.meanBrightness === 'number' ? sample.meanBrightness : null;
+          lastGlare = sample && typeof sample.glare === 'number' ? sample.glare : null;
+          if (control && control.onFrame) {
+            try { control.onFrame({ hasHand: typeof r.openness === 'number', pose: r.pose || null, openness: lastOpen, framing: lastHint, sharpness: lastSharp, meanLuma: lastSampleB, glareFrac: lastGlare }); } catch (e) {}
+          }
           if (r.pose) { poses.push(r.pose); if (poses.length > 6) poses.shift(); }
           var sane = !!(r.code && B.palmprintCodeSane(r.code));
           if (sane) coded++;
@@ -1467,6 +1578,9 @@
       });
     }
     function loop() {
+      // v43: the owning view went away (wallet closed, navigation)
+      // — end silently with no identification and no log.
+      if (control && control.cancelled) return { stopped: true, fail: 'Scan stopped.' };
       var sp = tracker.state();
       if (sp.spoof) return spoofOut(sp);
       var lv = B.passiveLivenessCheck(poses);
@@ -1494,7 +1608,10 @@
       }
       if (statusEl) {
         var seenHandNow = frames.some(function (x) { return typeof x.openness === 'number'; });
-        statusEl.textContent = lastHint || (seenHandNow ? 'Hand detected — hold steady.' : 'Show an open hand to the camera.');
+        // v43: the live guidance pill — one concise line mapped
+        // from the quality signals this frame already produced.
+        var guide = B.palmGuidance({ hasHand: seenHandNow, framing: lastHint, openness: lastOpen, meanLuma: lastSampleB, glareFrac: lastGlare, sharpness: lastSharp, stable: false });
+        statusEl.textContent = guide || (seenHandNow ? 'Hand detected — hold steady.' : 'Show an open hand to the camera.');
       }
       return step().then(loop);
     }
@@ -1505,15 +1622,23 @@
 
   /* ---------------- Navigation ------------------------------------------- */
   function go(page) {
-    var navPage = (page === 'stores' || page === 'logs' || page === 'partner') ? 'more' : page;
+    var navPage = page === 'topup' ? 'registry' : (page === 'stores' || page === 'logs' || page === 'partner') ? 'more' : page;
     document.querySelectorAll('#mainNav button').forEach(function (b) { b.classList.toggle('active', b.dataset.page === navPage); });
     document.querySelectorAll('section.page').forEach(function (s) { s.classList.toggle('active', s.id === 'page-' + page); });
     if (page !== 'enroll' && page !== 'terminal') { Cam.stop(); }
-    if (page === 'wallet') { renderWallet(); prewarmPalmPipeline(); }
+    // v43 hands-free lifecycle: leaving a scan view cancels its
+    // running scan silently — no verdict can land on a view that is
+    // no longer on screen, and no presentation is processed twice.
+    if (page !== 'terminal') { cancelTermScan(); termSession.leave(); }
+    if (page !== 'enroll' && enrollControl) enrollControl.cancelled = true;
+    if (page !== 'topup' && topupControl) topupControl.cancelled = true;
+    if (page !== 'wallet') { if (walletControl) walletControl.cancelled = true; walletSession.leave(); }
+    if (page === 'wallet') { renderWallet(); Pipeline.enterScanView(); }
     if (page === 'dashboard') renderDashboard();
     if (page === 'registry') renderRegistry();
     if (page === 'logs') renderLogs();
-    if (page === 'terminal') { fillTerminalPeople(); prewarmPalmPipeline(); }
+    if (page === 'terminal') { fillTerminalPeople().then(function () { maybeAutoStartTerminal(); }); Pipeline.enterScanView(); }
+    if (page === 'enroll') { Pipeline.enterScanView(); maybeAutoStartEnroll(); }
     window.scrollTo(0, 0);
   }
   document.querySelectorAll('#mainNav button').forEach(function (b) {
@@ -1641,6 +1766,9 @@
       limitDaily: Number($('enLimitDaily').value) > 0 ? Number($('enLimitDaily').value) : null
     };
     setStep('palm');
+    // v43 hands-free: the palm step starts its camera and the
+    // guided capture by itself — no Start Camera or Capture tap.
+    startPalmCamera(true);
   });
 
   /* Palm enroll - live auto-capture: the app watches the camera,
@@ -1649,27 +1777,43 @@
      the best fully-open frames — v33 stores those individual capture
      codes only, no fused template. */
   function resetPalmEnroll() { /* clip enrolment keeps no partial state */ }
-  function startPalmCamera() {
-    Cam.start($('palmVideo'), camFacing.enrollPalm, 'enrollPalm').then(function () {
-      prewarmPalmPipeline();
-      $('palmStatus').textContent = 'Camera on - tap Auto-Capture Palm, then show your open hand to the camera, anywhere in the frame. The app watches live and captures by itself: follow the movement prompts as they appear (the sequence is picked at random each time), and it finishes the moment the movement is complete.';
+  /* v43 hands-free enrolment entry: entering the palm step starts
+     the camera AND the guided capture automatically. The Start
+     Camera and Auto-Capture buttons remain as fallback/re-trigger
+     only. runPalmCapture's busy guard makes a re-trigger during a
+     running capture a no-op. */
+  var enrollControl = null;
+  function startPalmCamera(autoCapture) {
+    return Cam.start($('palmVideo'), camFacing.enrollPalm, 'enrollPalm').then(function () {
+      Pipeline.enterScanView();
       $('palmCapture').disabled = false;
+      if (autoCapture) { runPalmCapture(); return; }
+      $('palmStatus').textContent = 'Camera on — show your open hand to the camera, anywhere in the frame, or tap Auto-Capture Palm. The app watches live and captures by itself: follow the movement prompts, then the angle prompts, and it finishes by itself.';
     }).catch(function (e) { $('palmMsg').innerHTML = cameraErrorHTML(e); $('palmStatus').textContent = 'Camera blocked.'; });
   }
-  $('palmStart').addEventListener('click', startPalmCamera);
-  camRestarters.enrollPalm = startPalmCamera;
-  $('palmCapture').addEventListener('click', function () {
+  function maybeAutoStartEnroll() {
+    if (!enroll.details) return;
+    if ($('enroll-palm').classList.contains('hidden')) return;
+    startPalmCamera(true);
+  }
+  $('palmStart').addEventListener('click', function () { startPalmCamera(true); });
+  camRestarters.enrollPalm = function () { startPalmCamera(true); };
+  function runPalmCapture() {
     if (palmScanBusy) return;
+    if (!enroll.details) return;
     palmScanBusy = true;
     $('palmCapture').disabled = true;
     $('palmMsg').innerHTML = '';
     var sequence = B.PALM_SEQUENCES[Math.floor(Math.random() * B.PALM_SEQUENCES.length)];
+    var control = { cancelled: false };
+    enrollControl = control;
     streamEnrolPalm($('palmVideo'), $('palmStatus'), sequence, function () {
       camFacing.enrollPalm = camFacing.enrollPalm === 'user' ? 'environment' : 'user';
       syncCamToggle('enrollPalm');
       return Cam.start($('palmVideo'), camFacing.enrollPalm, 'enrollPalm');
-    }).then(function (res) {
+    }, control).then(function (res) {
       palmScanBusy = false;
+      if (res.stopped) { $('palmCapture').disabled = false; $('palmStatus').textContent = 'Capture stopped.'; return; }
       if (res.spoof && res.spoof.spoof) {
         DB.put('logs', { ts: Date.now(), personId: '', personName: '(enrolment attempt)', store: '', method: 'palm', measured: 'Spoof score ' + res.spoof.score.toFixed(2) + ' - ' + res.spoof.reasons.join('; '), result: 'Spoof / Screen Replay Detected' });
         $('palmMsg').innerHTML = '<div class="error">Spoof / Screen Replay Detected — the scan showed a screen or a recording, not a live hand (' + esc(res.spoof.reasons.join('; ')) + '). Nothing was stored. Enrolment requires the real hand, live in front of the camera.</div>';
@@ -1683,16 +1827,23 @@
         Snd.buzz();
         return;
       }
-      var codes = B.selectPalmprintProfileCodes(res.results);
+      // v43: bank per MEASURED pose first — the sharpest fully-open
+      // code for each pose the hand actually presented — so the
+      // profile carries the tilted and angled presentations the
+      // v41 diagnosis indicted. When no pose set banked (a hard
+      // session), the classic selector still enrols the palm.
+      var poseSel = B.selectPalmprintPoseCodes(res.results);
+      var codes = poseSel ? poseSel.codes : B.selectPalmprintProfileCodes(res.results);
       if (!codes) {
         $('palmMsg').innerHTML = '<div class="error">No usable open palm with readable print detail was captured. Nothing was stored. Show one open palm to the camera, fingers spread, in good light, and try again.</div>';
         $('palmCapture').disabled = false;
         return;
       }
       enroll.palm = { v: 3, codes: codes };
+      if (poseSel) enroll.palm.poses = poseSel.poses;
       Cam.stop();
       $('palmStatus').textContent = 'Palm captured.';
-      $('palmMsg').innerHTML = '<div class="success">Palm enrolled by instant auto-capture in ' + (res.elapsedMs / 1000).toFixed(1) + ' s: movement check passed, and ' + codes.length + ' palmprint codes (EDCC competitive code — the palm\'s own print pattern) were read from the best fully-open frames.</div>';
+      $('palmMsg').innerHTML = '<div class="success">Palm enrolled by hands-free guided capture in ' + (res.elapsedMs / 1000).toFixed(1) + ' s: movement check passed, and ' + codes.length + ' palmprint codes (EDCC competitive code — the palm\'s own print pattern) were banked' + (poseSel ? ' across ' + poseSel.tags.length + ' measured poses (' + esc(poseSel.tags.join(', ')) + '), the best fully-open frame of each' : ' from the best fully-open frames') + '.</div>';
       Snd.chime();
       Snd.speak('Palm captured');
       advanceFrom('palm');
@@ -1701,7 +1852,8 @@
       $('palmCapture').disabled = false;
       $('palmMsg').innerHTML = '<div class="error">Palm capture failed: ' + esc(e && e.message ? e.message : e) + ' Nothing was stored.</div>';
     });
-  });
+  }
+  $('palmCapture').addEventListener('click', runPalmCapture);
   /* ---------------- Terminal --------------------------------------------- */
   var termPeopleCache = [];
   function renderTermPeople() {
@@ -1750,7 +1902,30 @@
       return people.find(function (p) { return p.id === personId; }) || null;
     });
   }
-  $('termPerson').addEventListener('change', function () { fillTermMethodNote(); if (Cam.stream && Cam.video === $('termVideo')) startTermCamera(); });
+  /* v43 hands-free terminal: a scan session governs the view —
+     it tracks hand stability, enforces the post-verdict cooldown
+     (no second verdict can fire inside it, so one presentation is
+     never processed twice), and Next Customer re-arms instantly. */
+  var termSession = B.createScanSession();
+  var termControl = null;
+  function cancelTermScan() { if (termControl) termControl.cancelled = true; }
+  function maybeAutoStartTerminal() {
+    if (!$('page-terminal').classList.contains('active')) return;
+    termSession.enter();
+    var person = termPeopleCache.find(function (p) { return p.id === $('termPerson').value; }) || null;
+    if (!person || !personHasMethod(person)) return;
+    if (palmScanBusy) return;
+    startTermCamera();
+  }
+  $('termPerson').addEventListener('change', function () {
+    // A different customer: cancel any running scan silently,
+    // re-arm the session, and start the new customer's scan.
+    cancelTermScan();
+    termSession.reset();
+    $('termNext').classList.add('hidden');
+    fillTermMethodNote();
+    startTermCamera();
+  });
   $('termSearch').addEventListener('input', renderTermPeople);
   function startTermCamera() {
     var status = $('termStatus');
@@ -1764,14 +1939,26 @@
         return;
       }
       Cam.start($('termVideo'), camFacing[termFacingKey()], termFacingKey()).then(function () {
-        prewarmPalmPipeline();
+        Pipeline.enterScanView();
         $('termScan').disabled = false;
-        status.textContent = 'Camera on - tap SCAN and the customer shows an open hand to the camera, anywhere in the frame - like tapping a card. No movement routine at checkout: Show & Pay reads the palm as it streams.';
+        status.textContent = 'Camera on — scanning. The customer simply holds an open palm toward the camera, anywhere in the frame — like tapping a card. No tap needed and no movement routine at checkout: Show & Pay reads the palm as it streams.';
+        // v43: the scan starts by itself; SCAN stays as fallback.
+        runTermScan();
       }).catch(function (e) { $('termResult').innerHTML = cameraErrorHTML(e); status.textContent = 'Camera blocked.'; });
     });
   }
   $('termStart').addEventListener('click', startTermCamera);
   camRestarters.terminal = startTermCamera;
+  $('termNext').addEventListener('click', function () {
+    // Next Customer: instant clean reset — verdict card cleared,
+    // cooldown cleared, scanning again for the next presentation.
+    termSession.reset();
+    $('termNext').classList.add('hidden');
+    $('termResult').innerHTML = '';
+    $('termStatus').textContent = 'Ready — scanning for the next customer.';
+    if (Cam.stream && Cam.video === $('termVideo')) runTermScan();
+    else startTermCamera();
+  });
 
   function logVerification(person, method, measured, result) {
     return DB.put('logs', { ts: Date.now(), personId: person.id, personName: person.name, store: $('termStore').value, method: method, measured: measured, result: result });
@@ -1806,10 +1993,11 @@
     return DB.put('logs', rec).then(function () { renderFieldPanel(); });
   }
 
-  $('termScan').addEventListener('click', function () {
+  function runTermScan() {
     var personId = $('termPerson').value;
     var method = 'palm';
     var amount = Number($('termAmount').value || 0);
+    $('termNext').classList.add('hidden');
     $('termResult').innerHTML = '<div class="notice">Scanning — comparing against the stored enrollment...</div>';
     DB.all('people').then(function (people) {
       var person = people.find(function (p) { return p.id === personId; });
@@ -1831,12 +2019,14 @@
           liveness: liveness, spoofTag: $('fieldAttemptTag').value, result: result
         });
       };
+      var control = { cancelled: false, onFrame: function (info) { termSession.frame({ hasHand: info.hasHand, pose: info.pose }); } };
+      termControl = control;
       var attempt = streamVerifyPalm($('termVideo'), $('termStatus'), person, people, function () {
         var k = termFacingKey();
         camFacing[k] = camFacing[k] === 'user' ? 'environment' : 'user';
         syncCamToggle('terminal');
         return Cam.start($('termVideo'), camFacing[k], 'terminal');
-      }, fieldRec).then(function (out) {
+      }, fieldRec, control).then(function (out) {
         palmScanBusy = false;
         $('termScan').disabled = false;
         return out;
@@ -1848,6 +2038,11 @@
 
       return Promise.resolve(attempt).then(function (out) {
         if (!out) return;
+        if (out.stopped) return; // v43: the view moved on — no verdict shown, nothing logged, nothing processed twice
+        // v43: a terminal verdict fired — the session enters its
+        // cooldown and the terminal offers Next Customer.
+        termSession.verdict();
+        $('termNext').classList.remove('hidden');
         if (out.fail) { Snd.buzz(); $('termResult').innerHTML = '<div class="error">' + esc(out.fail) + '</div>'; return; }
         var r = out.r;
         var verified = r.ok === true && r.verified === true; // fail closed: only an explicit pass verifies
@@ -1930,7 +2125,8 @@
         });
       });
     }).catch(function (e) { $('termResult').innerHTML = '<div class="error">Scan failed: ' + esc(e && e.message ? e.message : e) + '</div>'; });
-  });
+  }
+  $('termScan').addEventListener('click', runTermScan);
 
   /* ---------------- Demo wallet (v42) --------------------------------
      The wallet layer the Chairman ordered 2026-11-23. Every rule
@@ -1965,6 +2161,7 @@
   }
 
   function renderWallet() {
+    if (walletControl) walletControl.cancelled = true; // v43: re-rendering the wallet supersedes any scan still running for it
     return loadWalletPeople().then(function (people) {
       var me = walletSessionPerson();
       $('walletLocked').classList.toggle('hidden', !!me);
@@ -2010,46 +2207,70 @@
   }
 
   /* Shared wallet scan card: one camera surface, the caller's run()
-     performs the scan and its outcome handling. */
+     performs the scan and its outcome handling.
+     v43 hands-free: showing the card starts the camera AND the
+     scan by itself — Start Camera and Scan remain as fallback /
+     re-trigger only. A scan session tracks stability and the
+     post-verdict cooldown; closing the card cancels the running
+     scan silently. */
+  var walletSession = B.createScanSession();
+  var walletControl = null;
   function showWalletScan(ctx) {
     walletScanCtx = ctx;
+    walletSession.enter();
     $('walletScanCard').classList.remove('hidden');
     $('wScanTitle').textContent = ctx.title;
     $('wScanPrompt').textContent = ctx.prompt;
     $('wScanMsg').innerHTML = '';
-    $('wScanStatus').textContent = 'Camera not started.';
+    $('wScanStatus').textContent = 'Starting the camera...';
     $('wScanRun').disabled = true;
     $('walletScanCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    syncCamToggle('walletAct');
+    syncFlashToggle('walletAct');
+    startWalletCamera();
+  }
+  function startWalletCamera() {
+    return Cam.start($('wScanVideo'), camFacing.walletAct, 'walletAct').then(function () {
+      Pipeline.enterScanView();
+      $('wScanRun').disabled = false;
+      $('wScanStatus').textContent = 'Camera on — scanning. Show the open palm to the camera, anywhere in the frame.';
+      runWalletScan();
+    }).catch(function (e) { $('wScanMsg').innerHTML = cameraErrorHTML(e); $('wScanStatus').textContent = 'Camera blocked.'; });
+  }
+  function runWalletScan() {
+    if (!walletScanCtx || palmScanBusy) return;
+    palmScanBusy = true;
+    $('wScanRun').disabled = true;
+    var ctx = walletScanCtx;
+    walletControl = { cancelled: false, onFrame: function (info) { walletSession.frame({ hasHand: info.hasHand, pose: info.pose }); } };
+    Promise.resolve()
+      .then(function () { return ctx.run(); })
+      .catch(function (e) { walletScanFailed({ fail: 'Scan failed: ' + (e && e.message ? e.message : e) }); })
+      .then(function () { palmScanBusy = false; walletSession.verdict(); });
   }
   function hideWalletScan() {
+    if (walletControl) walletControl.cancelled = true;
+    walletSession.leave();
     $('walletScanCard').classList.add('hidden');
     walletScanCtx = null;
     Cam.stop();
   }
   function walletScanFailed(out) {
+    // v43: a scan cancelled by navigation/close ends silently —
+    // the card closes instead of showing a failure for a scan
+    // nobody is looking at any more.
+    if (out && out.stopped) { hideWalletScan(); renderWallet(); return; }
     $('wScanMsg').innerHTML = '<div class="error">' + esc(out && out.fail ? out.fail : 'The scan did not verify. Nothing was authorised.') + '</div>';
     $('wScanRun').disabled = false;
     Snd.buzz();
   }
-  $('wScanStart').addEventListener('click', function () {
-    Cam.start($('wScanVideo'), camFacing.walletAct, 'walletAct').then(function () {
-      prewarmPalmPipeline();
-      $('wScanRun').disabled = false;
-      $('wScanStatus').textContent = 'Camera on — tap Scan, then show the open palm to the camera, anywhere in the frame.';
-    }).catch(function (e) { $('wScanMsg').innerHTML = cameraErrorHTML(e); $('wScanStatus').textContent = 'Camera blocked.'; });
-  });
-  $('wScanRun').addEventListener('click', function () {
-    if (!walletScanCtx || palmScanBusy) return;
-    palmScanBusy = true;
-    $('wScanRun').disabled = true;
-    var ctx = walletScanCtx;
-    Promise.resolve()
-      .then(function () { return ctx.run(); })
-      .catch(function (e) { walletScanFailed({ fail: 'Scan failed: ' + (e && e.message ? e.message : e) }); })
-      .then(function () { palmScanBusy = false; });
-  });
+  $('wScanStart').addEventListener('click', startWalletCamera);
+  camRestarters.walletAct = function () {
+    Cam.start($('wScanVideo'), camFacing.walletAct, 'walletAct').then(function () { runWalletScan(); });
+  };
+  $('wScanRun').addEventListener('click', runWalletScan);
   $('wScanCancel').addEventListener('click', function () {
-    if (palmScanBusy) return;
+    if (palmScanBusy) { if (walletControl) walletControl.cancelled = true; return; }
     hideWalletScan();
     renderWallet();
   });
@@ -2063,7 +2284,7 @@
       prompt: 'Show your open palm to the camera. If it matches a registered palm, that person\'s wallet opens. A palm that is not registered opens nothing.',
       run: function () {
         return DB.all('people').then(function (people) {
-          return streamIdentifyPalm($('wScanVideo'), $('wScanStatus'), people, walletSwapCamera).then(function (out) {
+          return streamIdentifyPalm($('wScanVideo'), $('wScanStatus'), people, walletSwapCamera, walletControl).then(function (out) {
             if (!out || out.fail || !out.person) { walletScanFailed(out); return; }
             walletSessionId = out.person.id;
             hideWalletScan();
@@ -2087,7 +2308,7 @@
       run: function () {
         return DB.all('people').then(function (people) {
           var fresh = people.find(function (p) { return p.id === personId; }) || person;
-          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, walletSwapCamera, function () {}).then(function (out) {
+          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, walletSwapCamera, function () {}, walletControl).then(function (out) {
             var auth = authFromVerify(out, personId);
             if (!auth.verified) { walletScanFailed(out); return; }
             walletSessionId = personId;
@@ -2150,7 +2371,7 @@
       run: function () {
         return DB.all('people').then(function (people) {
           var fresh = people.find(function (p) { return p.id === me.id; }) || me;
-          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, walletSwapCamera, function () {}).then(function (out) {
+          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, walletSwapCamera, function () {}, walletControl).then(function (out) {
             var auth = authFromVerify(out, fresh.id);
             if (!auth.verified) { walletScanFailed(out); return; }
             return DB.nextSeq('demoSeq', 1).then(function (seq) {
@@ -2197,7 +2418,7 @@
       prompt: 'The RECEIVER shows their open palm. The scan finds their Biom ID — if the palm matches no registered palm, no money can be sent.',
       run: function () {
         return DB.all('people').then(function (people) {
-          return streamIdentifyPalm($('wScanVideo'), $('wScanStatus'), people, walletSwapCamera).then(function (out) {
+          return streamIdentifyPalm($('wScanVideo'), $('wScanStatus'), people, walletSwapCamera, walletControl).then(function (out) {
             if (!out || out.fail || !out.person) { walletScanFailed(out); return; }
             if (out.person.id === me.id) {
               $('wScanMsg').innerHTML = '<div class="error">That is your own palm — you cannot send money to yourself. Scan the receiver\'s palm.</div>';
@@ -2236,7 +2457,7 @@
       run: function () {
         return DB.all('people').then(function (people) {
           var freshSender = people.find(function (p) { return p.id === me.id; }) || me;
-          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), freshSender, people, walletSwapCamera, function () {}).then(function (out) {
+          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), freshSender, people, walletSwapCamera, function () {}, walletControl).then(function (out) {
             var auth = authFromVerify(out, freshSender.id);
             if (!auth.verified) { walletScanFailed(out); return; }
             return DB.nextSeq('demoSeq', 1).then(function (seq) {
@@ -2272,7 +2493,7 @@
           '<td>' + esc(p.id) + '</td><td>' + esc(p.type) + '<br><span style="color:var(--muted)">' + esc(p.store) + '</span></td>' +
           '<td>' + (personHasMethod(p) ? '<span class="badge ok">Enrolled</span>' : '<span class="badge bad">Not enrolled</span>') + '</td>' +
           '<td>' + (p.walletProvider ? esc(p.walletProvider) + '<br>' + esc(B.maskWalletNumber(p.walletNumber)) : '—') + '</td>' +
-          '<td><button class="btn small" data-verify="' + esc(p.id) + '">Verify</button></td></tr>';
+          '<td><button class="btn small" data-verify="' + esc(p.id) + '">Verify</button>' + (personHasMethod(p) ? ' <button class="btn small" data-topup="' + esc(p.id) + '">Add Angles</button>' : '') + '</td></tr>';
       }).join('');
       $('registryBody').innerHTML = rows || '<tr><td colspan="6" style="color:var(--muted)">No enrollments on this device yet.</td></tr>';
       document.querySelectorAll('[data-verify]').forEach(function (b) {
@@ -2284,9 +2505,104 @@
           fillTermMethodNote();
         });
       });
+      document.querySelectorAll('[data-topup]').forEach(function (b) {
+        b.addEventListener('click', function () { openTopup(b.dataset.topup); });
+      });
     });
   }
   $('registrySearch').addEventListener('input', renderRegistry);
+
+  /* ---------------- Add-angles top-up (v43) ---------------------------
+     An existing profile gains the multi-angle range WITHOUT
+     re-registering: the same guided flow runs, and its per-pose
+     codes MERGE into the stored profile (B.mergePalmprintProfileCodes)
+     — stored codes carried verbatim, the cap respected, and at the
+     cap only a redundant code is replaced. Identity, Biom ID,
+     wallet (balance, statement, linked accounts) and points are
+     never touched: the save writes back the same person record
+     with only the palm profile's codes/poses changed. */
+  var topupControl = null;
+  var topupPersonId = null;
+  var topupBusy = false;
+  function openTopup(personId) {
+    DB.all('people').then(function (people) {
+      var person = people.find(function (p) { return p.id === personId; }) || null;
+      if (!person || !personHasMethod(person)) return;
+      topupPersonId = personId;
+      go('topup');
+      $('topWho').innerHTML = '<b>' + esc(person.name) + '</b> — ' + esc(person.id) + '<br><span style="color:var(--muted)">Currently banked: ' + person.palmProfile.codes.length + ' palmprint codes' + (Array.isArray(person.palmProfile.poses) ? ' with pose data.' : ' from a single-posture enrolment — no pose data yet.') + ' The guided flow adds the missing angles; nothing else about this person changes.</span>';
+      $('topMsg').innerHTML = '';
+      $('topStatus').textContent = 'Starting the camera...';
+      startTopupCamera();
+    });
+  }
+  function startTopupCamera() {
+    return Cam.start($('topVideo'), camFacing.topup, 'topup').then(function () {
+      Pipeline.enterScanView();
+      syncCamToggle('topup');
+      syncFlashToggle('topup');
+      $('topCapture').disabled = false;
+      runTopupCapture();
+    }).catch(function (e) { $('topMsg').innerHTML = cameraErrorHTML(e); $('topStatus').textContent = 'Camera blocked.'; });
+  }
+  function runTopupCapture() {
+    if (topupBusy || palmScanBusy || !topupPersonId) return;
+    topupBusy = true; palmScanBusy = true;
+    $('topCapture').disabled = true;
+    $('topMsg').innerHTML = '';
+    var sequence = B.PALM_SEQUENCES[Math.floor(Math.random() * B.PALM_SEQUENCES.length)];
+    var control = { cancelled: false };
+    topupControl = control;
+    streamEnrolPalm($('topVideo'), $('topStatus'), sequence, function () {
+      camFacing.topup = camFacing.topup === 'user' ? 'environment' : 'user';
+      syncCamToggle('topup');
+      return Cam.start($('topVideo'), camFacing.topup, 'topup');
+    }, control).then(function (res) {
+      topupBusy = false; palmScanBusy = false;
+      $('topCapture').disabled = false;
+      if (res.stopped) { $('topStatus').textContent = 'Capture stopped.'; return; }
+      if (res.spoof && res.spoof.spoof) {
+        DB.put('logs', { ts: Date.now(), personId: '', personName: '(add-angles attempt)', store: '', method: 'palm', measured: 'Spoof score ' + res.spoof.score.toFixed(2) + ' - ' + res.spoof.reasons.join('; '), result: 'Spoof / Screen Replay Detected' });
+        $('topMsg').innerHTML = '<div class="error">Spoof / Screen Replay Detected — the scan showed a screen or a recording, not a live hand (' + esc(res.spoof.reasons.join('; ')) + '). Nothing was changed.</div>';
+        Snd.buzz();
+        return;
+      }
+      if (!res.movement.pass) {
+        $('topMsg').innerHTML = '<div class="error">Movement check failed: ' + esc(res.movement.reason) + ' Nothing was changed. Run it again and complete the movement sequence shown in the prompts, in order.</div>';
+        Snd.buzz();
+        return;
+      }
+      return DB.all('people').then(function (people) {
+        var person = people.find(function (p) { return p.id === topupPersonId; }) || null;
+        if (!person) { $('topMsg').innerHTML = '<div class="error">That person is no longer in the registry — nothing was changed.</div>'; return; }
+        var merged = B.mergePalmprintProfileCodes(person.palmProfile, res.results);
+        if (!merged || !merged.poseSet) {
+          $('topMsg').innerHTML = '<div class="error">The guided session did not bank a pose set — the flat pose plus at least two more measured poses are needed. Nothing was changed. Run it again and follow the angle prompts through to the end.</div>';
+          return;
+        }
+        if (!merged.changed) {
+          $('topMsg').innerHTML = '<div class="notice">No new angles were added: ' + merged.skipped + ' candidate code(s) were skipped as duplicates or poses already covered, and no banked code was redundant enough to replace. The stored profile is unchanged.</div>';
+          return;
+        }
+        var profile = { v: 3, codes: merged.codes };
+        if (merged.poses.some(function (d) { return !!d; })) profile.poses = merged.poses;
+        var updated = Object.assign({}, person, { palmProfile: profile });
+        return DB.put('people', updated).then(function () {
+          $('topMsg').innerHTML = '<div class="success">Angles added for ' + esc(person.name) + ': ' + merged.added + ' new code(s) appended' + (merged.replaced ? ', ' + merged.replaced + ' redundant code(s) replaced at the cap' : '') + (merged.skipped ? ', ' + merged.skipped + ' skipped (duplicate or already covered)' : '') + '. The profile now holds ' + merged.codes.length + ' codes. Biom ID, wallet, balance, statement, linked accounts and points are untouched.</div>';
+          Snd.chime();
+          Snd.speak('Angles added');
+        });
+      });
+    }).catch(function (e) {
+      topupBusy = false; palmScanBusy = false;
+      $('topCapture').disabled = false;
+      $('topMsg').innerHTML = '<div class="error">Add-angles capture failed: ' + esc(e && e.message ? e.message : e) + ' Nothing was changed.</div>';
+    });
+  }
+  $('topStart').addEventListener('click', function () { startTopupCamera(); });
+  $('topCapture').addEventListener('click', runTopupCapture);
+  $('topBack').addEventListener('click', function () { go('registry'); });
+  camRestarters.topup = function () { startTopupCamera(); };
 
   function renderFieldPanel() {
     if (!$('fieldStats')) return Promise.resolve();
@@ -2350,6 +2666,7 @@
   window.TSGApp = { go: go };
   wireCamToggles();
   wireFlashToggles();
+  Pipeline.start(); // v43: warm the singleton pipeline from the first moment — MediaPipe Hands + the match worker load once, here, and stay warm across every view
   setFieldMode(fieldModeOn());
   syncCamToggle('terminal');
   ['enrollPalm', 'terminal'].forEach(function (g) { syncFlashToggle(g); });

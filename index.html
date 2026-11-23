@@ -101,6 +101,15 @@
     <div id="walletScanCard" class="card hidden">
       <h2 id="wScanTitle">Palm scan</h2>
       <p class="sub" id="wScanPrompt"></p>
+      <div class="camtoggle" data-cam-toggle="walletAct" role="group" aria-label="Wallet scan camera choice">
+        <button type="button" data-facing="user" class="on">Front camera</button>
+        <button type="button" data-facing="environment">Back camera</button>
+      </div>
+      <div class="camtoggle flashtoggle" data-flash-toggle="walletAct" role="group" aria-label="Wallet scan flash choice">
+        <button type="button" data-flash="off" class="on">Flash Off</button>
+        <button type="button" data-flash="on">Flash On</button>
+      </div>
+      <p class="camnote flashnote" data-flash-note="walletAct"></p>
       <div class="camwrap"><video id="wScanVideo" autoplay playsinline muted></video>
         <div class="camstatus" id="wScanStatus">Camera not started.</div></div>
       <div class="row" style="margin-top:12px">
@@ -212,7 +221,7 @@
 
     <div id="enroll-palm" class="card hidden">
       <h2>Step 2 — Palm scan (real palmprint)</h2>
-      <p class="sub">Tap Auto-Capture Palm and follow the movement prompts as they appear — the sequence is picked at random each time, and a photo cannot perform it, so a single photo is never accepted. Just show your open hand to the camera, anywhere in the frame, at a natural distance — there is nothing to line up: the app finds the hand by itself. A palm pressed right against the lens cannot be read, so keep a natural distance. The app watches live: the movement is checked, the palm square is cut out and aligned from the hand landmarks, and an <b>EDCC palmprint encoder</b> reads the palm's own print pattern from the best fully-open frames — the individual print codes are stored. Labelled honestly: this is <b>Palm — Palmprint</b>, the print-pattern method real palmprint systems use. Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.</p>
+      <p class="sub">The camera and the guided capture start by themselves when this step opens — no tap needed. Follow the movement prompts as they appear — the sequence is picked at random each time, and a photo cannot perform it, so a single photo is never accepted. After the movement, the prompts walk the palm through a few angles — flat, tilted away slightly, tilted toward slightly, angled left, angled right, and a different distance — and the app banks the best fully-open print code of each angle, so the palm still verifies when it is held at a natural tilt at payment time. Just show your open hand to the camera, anywhere in the frame, at a natural distance — there is nothing to line up: the app finds the hand by itself. A palm pressed right against the lens cannot be read, so keep a natural distance. The app watches live: the movement is checked, the palm square is cut out and aligned from the hand landmarks, and an <b>EDCC palmprint encoder</b> reads the palm's own print pattern from the best fully-open frames — the individual print codes are stored. Labelled honestly: this is <b>Palm — Palmprint</b>, the print-pattern method real palmprint systems use. Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.</p>
       <div class="camtoggle" data-cam-toggle="enrollPalm" role="group" aria-label="Palm camera choice">
         <button type="button" data-facing="user" class="on">Front camera</button>
         <button type="button" data-facing="environment">Back camera</button>
@@ -244,7 +253,7 @@
   <!-- TERMINAL -->
   <section class="page" id="page-terminal">
     <h1>takeBIOM — Merchant Terminal</h1>
-    <p class="sub">Find the person, start the camera, then press the big Scan button — the customer simply holds an open palm toward the camera. Add an amount only when this is a payment. Palm Loyalty is LIVE; Palm Pay is Biometric Authorised — Pending Provider Settlement.</p>
+    <p class="sub">Find the person — the camera and the scan then start by themselves, and the customer simply holds an open palm toward the camera. After each verdict, Next Customer resets the terminal for the next person. Add an amount only when this is a payment. Palm Loyalty is LIVE; Palm Pay is Biometric Authorised — Pending Provider Settlement.</p>
     <div class="card">
       <label>Find person</label>
       <input id="termSearch" placeholder="Type a name, Biom ID or phone number" style="margin-bottom:10px">
@@ -281,6 +290,7 @@
         <div><button class="btn big" id="termStart">Start Camera</button></div>
       </div>
       <button class="btn primary bigscan" id="termScan" disabled>SCAN</button>
+      <button class="btn bigscan hidden" id="termNext" style="margin-top:10px">Next Customer</button>
       <div id="termResult" style="margin-top:14px"></div>
     </div>
   </section>
@@ -314,6 +324,33 @@
       <thead><tr><th>Person</th><th>Biom ID</th><th>Type / Store</th><th>Palm</th><th>Wallet</th><th></th></tr></thead>
       <tbody id="registryBody"></tbody>
     </table></div>
+  </section>
+
+  <!-- ADD ANGLES (v43) -->
+  <section class="page" id="page-topup">
+    <h1>Add Angles — widen a palm profile</h1>
+    <p class="sub">Runs the same guided capture as enrolment and adds the missing palm angles to this person's stored profile. Their Biom ID, wallet, balance, statement, linked accounts and loyalty points do not change — only the palm profile gains codes.</p>
+    <div class="card">
+      <div id="topWho" class="kv"></div>
+      <div class="camtoggle" data-cam-toggle="topup" role="group" aria-label="Add-angles camera choice">
+        <button type="button" data-facing="user" class="on">Front camera</button>
+        <button type="button" data-facing="environment">Back camera</button>
+      </div>
+      <p class="camnote">Front camera = self-scan. Back camera = a cashier scans the customer across the counter. This choice applies to this capture only.</p>
+      <div class="camtoggle flashtoggle" data-flash-toggle="topup" role="group" aria-label="Add-angles flash choice">
+        <button type="button" data-flash="off" class="on">Flash Off</button>
+        <button type="button" data-flash="on">Flash On</button>
+      </div>
+      <p class="camnote flashnote" data-flash-note="topup"></p>
+      <div class="camwrap"><video id="topVideo" autoplay playsinline muted></video>
+        <div class="camstatus" id="topStatus">Camera not started.</div></div>
+      <div class="row" style="margin-top:12px">
+        <div><button class="btn" id="topStart">Start Camera</button></div>
+        <div><button class="btn primary" id="topCapture" disabled>Run Guided Capture</button></div>
+      </div>
+      <div id="topMsg" style="margin-top:12px"></div>
+      <button class="btn" id="topBack" style="margin-top:12px">Back to Registry</button>
+    </div>
   </section>
 
   <!-- LOGS -->
