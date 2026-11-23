@@ -14,7 +14,7 @@
      matching code do not read reliably against a new one. Bump
      APP_DATA_VERSION together with the service-worker shell on any
      build that changes enrolment or matching. */
-  var APP_DATA_VERSION = 'v34';
+  var APP_DATA_VERSION = 'v35';
   /* DEVELOPMENT ONLY (his order, 2026-11-20): the wipe below runs
      only in development builds. A commercial build ships with
      BUILD_MODE set to 'commercial' and never wipes - real customer
@@ -633,7 +633,7 @@
         var self = this;
         this.w.onmessage = function (e) {
           var p = self.pending[e.data.id];
-          if (p) { delete self.pending[e.data.id]; p(e.data.result); }
+          if (p) { delete self.pending[e.data.id]; p(e.data); }
         };
         this.w.onerror = function () { self.w = null; };
       } catch (e) { this.w = null; }
@@ -651,7 +651,7 @@
           resolve(r || B.verifyPalmprintProfile(profile, liveCodes));
         };
         var to = setTimeout(function () { delete self.pending[id]; finishWith(null); }, 5000);
-        self.pending[id] = function (r) { clearTimeout(to); finishWith(r); };
+        self.pending[id] = function (msg) { clearTimeout(to); finishWith(msg && msg.result); };
         try { self.w.postMessage({ id: id, profile: profile, liveCodes: liveCodes }); }
         catch (e) { clearTimeout(to); delete self.pending[id]; finishWith(null); }
       });
@@ -660,10 +660,20 @@
        the 25 image-level shifts and applies the max rule. The
        watchdog is longer than the code path's: a single ROI expands
        to 50 encodes plus up to 300 code comparisons. Any failure
-       falls back to the identical main-thread function. */
-    verifyRois: function (profile, liveRois) {
+       falls back to the identical main-thread function.
+       v35: opts.fast routes to verifyPalmprintRoisFast — the same
+       max rule over the same pairs, produced lazily in priority
+       order with a threshold short-circuit (see biometrics.js).
+       Same verdict; on a pass the reported score is the deciding
+       pair's true score rather than the full max. The per-frame
+       streaming call uses it; finalOut keeps the exact path. */
+    verifyRois: function (profile, liveRois, opts) {
       this.init();
-      if (!this.w) return Promise.resolve(B.verifyPalmprintRois(profile, liveRois));
+      var fast = !!(opts && opts.fast);
+      var mainThread = function () {
+        return fast ? B.verifyPalmprintRoisFast(profile, liveRois) : B.verifyPalmprintRois(profile, liveRois);
+      };
+      if (!this.w) return Promise.resolve(mainThread());
       var self = this;
       var id = ++this.seq;
       return new Promise(function (resolve) {
@@ -671,11 +681,42 @@
         var finishWith = function (r) {
           if (done) return;
           done = true;
-          resolve(r || B.verifyPalmprintRois(profile, liveRois));
+          resolve(r || mainThread());
         };
         var to = setTimeout(function () { delete self.pending[id]; finishWith(null); }, 20000);
-        self.pending[id] = function (r) { clearTimeout(to); finishWith(r); };
-        try { self.w.postMessage({ id: id, profile: profile, liveRois: liveRois }); }
+        self.pending[id] = function (msg) { clearTimeout(to); finishWith(msg && msg.result); };
+        try { self.w.postMessage({ id: id, profile: profile, liveRois: liveRois, fast: fast }); }
+        catch (e) { clearTimeout(to); delete self.pending[id]; finishWith(null); }
+      });
+    },
+    /* v35: verify the same live ROIs against several profiles in
+       one worker call — the probe codes are encoded once inside
+       the worker and scored against each profile, instead of one
+       full re-encode per profile. Each result is the exact
+       verifyPalmprintProfile result for that profile. Used by the
+       impostor-max diagnostic in streamVerifyPalm. */
+    verifyRoisMulti: function (profiles, liveRois) {
+      this.init();
+      var mainThread = function () {
+        var codes = [];
+        (liveRois || []).forEach(function (roi) {
+          B.palmprintProbeCodes(roi).forEach(function (c) { codes.push(c); });
+        });
+        return profiles.map(function (p) { return B.verifyPalmprintProfile(p, codes); });
+      };
+      if (!this.w) return Promise.resolve(mainThread());
+      var self = this;
+      var id = ++this.seq;
+      return new Promise(function (resolve) {
+        var done = false;
+        var finishWith = function (rs) {
+          if (done) return;
+          done = true;
+          resolve(rs || mainThread());
+        };
+        var to = setTimeout(function () { delete self.pending[id]; finishWith(null); }, 20000);
+        self.pending[id] = function (msg) { clearTimeout(to); finishWith(msg && msg.results); };
+        try { self.w.postMessage({ id: id, profiles: profiles, liveRois: liveRois }); }
         catch (e) { clearTimeout(to); delete self.pending[id]; finishWith(null); }
       });
     }
@@ -896,17 +937,23 @@
 
     function finish(out) { return out; }
     function impostorMaxFor(rois) {
-      var chain = Promise.resolve(null);
-      (people || []).forEach(function (p) {
-        if (p.id === person.id || !B.palmprintProfileSane(p.palmProfile)) return;
-        chain = chain.then(function (cur) {
-          return Match.verifyRois(p.palmProfile, rois).then(function (ro) {
-            var s = ro && typeof ro.similarity === 'number' ? ro.similarity : null;
-            return s !== null && (cur === null || s > cur) ? s : cur;
-          });
-        });
+      // v35: one multi-profile call — the probe codes are encoded
+      // once and scored against every other enrolled profile,
+      // instead of a full 50-encode expansion per person. Each
+      // per-profile result is the exact one the v34 chain computed;
+      // the max taken over them is unchanged.
+      var others = (people || []).filter(function (p) {
+        return p.id !== person.id && B.palmprintProfileSane(p.palmProfile);
       });
-      return chain;
+      if (!others.length) return Promise.resolve(null);
+      return Match.verifyRoisMulti(others.map(function (p) { return p.palmProfile; }), rois).then(function (results) {
+        var cur = null;
+        (results || []).forEach(function (ro) {
+          var s = ro && typeof ro.similarity === 'number' ? ro.similarity : null;
+          if (s !== null && (cur === null || s > cur)) cur = s;
+        });
+        return cur;
+      });
     }
     function spoofOut(sp) {
       logVerification(person, 'palm', 'Spoof score ' + sp.score.toFixed(2) + ' - ' + sp.reasons.join('; '), 'Spoof / Screen Replay Detected');
@@ -980,7 +1027,10 @@
                 // v33: the frame's ROI is the probe — the matcher
                 // re-encodes it at the 25 image-level shifts and
                 // takes the best pair against the enrolled codes.
-                return Match.verifyRois(person.palmProfile, [r.roi]).then(function (res) {
+                // v35: the fast path — same pairs, same max rule,
+                // lazily ordered with a threshold short-circuit, so
+                // a matching frame decides without all 50 encodes.
+                return Match.verifyRois(person.palmProfile, [r.roi], { fast: true }).then(function (res) {
                   var score = res && typeof res.similarity === 'number' ? res.similarity : null;
                   matchState = B.streamMatchUpdate(matchState, score);
                   if (matchState.done) win = { res: res, rois: [r.roi] };

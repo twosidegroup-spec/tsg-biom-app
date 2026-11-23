@@ -1166,21 +1166,76 @@
     }
     return count ? matches / count : null;
   }
+  /* The 25 code-grid translations of the similarity search, in the
+     order they are tried: (0,0) first, then expanding Manhattan
+     rings. The max over the set is identical in any order; the order
+     only decides how much of the search the branch-and-bound in
+     palmprintSimilaritySeeded can abandon early. The same list
+     orders the image-level probe re-encodes in
+     verifyPalmprintRoisFast (v35). */
+  var PALMPRINT_SHIFT_ORDER = (function () {
+    var list = [];
+    for (var dy = -2; dy <= 2; dy++) for (var dx = -2; dx <= 2; dx++) list.push([dx, dy]);
+    list.sort(function (p, q) {
+      var mp = Math.abs(p[0]) + Math.abs(p[1]), mq = Math.abs(q[0]) + Math.abs(q[1]);
+      return (mp - mq) || (p[1] - q[1]) || (p[0] - q[0]);
+    });
+    return list;
+  })();
+
+  /* EDCC similarity over pre-validated code bytes, with
+     branch-and-bound against a seed (v35): `seed` is a score the
+     caller has already reached, or null. Each translation is
+     scanned row by row over exactly the overlapping region
+     edccScoreAtShift counts; a scan is abandoned as soon as its
+     ceiling — the score it would reach if every remaining
+     overlapping pixel matched — can no longer beat the best score
+     so far. A translation whose true score beats the running best
+     is never abandoned (its ceiling stays at or above its true
+     score at every row boundary), so the returned value is exactly
+     the full-search max whenever that max exceeds the seed, and
+     some value at or below the seed otherwise — all a caller
+     maximising over pairs ever needs. With a null seed nothing is
+     abandoned before the first completed translation and the
+     result is the full computation, identical to the v34 search:
+     same translations, same integer match counts, same divisions. */
+  function palmprintSimilaritySeeded(ba, bb, seed, size) {
+    size = size || PALMPRINT_SIZE;
+    var best = (typeof seed === 'number' && isFinite(seed)) ? seed : null;
+    for (var si = 0; si < PALMPRINT_SHIFT_ORDER.length; si++) {
+      var dx = PALMPRINT_SHIFT_ORDER[si][0], dy = PALMPRINT_SHIFT_ORDER[si][1];
+      var x0 = Math.max(0, -dx), x1 = Math.min(size, size - dx);
+      var y0 = Math.max(0, -dy), y1 = Math.min(size, size - dy);
+      var count = (x1 - x0) * (y1 - y0);
+      if (count <= 0) continue;
+      var matches = 0, scanned = 0, abandoned = false;
+      for (var y = y0; y < y1; y++) {
+        var rowA = y * size, rowB = (y + dy) * size + dx;
+        for (var x = x0; x < x1; x++) {
+          if (ba[rowA + x] === bb[rowB + x]) matches++;
+        }
+        scanned += (x1 - x0);
+        if (best !== null && (matches + (count - scanned)) / count <= best) { abandoned = true; break; }
+      }
+      if (abandoned) continue;
+      var s = matches / count;
+      if (best === null || s > best) best = s;
+    }
+    return best;
+  }
+
   /* Palmprint similarity: EDCC score, best over +-1 px translations. */
   function palmprintSimilarity(a, b, size) {
     var ba = palmprintCodeBytes(a), bb = palmprintCodeBytes(b);
     if (!palmprintCodeSane(ba, size) || !palmprintCodeSane(bb, size)) return null;
-    var best = null;
     // v15: the shift search widened from +/-1 to +/-2 code pixels. On a
     // real phone the landmark-derived warp lands a few pixels off
     // between sessions; +/-1 starved genuine matches (a real enrolled
     // palm scored 0.240 against the 0.36 threshold on 2026-11-20).
     // Impostor separation re-verified on the E2E battery before shipping.
-    for (var dy = -2; dy <= 2; dy++) for (var dx = -2; dx <= 2; dx++) {
-      var s = edccScoreAtShift(ba, bb, dx, dy, size);
-      if (s !== null && (best === null || s > best)) best = s;
-    }
-    return best;
+    // v35: the search itself is palmprintSimilaritySeeded with a null
+    // seed — the identical max over the identical 25 translations.
+    return palmprintSimilaritySeeded(ba, bb, null, size);
   }
 
   /* v33: shift a grayscale image by (dx, dy) with edge-clamped
@@ -1332,6 +1387,16 @@
   }
   function palmprintProfileSane(stored) { return normalisePalmprintProfile(stored) !== null; }
 
+  /* The verify result for a completed comparison (shared by every
+     palmprint verify path so the object shape never drifts). */
+  function palmprintMatchResult(best) {
+    var verified = best >= PALMPRINT_THRESHOLD;
+    return {
+      ok: true, verified: verified, similarity: best, threshold: PALMPRINT_THRESHOLD,
+      reason: verified ? 'Palmprint code matches the enrolled palm.' : 'Palmprint similarity below threshold - not the enrolled palm.'
+    };
+  }
+
   /* Verify a live palmprint against a v3 profile: the best EDCC
      similarity over every (enrolled code x live code) pair must clear
      the threshold. Fail closed on any missing or degenerate data. */
@@ -1345,16 +1410,18 @@
     (liveCodes || []).forEach(function (c) { var b = palmprintCodeBytes(c); if (b && palmprintCodeSane(b)) live.push(b); });
     if (!live.length) return fail('No real open palm with readable print detail was detected in this scan.', null);
     var best = null;
+    // v35: the pair loop runs on the already-validated bytes through
+    // the seeded similarity (seed = best so far). The codes reaching
+    // this loop are all sane 4096-byte codes (normalise + the live
+    // filter above), so the seeded search never returns null here;
+    // the guard stays so any surprise still fails closed, exactly as
+    // the v34 loop did. The final best is the identical full max.
     for (var i = 0; i < profile.codes.length; i++) for (var j = 0; j < live.length; j++) {
-      var s = palmprintSimilarity(profile.codes[i], live[j]);
+      var s = palmprintSimilaritySeeded(profile.codes[i], live[j], best);
       if (s === null || !isFinite(s)) return fail('Palmprint comparison failed.', null);
       if (best === null || s > best) best = s;
     }
-    var verified = best >= PALMPRINT_THRESHOLD;
-    return {
-      ok: true, verified: verified, similarity: best, threshold: PALMPRINT_THRESHOLD,
-      reason: verified ? 'Palmprint code matches the enrolled palm.' : 'Palmprint similarity below threshold - not the enrolled palm.'
-    };
+    return palmprintMatchResult(best);
   }
 
   /* v33 verification — the PalmCode-Bench v25 max rule, exactly:
@@ -1379,6 +1446,59 @@
     });
     if (!codes.length) return fail('No real open palm with readable print detail was detected in this scan.', null);
     return verifyPalmprintProfile(stored, codes);
+  }
+
+  /* v35 fast streaming verify — the SAME v25 max rule as
+     verifyPalmprintRois, organised for the per-frame Show & Pay
+     call: probe variants are produced lazily in priority order
+     (expanding image-shift rings; the plain orientation and its
+     mirror twin at each shift) and scored as they are produced,
+     instead of all 50 encodes up front. The search stops the
+     moment a pair reaches the threshold — a pure short-circuit on
+     an already-decided pass: the verified verdict is the one the
+     full computation would give, and the reported similarity is
+     that pair's true score (a lower bound of the full max, not
+     the full max itself). When no pair reaches the threshold,
+     every variant is produced and scored, so the reported
+     similarity IS the full max, identical to verifyPalmprintRois.
+     The pair set, the encoder, the fusion rule and the threshold
+     are unchanged; fail-closed on the same conditions, in the
+     same order, with the same messages. */
+  function verifyPalmprintRoisFast(stored, liveRois) {
+    var fail = function (reason, similarity) {
+      return { ok: false, verified: false, similarity: similarity, threshold: PALMPRINT_THRESHOLD, reason: reason };
+    };
+    var profile = normalisePalmprintProfile(stored);
+    if (!profile) return fail('No usable palmprint enrolled for this person - the stored palmprint data is missing or invalid.', null);
+    var best = null;
+    var anyCode = false;
+    var rois = liveRois || [];
+    for (var ri = 0; ri < rois.length; ri++) {
+      var roi = rois[ri];
+      if (!roi || roi.length !== PALMPRINT_ROI_SIZE * PALMPRINT_ROI_SIZE) continue;
+      var flipped = flipGrayHorizontal(roi, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
+      var imgs = flipped ? [roi, flipped] : [roi];
+      for (var si = 0; si < PALMPRINT_SHIFT_ORDER.length; si++) {
+        var dx = PALMPRINT_SHIFT_ORDER[si][0], dy = PALMPRINT_SHIFT_ORDER[si][1];
+        for (var oi = 0; oi < imgs.length; oi++) {
+          var src = (dx === 0 && dy === 0) ? imgs[oi] : shiftGrayClamped(imgs[oi], PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE, dx, dy);
+          if (!src) continue;
+          var code = palmprintEncode(src, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
+          if (!code || !palmprintCodeSane(code)) continue;
+          var cb = palmprintCodeBytes(code);
+          if (!cb) continue;
+          anyCode = true;
+          for (var ci = 0; ci < profile.codes.length; ci++) {
+            var s = palmprintSimilaritySeeded(profile.codes[ci], cb, best);
+            if (s === null || !isFinite(s)) return fail('Palmprint comparison failed.', null);
+            if (best === null || s > best) best = s;
+            if (best >= PALMPRINT_THRESHOLD) return palmprintMatchResult(best);
+          }
+        }
+      }
+    }
+    if (!anyCode || best === null) return fail('No real open palm with readable print detail was detected in this scan.', null);
+    return palmprintMatchResult(best);
   }
 
   /* Clip frames for the palmprint path carry { openness, code,
@@ -1630,14 +1750,26 @@
       ';var PALMPRINT_MAX_DIR_SHARE=' + PALMPRINT_MAX_DIR_SHARE +
       ';var PALMPRINT_THRESHOLD=' + PALMPRINT_THRESHOLD +
       ';var PALMPRINT_SHIFT_RANGE=' + PALMPRINT_SHIFT_RANGE +
+      ';var PALMPRINT_SHIFT_ORDER=' + JSON.stringify(PALMPRINT_SHIFT_ORDER) +
       ';var PALMPRINT_KERNELS=null;';
     // v33: the encoder chain joins the worker so the 25-shift probe
     // re-encodes (verifyPalmprintRois) run off the main thread too.
     // Messages carrying liveRois take the v33 path; messages carrying
     // liveCodes keep the original code-pair path, byte-identical.
-    var fns = [reflect101, resizeGrayBilinear, convolveSeparable, convolve2d, gaborKernelReal, palmprintKernels, palmprintEnhance, palmprintEncode, palmprintCodeFromBase64, palmprintCodeBytes, palmprintCodeSane, edccScoreAtShift, palmprintSimilarity, flipGrayHorizontal, shiftGrayClamped, palmprintProbeCodes, normalisePalmprintProfile, verifyPalmprintProfile, verifyPalmprintRois];
+    // v35: messages carrying fast take verifyPalmprintRoisFast (the
+    // same max rule, lazily ordered with a threshold short-circuit);
+    // messages carrying profiles + liveRois verify the SAME probe
+    // codes — encoded once — against every profile (the impostor-max
+    // composition), answering with a results array.
+    var fns = [reflect101, resizeGrayBilinear, convolveSeparable, convolve2d, gaborKernelReal, palmprintKernels, palmprintEnhance, palmprintEncode, palmprintCodeFromBase64, palmprintCodeBytes, palmprintCodeSane, edccScoreAtShift, palmprintSimilaritySeeded, palmprintSimilarity, flipGrayHorizontal, shiftGrayClamped, palmprintProbeCodes, normalisePalmprintProfile, palmprintMatchResult, verifyPalmprintProfile, verifyPalmprintRois, verifyPalmprintRoisFast];
     var body = fns.map(function (f) { return f.toString(); }).join('\n');
-    var handler = 'onmessage=function(e){var d=e.data||{};var r=null;try{r=(d.liveRois?verifyPalmprintRois(d.profile,d.liveRois):verifyPalmprintProfile(d.profile,d.liveCodes));}catch(err){r=null;}postMessage({id:d.id,result:r});};';
+    var handler = 'onmessage=function(e){var d=e.data||{};var r=null;var rs=null;' +
+      'try{' +
+      'if(d.profiles){var codes=[];(d.liveRois||[]).forEach(function(roi){palmprintProbeCodes(roi).forEach(function(c){codes.push(c);});});rs=d.profiles.map(function(p){return verifyPalmprintProfile(p,codes);});}' +
+      'else if(d.fast){r=verifyPalmprintRoisFast(d.profile,d.liveRois);}' +
+      'else{r=(d.liveRois?verifyPalmprintRois(d.profile,d.liveRois):verifyPalmprintProfile(d.profile,d.liveCodes));}' +
+      '}catch(err){r=null;rs=null;}' +
+      'postMessage({id:d.id,result:r,results:rs});};';
     return consts + '\n' + body + '\n' + handler;
   }
 
@@ -1915,6 +2047,7 @@
     PALMPRINT_SHIFT_RANGE: PALMPRINT_SHIFT_RANGE,
     palmprintProbeCodes: palmprintProbeCodes,
     verifyPalmprintRois: verifyPalmprintRois,
+    verifyPalmprintRoisFast: verifyPalmprintRoisFast,
     palmprintUsableOpenFrames: palmprintUsableOpenFrames,
     selectPalmprintProfileCodes: selectPalmprintProfileCodes,
     palmprintConsensusCode: palmprintConsensusCode,
