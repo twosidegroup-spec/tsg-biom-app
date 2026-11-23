@@ -145,7 +145,7 @@ function clipFrames(creases, baseSeed, open) {
   return frames;
 }
 const enrollCodes = B.selectPalmprintProfileCodes(clipFrames(PALMS[0], 51, true));
-check('PROFILE enrolment selects 3 codes', !!enrollCodes && enrollCodes.length === 3, enrollCodes ? enrollCodes.length + ' codes' : 'null');
+check('PROFILE enrolment selects 6 individual capture codes (v33: v29 consensus codes removed - max fusion scores the individual codes)', !!enrollCodes && enrollCodes.length === 6, enrollCodes ? enrollCodes.length + ' codes' : 'null');
 const profile = { v: 3, codes: enrollCodes };
 check('PROFILE v3 profile is sane', B.palmprintProfileSane(profile));
 check('PROFILE one-code profile rejected', !B.palmprintProfileSane({ v: 3, codes: [enrollCodes[0]] }));
@@ -161,6 +161,79 @@ check('VERIFY fist-only clip yields no live codes -> fail closed', r.verified ==
 r = B.verifyPalmprintProfile(null, liveSame);
 check('VERIFY missing profile -> fail closed', r.verified === false && r.ok === false);
 check('SELECT fist frames are not usable for enrolment', B.selectPalmprintProfileCodes(clipFrames(PALMS[0], 95, false)) === null);
+
+/* ---------------- V15: mirror twins + fully-open enrolment ----------- */
+const imgFlip = [10, 20, 30, 40, 50, 60];
+check('FLIP double flip is identity', JSON.stringify(B.flipGrayHorizontal(B.flipGrayHorizontal(imgFlip, 3, 2), 3, 2)) === JSON.stringify(imgFlip));
+check('FLIP single flip reverses each row', JSON.stringify(B.flipGrayHorizontal(imgFlip, 3, 2)) === JSON.stringify([30, 20, 10, 60, 50, 40]));
+check('FLIP null input -> null', B.flipGrayHorizontal(null, 3, 2) === null);
+const roiImgA = roiImage(PALMS[0], 77, {});
+const codePlain = B.palmprintEncode(roiImgA, 128, 128);
+const codeMirror = B.palmprintEncode(B.flipGrayHorizontal(roiImgA, 128, 128), 128, 128);
+const simMirror = B.palmprintSimilarity(codePlain, codeMirror);
+check('MIRROR a palm code does not match its own mirror twin', simMirror !== null && simMirror < B.PALMPRINT_THRESHOLD, 'sim=' + (simMirror && simMirror.toFixed(3)));
+const framesWithTwin = [
+  { openness: 2.0, code: codePlain, codeM: codeMirror, sharpness: 100 },
+  { openness: 2.0, code: codePlain, codeM: codeMirror, sharpness: 90 },
+  { openness: 2.0, code: codePlain, codeM: codeMirror, sharpness: 80 },
+  { openness: 2.0, code: codePlain, codeM: codeMirror, sharpness: 70 }
+];
+const liveWithTwin = B.selectPalmprintLiveCodes(framesWithTwin);
+check('MIRROR live selection carries frame codes + twins + 2 fused consensus codes (v30)', liveWithTwin.length === 8, liveWithTwin.length + ' codes');
+const mirrorProfile = { v: 3, codes: B.selectPalmprintProfileCodes(framesWithTwin.map(function (f) { return { openness: f.openness, code: f.codeM, sharpness: f.sharpness }; })) };
+r = B.verifyPalmprintProfile(mirrorProfile, liveWithTwin);
+check('MIRROR enrolment in one orientation verifies in the other via the twin', r.verified === true, 'sim=' + (r.similarity && r.similarity.toFixed(3)));
+const codeOpen1 = encode(PALMS[0], 201, {}), codeOpen2 = encode(PALMS[0], 202, {});
+const codeTrans = encode(PALMS[2], 203, {});
+const mixedFrames = [
+  { openness: 2.05, code: codeOpen1, sharpness: 50 },
+  { openness: 2.02, code: codeOpen2, sharpness: 60 },
+  { openness: 1.70, code: codeTrans, sharpness: 999 },
+  { openness: 1.72, code: codeTrans, sharpness: 998 },
+  { openness: 1.71, code: codeTrans, sharpness: 997 }
+];
+const fullOpenPicks = B.selectPalmprintProfileCodes(mixedFrames);
+check('FULLY-OPEN enrolment ignores sharper transition frames', !!fullOpenPicks && fullOpenPicks.length === 2 && fullOpenPicks.every(function (c) { return B.palmprintSimilarity(c, codeOpen1) === 1 || B.palmprintSimilarity(c, codeOpen2) === 1; }), fullOpenPicks ? fullOpenPicks.length + ' picks' : 'null');
+
+/* ------------- V20: source alignment replaces rotation twins -------- */
+check('ROTATE 0 degrees is identity', JSON.stringify(B.rotateGray(imgFlip, 3, 2, 0)) === JSON.stringify(imgFlip));
+check('ROTATE null input -> null', B.rotateGray(null, 3, 2, 5) === null);
+const roiRot = B.rotateGray(roiImgA, 128, 128, 5);
+const codeRot = B.palmprintEncode(roiRot, 128, 128);
+check('ROTATE rotated ROI still encodes sane', B.palmprintCodeSane(codeRot));
+const framesRoi = [
+  { openness: 2.0, code: codePlain, codeM: codeMirror, roi: roiImgA, sharpness: 100 },
+  { openness: 2.0, code: codePlain, codeM: codeMirror, roi: roiImgA, sharpness: 90 },
+  { openness: 2.0, code: codePlain, codeM: codeMirror, roi: roiImgA, sharpness: 80 },
+  { openness: 2.0, code: codePlain, codeM: codeMirror, roi: roiImgA, sharpness: 70 }
+];
+const liveVariants = B.selectPalmprintLiveCodes(framesRoi);
+check('ALIGNED live selection emits plain + mirror per frame plus fused consensus (top 3 frames, v30)', liveVariants.length === 8, liveVariants.length + ' codes');
+// v20 rotation answer: alignment at the source. A palm physically
+// presented rotated yields rotated LANDMARKS; the warp frame is built
+// from those landmarks (v axis = wrist -> middle-MCP), so the ROI -
+// and its code - comes out upright without any rotation twins. (A raw
+// post-warp rotated code still scores ~0.17: EDCC is rotation-
+// sensitive, which is exactly why the alignment happens at capture.)
+function rotLm(lm, deg) {
+  const rad = deg * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+  const cx = 319.5, cy = 239.5;
+  return lm.map(function (p) {
+    const dx = p.x * 640 - cx, dy = p.y * 480 - cy;
+    return { x: (cx + dx * cos - dy * sin) / 640, y: (cy + dx * sin + dy * cos) / 480, z: 0 };
+  });
+}
+const rotFrame5 = B.rotateGray(fA.gray, fA.w, fA.h, 5);
+const roiRot5 = B.palmRoiFromLandmarks(rotFrame5, fA.w, fA.h, rotLm(landmarks(0, 0), 5));
+const codeRot5 = roiRot5 && B.palmprintEncode(roiRot5, 128, 128);
+const codeRot5M = roiRot5 && B.palmprintEncode(B.flipGrayHorizontal(roiRot5, 128, 128), 128, 128);
+r = B.verifyPalmprintProfile(warpProfile, B.selectPalmprintLiveCodes([{ openness: 2.0, code: codeRot5, codeM: codeRot5M, sharpness: 100 }]));
+check('ALIGNED a live palm presented 5 degrees rotated still verifies (source alignment, no twins)', r.verified === true, 'sim=' + (r.similarity && r.similarity.toFixed(3)));
+const eightOpen = [];
+for (let i = 0; i < 8; i++) eightOpen.push({ openness: 2.05 - i * 0.01, code: encode(PALMS[0], 301 + i, {}), sharpness: 100 + i });
+const sixPicks = B.selectPalmprintProfileCodes(eightOpen);
+check('ENROL6 fully-open selection keeps 6 individual codes (v33: no consensus append)', !!sixPicks && sixPicks.length === 6, sixPicks ? sixPicks.length + ' codes' : 'null');
+check('ENROL6 an 8-code fused profile is sane', B.palmprintProfileSane({ v: 3, codes: sixPicks }));
 
 /* ------------- CALIBRATION: profile-level decision rule -------------
    The product decision is verifyPalmprintProfile (best of 3 enrolled

@@ -1,22 +1,23 @@
-/* TSG Biom — light teal design system (approved page designs, 2026-11-20).
-   Deep teal header, white rounded cards, one teal primary action,
-   bright green pay action, fixed bottom navigation. */
+/* TSG Biom — light design system, solid colours only (v33, 2026-11-23).
+   White and very light neutral surfaces, one solid teal accent used
+   consistently, solid green pay action, hairline borders, fixed
+   bottom navigation. No gradients anywhere. */
 :root{
   --bg:#f3f6f6; --bg2:#eaf1f1; --surface:#ffffff; --surface2:#ffffff;
   --line:#dfe9e9; --line2:#e9f0f0; --text:#10201e; --muted:#5d7370;
   --teal:#075e55; --teal-dark:#054a43; --accent:#075e55; --accent2:#0b7a6e;
-  --green:#1db87a; --green2:#35cf9a;
+  --green:#1db87a;
   --danger:#d63a3a; --warn:#9a6a12; --ok:#0c7a4d;
   --radius:22px;
   --shadow:0 10px 30px rgba(6,60,54,.08), 0 2px 6px rgba(6,60,54,.05);
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
-body{background:linear-gradient(180deg,var(--bg) 0%,var(--bg2) 100%);color:var(--text);
+body{background:var(--bg);color:var(--text);
   font-family:"Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif;min-height:100vh}
 a{color:var(--accent2)}
 button{font-family:inherit}
-.topbar{position:sticky;top:0;z-index:40;background:linear-gradient(180deg,#08685c,var(--teal-dark));
+.topbar{position:sticky;top:0;z-index:40;background:var(--teal);
   color:#fff;padding:16px 18px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
   border-radius:0 0 26px 26px;box-shadow:0 12px 28px rgba(6,60,54,.22)}
 .brand{display:flex;align-items:center;gap:12px;font-weight:800;letter-spacing:.4px;font-size:21px}
@@ -41,7 +42,7 @@ button{font-family:inherit}
   padding:6px 2px 4px;border-radius:14px;cursor:pointer;font-size:11.5px;
   display:flex;flex-direction:column;align-items:center;gap:3px;min-height:56px;justify-content:center}
 .nav button svg{width:23px;height:23px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
-.nav button.active{color:var(--teal)}
+.nav button.active{color:var(--teal);background:#eef5f4}
 .nav button.active svg{stroke:var(--teal)}
 main{max-width:1180px;margin:0 auto;padding:20px 16px 130px}
 section.page{display:none}
@@ -81,18 +82,14 @@ input:focus,select:focus{outline:2px solid rgba(11,122,110,.35);border-color:var
 .checkrow .check input{width:auto;accent-color:var(--teal);margin:0}
 .steps span.skipped{opacity:.38;text-decoration:line-through}
 .guide{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
-.guide .oval{width:210px;height:270px;border:3px dashed rgba(47,230,176,.9);border-radius:50%}
 .guide .hand{width:240px;height:240px;border:3px dashed rgba(47,230,176,.9);border-radius:40% 40% 46% 46%}
-.guide .finger{width:170px;height:220px;border:3px dashed rgba(47,230,176,.9);border-radius:90px}
 .camstatus{position:absolute;left:10px;bottom:10px;background:rgba(4,32,28,.78);color:#eafffa;padding:7px 11px;border-radius:9px;font-size:13px}
 .notice{border:1px solid #ecd9a8;color:#7a5a0e;border-radius:14px;padding:12px 14px;font-size:14px;line-height:1.5;background:#fdf6e0}
 .error{border:1px solid #f0caca;color:#8f1d1d;border-radius:14px;padding:12px 14px;font-size:14px;line-height:1.5;background:#fdf0f0}
 .success{border:1px solid #b5e6cd;color:#0a5c40;border-radius:14px;padding:12px 14px;font-size:14px;line-height:1.5;background:#ecf9f2}
 table{width:100%;border-collapse:collapse;font-size:14px}
 th,td{text-align:left;padding:11px 8px;border-bottom:1px solid var(--line2);vertical-align:top}
-th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.6px}
-.thumb{width:52px;height:52px;object-fit:cover;border-radius:10px;border:1px solid var(--line);background:#10181a}
-canvas.preview{width:100%;max-width:260px;border-radius:14px;border:1px solid var(--line);background:#10181a}
+th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.6px;background:#f7fafa}
 .kv{font-size:14px;line-height:1.9}
 .kv b{color:var(--muted);font-weight:600}
 .modegrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
@@ -106,8 +103,8 @@ canvas.preview{width:100%;max-width:260px;border-radius:14px;border:1px solid va
 .desk-actions{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:6px 0 16px}
 .bigaction{border:none;border-radius:24px;padding:26px 22px;text-align:left;cursor:pointer;
   min-height:132px;display:flex;flex-direction:column;gap:8px;justify-content:center;box-shadow:var(--shadow)}
-.bigaction.register{background:linear-gradient(135deg,#08685c,var(--teal-dark));color:#fff}
-.bigaction.pay{background:linear-gradient(135deg,var(--green2),var(--green));color:#06382f}
+.bigaction.register{background:var(--teal);color:#fff}
+.bigaction.pay{background:var(--green);color:#06382f}
 .bigaction .ba-title{font-size:24px;font-weight:800}
 .bigaction .ba-sub{font-size:14px;font-weight:600;opacity:.85;line-height:1.45}
 .statsstrip{display:flex;gap:0;background:var(--surface);border:1px solid var(--line2);border-radius:var(--radius);padding:16px 6px;flex-wrap:wrap;box-shadow:var(--shadow)}
@@ -124,6 +121,8 @@ canvas.preview{width:100%;max-width:260px;border-radius:14px;border:1px solid va
 .progresslabel{font-size:15px;font-weight:800;color:var(--text)}
 /* --- Verify & Pay: big rows, one big scan button, unmissable result --- */
 select.personlist{font-size:16px;background:#fff}
+.scanwith{font-size:16px;font-weight:700;color:var(--text);margin:0;padding:14px 2px 2px}
+.btn:focus-visible,.nav button:focus-visible{outline:2px solid var(--accent2);outline-offset:2px}
 select.personlist option{padding:12px 10px}
 .btn.big{min-height:56px;font-size:16px;width:100%}
 .btn.bigscan{display:block;width:100%;min-height:74px;font-size:23px;font-weight:800;letter-spacing:2px;border-radius:18px;margin-top:14px}
@@ -140,7 +139,7 @@ select.personlist option{padding:12px 10px}
 .camtoggle button{min-height:44px;padding:10px 16px}
 input,select{padding:14px;font-size:16px;min-height:52px}
 .checkrow .check{min-height:52px}
-@media (max-width:640px){ h1{font-size:23px } .guide .oval{width:170px;height:220px}
+@media (max-width:640px){ h1{font-size:23px }
   .desk-actions{grid-template-columns:1fr} .resultbig .verdict{font-size:32px} }
 
 /* v20 alignment ring: appears while a palm stream is live; turns

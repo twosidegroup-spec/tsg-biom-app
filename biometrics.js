@@ -852,6 +852,17 @@
                                     // the first end-to-end run (impostor scored 0.295 at size 29).
                                     // Still a small sample - the 20-person field test remains
                                     // the gate before any pilot sale.
+  // v33 (2026-11-23): the DECISION RULE changed (see verifyPalmprintRois)
+  // to the PalmCode-Bench v25 max-fusion rule — probe re-encoded at 25
+  // image-level shifts, scored against the individual enrolled codes,
+  // single best pair wins. Max fusion over that many pairs inflates
+  // scores relative to the v27-v32 consensus rule this 0.32 was
+  // calibrated under, so 0.32 is kept ONLY as the existing
+  // phone-calibrated default, in this one named place, and it MUST be
+  // recalibrated on real palms through the 20-person / 200-scan field
+  // test before any sale. No benchmark-derived threshold is substituted:
+  // the benchmark's score scale comes from aligned dataset ROIs, not
+  // phone captures, and its numbers do not transfer directly.
   var PALMPRINT_MAX_DIR_SHARE = 0.80; // one direction may not dominate a real code
 
   /* --- small image helpers (array-like gray, row-major) --- */
@@ -1172,6 +1183,53 @@
     return best;
   }
 
+  /* v33: shift a grayscale image by (dx, dy) with edge-clamped
+     sampling — out(x, y) = src(x-dx, y-dy), source coordinates clamped
+     to the image edge (border replication, so no artificial black
+     border is introduced). Identical to the PalmCode-Bench v25
+     shiftGray used to produce the measured max-fusion numbers. */
+  function shiftGrayClamped(gray, w, h, dx, dy) {
+    if (!gray || !w || !h || gray.length < w * h) return null;
+    var out = new Array(w * h);
+    for (var y = 0; y < h; y++) {
+      var sy = Math.max(0, Math.min(h - 1, y - dy));
+      for (var x = 0; x < w; x++) {
+        var sx = Math.max(0, Math.min(w - 1, x - dx));
+        out[y * w + x] = gray[sy * w + sx];
+      }
+    }
+    return out;
+  }
+
+  var PALMPRINT_SHIFT_RANGE = 2; // v33: probe re-encode shifts dx, dy in {-2,-1,0,1,2} — 25 positions
+
+  /* v33 probe codes (PalmCode-Bench v25): encode one warped palm ROI
+     at all 25 image-level shifts, and the same 25 for its mirror twin
+     (a front-camera and a back-camera presentation of the same palm
+     are mirror images; the benchmark's dataset ROIs had a single
+     fixed orientation, the phone product does not). Sane codes only.
+     The score-level max over these codes against the individual
+     enrolled codes is the v25 decision rule — on Dataset B it
+     measured EER 4.42% / Rank-1 92.9%, against 13.02% / 70.7% for
+     the consensus-template rule it replaces (aligned dataset ROIs;
+     phone numbers come from the field test, not from the bench). */
+  function palmprintProbeCodes(roi) {
+    if (!roi || roi.length !== PALMPRINT_ROI_SIZE * PALMPRINT_ROI_SIZE) return [];
+    var out = [];
+    var flipped = flipGrayHorizontal(roi, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
+    [roi, flipped].forEach(function (img) {
+      if (!img) return;
+      for (var dy = -PALMPRINT_SHIFT_RANGE; dy <= PALMPRINT_SHIFT_RANGE; dy++) {
+        for (var dx = -PALMPRINT_SHIFT_RANGE; dx <= PALMPRINT_SHIFT_RANGE; dx++) {
+          var src = (dx === 0 && dy === 0) ? img : shiftGrayClamped(img, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE, dx, dy);
+          var code = palmprintEncode(src, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
+          if (code && palmprintCodeSane(code)) out.push(code);
+        }
+      }
+    });
+    return out;
+  }
+
   /* --- Palm ROI extraction: landmarks locate, they do not identify ---
      Palm frame built in PIXEL space (landmark coords are per-axis
      normalised, so geometry must be computed after scaling). v20
@@ -1299,6 +1357,30 @@
     };
   }
 
+  /* v33 verification — the PalmCode-Bench v25 max rule, exactly:
+     each live ROI is re-encoded at the full 25 image-level shifts
+     (plus its mirror twin's 25, for front/back camera presentations),
+     every probe code is scored against every INDIVIDUAL enrolled
+     code with palmprintSimilarity, and the person's score is the
+     single best pair — score-level MAX fusion. No consensus template
+     on either side: enrolment banks individual capture codes only
+     (selectPalmprintProfileCodes), and the live side fuses nothing.
+     Fail closed on any missing or degenerate data, like the rule it
+     replaces. */
+  function verifyPalmprintRois(stored, liveRois) {
+    var fail = function (reason, similarity) {
+      return { ok: false, verified: false, similarity: similarity, threshold: PALMPRINT_THRESHOLD, reason: reason };
+    };
+    var profile = normalisePalmprintProfile(stored);
+    if (!profile) return fail('No usable palmprint enrolled for this person - the stored palmprint data is missing or invalid.', null);
+    var codes = [];
+    (liveRois || []).forEach(function (roi) {
+      palmprintProbeCodes(roi).forEach(function (c) { codes.push(c); });
+    });
+    if (!codes.length) return fail('No real open palm with readable print detail was detected in this scan.', null);
+    return verifyPalmprintProfile(stored, codes);
+  }
+
   /* Clip frames for the palmprint path carry { openness, code,
      sharpness }. A frame counts only when the hand is open AND its
      code carries real print detail. */
@@ -1374,19 +1456,12 @@
     if (picks.length < 2) return null;
     var out = picks.map(function (u) { return palmprintCodeToBase64(u.code); });
     if (out.indexOf(null) >= 0) return null;
-    // v29: bank majority-fused consensus codes alongside the singles.
-    // The user's phone read 24/24 verification frames with readable
-    // codes yet his best pair scored 0.302 - capture was perfect and
-    // the per-frame codes themselves are what vary between sessions.
-    // A live code compared against the fused template scores the
-    // palm's stable print instead of one capture's noise.
-    var bySharp = picks.slice().sort(function (a, b) { return b.sharpness - a.sharpness; });
-    [bySharp, bySharp.slice(0, 3)].forEach(function (set) {
-      if (set.length < 2) return;
-      var cons = palmprintConsensusCode(set.map(function (u) { return u.code; }));
-      var b64 = (cons && palmprintCodeSane(cons)) ? palmprintCodeToBase64(cons) : null;
-      if (b64 && out.indexOf(b64) < 0) out.push(b64);
-    });
+    // v33: ONLY the individual capture codes are banked. The v29/v30
+    // majority-fused consensus codes are gone: the PalmCode-Bench v25
+    // measurement showed score-level MAX fusion over the individual
+    // codes (EER 4.42%) clearly beating the consensus template
+    // (EER 11.47% in the same run), so the stored profile is exactly
+    // the set of real captures the max rule scores against.
     return out;
   }
   // Verification codes from collected frames (v20): the ROI is
@@ -1422,6 +1497,19 @@
       }
     }
     return out;
+  }
+
+  /* v33: the live side of verification is ROIs, not pre-encoded
+     codes — verifyPalmprintRois re-encodes each ROI at the 25
+     image-level shifts itself. Selection keeps the same gate as the
+     old code selection (PALM_LIVE_OPEN_MIN, sharpest first, top 3);
+     a frame without a valid warped ROI cannot take part. */
+  function selectPalmprintLiveRois(frames) {
+    var usable = palmprintUsableOpenFrames(frames, PALM_LIVE_OPEN_MIN);
+    var withRoi = usable.filter(function (u) { return !!u.roi; });
+    if (!withRoi.length) return null;
+    withRoi.sort(function (a, b) { return b.sharpness - a.sharpness; });
+    return withRoi.slice(0, 3).map(function (u) { return u.roi; });
   }
 
   /* --- v20 streaming helpers (Show & Pay + auto-capture enrolment) --- */
@@ -1537,11 +1625,19 @@
     var consts = 'var PALMPRINT_SIZE=' + PALMPRINT_SIZE +
       ';var PALMPRINT_CODE_LEN=' + PALMPRINT_CODE_LEN +
       ';var PALMPRINT_DIRECTIONS=' + PALMPRINT_DIRECTIONS +
+      ';var PALMPRINT_KERNEL_SIZE=' + PALMPRINT_KERNEL_SIZE +
+      ';var PALMPRINT_ROI_SIZE=' + PALMPRINT_ROI_SIZE +
       ';var PALMPRINT_MAX_DIR_SHARE=' + PALMPRINT_MAX_DIR_SHARE +
-      ';var PALMPRINT_THRESHOLD=' + PALMPRINT_THRESHOLD + ';';
-    var fns = [palmprintCodeFromBase64, palmprintCodeBytes, palmprintCodeSane, edccScoreAtShift, palmprintSimilarity, normalisePalmprintProfile, verifyPalmprintProfile];
+      ';var PALMPRINT_THRESHOLD=' + PALMPRINT_THRESHOLD +
+      ';var PALMPRINT_SHIFT_RANGE=' + PALMPRINT_SHIFT_RANGE +
+      ';var PALMPRINT_KERNELS=null;';
+    // v33: the encoder chain joins the worker so the 25-shift probe
+    // re-encodes (verifyPalmprintRois) run off the main thread too.
+    // Messages carrying liveRois take the v33 path; messages carrying
+    // liveCodes keep the original code-pair path, byte-identical.
+    var fns = [reflect101, resizeGrayBilinear, convolveSeparable, convolve2d, gaborKernelReal, palmprintKernels, palmprintEnhance, palmprintEncode, palmprintCodeFromBase64, palmprintCodeBytes, palmprintCodeSane, edccScoreAtShift, palmprintSimilarity, flipGrayHorizontal, shiftGrayClamped, palmprintProbeCodes, normalisePalmprintProfile, verifyPalmprintProfile, verifyPalmprintRois];
     var body = fns.map(function (f) { return f.toString(); }).join('\n');
-    var handler = 'onmessage=function(e){var d=e.data||{};var r=null;try{r=verifyPalmprintProfile(d.profile,d.liveCodes);}catch(err){r=null;}postMessage({id:d.id,result:r});};';
+    var handler = 'onmessage=function(e){var d=e.data||{};var r=null;try{r=(d.liveRois?verifyPalmprintRois(d.profile,d.liveRois):verifyPalmprintProfile(d.profile,d.liveCodes));}catch(err){r=null;}postMessage({id:d.id,result:r});};';
     return consts + '\n' + body + '\n' + handler;
   }
 
@@ -1815,10 +1911,15 @@
     palmRoiFromLandmarks: palmRoiFromLandmarks,
     palmprintProfileSane: palmprintProfileSane,
     verifyPalmprintProfile: verifyPalmprintProfile,
+    shiftGrayClamped: shiftGrayClamped,
+    PALMPRINT_SHIFT_RANGE: PALMPRINT_SHIFT_RANGE,
+    palmprintProbeCodes: palmprintProbeCodes,
+    verifyPalmprintRois: verifyPalmprintRois,
     palmprintUsableOpenFrames: palmprintUsableOpenFrames,
     selectPalmprintProfileCodes: selectPalmprintProfileCodes,
     palmprintConsensusCode: palmprintConsensusCode,
     selectPalmprintLiveCodes: selectPalmprintLiveCodes,
+    selectPalmprintLiveRois: selectPalmprintLiveRois,
     palmFramePose: palmFramePose,
     palmFramingHint: palmFramingHint,
     passiveLivenessCheck: passiveLivenessCheck,

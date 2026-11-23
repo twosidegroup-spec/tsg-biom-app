@@ -14,7 +14,7 @@
      matching code do not read reliably against a new one. Bump
      APP_DATA_VERSION together with the service-worker shell on any
      build that changes enrolment or matching. */
-  var APP_DATA_VERSION = 'v32';
+  var APP_DATA_VERSION = 'v33';
   /* DEVELOPMENT ONLY (his order, 2026-11-20): the wipe below runs
      only in development builds. A commercial build ships with
      BUILD_MODE set to 'commercial' and never wipes - real customer
@@ -277,18 +277,16 @@
 
   /* ---------------- Per-step camera choice (Front / Back) -----------------
      Every camera view has its own independent Front | Back toggle.
-     Defaults: Face Front, Palm Front, Fingerprint Back — for enrollment
-     steps and, separately, for each terminal method. Choices are kept in
-     this state object for the whole session. */
+     Palm-only product (v33): the enrolment palm step and the terminal
+     each keep their own choice for the whole session. Default Front. */
   var camFacing = {
-    enrollFace: 'user', enrollPalm: 'user', enrollFinger: 'environment',
-    termFace: 'user', termPalm: 'user', termFinger: 'environment'
+    enrollPalm: 'user', termPalm: 'user'
   };
   var camRestarters = {}; // key -> function that (re)starts that view's camera
-  function termFacingKey(method) { return 'term' + method.charAt(0).toUpperCase() + method.slice(1); }
+  function termFacingKey() { return 'termPalm'; }
   function syncCamToggle(key) {
     document.querySelectorAll('[data-cam-toggle="' + key + '"] button').forEach(function (b) {
-      b.classList.toggle('on', b.dataset.facing === camFacing[key === 'terminal' ? termFacingKey($('termMethod').value) : key]);
+      b.classList.toggle('on', b.dataset.facing === camFacing[key === 'terminal' ? termFacingKey() : key]);
     });
   }
   function applyMirror(videoId, facing) { var v = $(videoId); if (v) v.classList.toggle('mirror', facing === 'user'); }
@@ -297,13 +295,13 @@
       var groupKey = group.dataset.camToggle;
       group.querySelectorAll('button').forEach(function (b) {
         b.addEventListener('click', function () {
-          var key = groupKey === 'terminal' ? termFacingKey($('termMethod').value) : groupKey;
+          var key = groupKey === 'terminal' ? termFacingKey() : groupKey;
           if (camFacing[key] === b.dataset.facing) return;
           camFacing[key] = b.dataset.facing;
           syncCamToggle(groupKey);
           // If this view's camera is live, restart it on the new camera.
           var restart = camRestarters[groupKey];
-          var videoId = groupKey === 'enrollFace' ? 'faceVideo' : groupKey === 'enrollPalm' ? 'palmVideo' : groupKey === 'enrollFinger' ? 'fingerVideo' : 'termVideo';
+          var videoId = groupKey === 'enrollPalm' ? 'palmVideo' : 'termVideo';
           applyMirror(videoId, b.dataset.facing);
           if (restart && Cam.stream && Cam.video === $(videoId)) restart();
         });
@@ -314,7 +312,7 @@
   /* ---------------- Per-view flash (torch) choice -------------------------
      Flash is INDEPENDENT and MANUAL - never automatic. Every camera view
      has its own Flash Off | Flash On toggle next to its Front | Back
-     toggle, default OFF, remembered per view (terminal: per method) in
+     toggle, default OFF, remembered per view in
      this state object - keyed exactly like camFacing. The ONLY code that
      ever lights the torch is applyTorchToCurrentTrack below, and it is
      only ever called from the flash toggle handler or, when a camera
@@ -322,13 +320,12 @@
      view. Switching camera or stopping the camera resets that view's
      flash to Off (see Cam.stop). */
   var flashState = {
-    enrollFace: false, enrollPalm: false, enrollFinger: false,
-    termFace: false, termPalm: false, termFinger: false
+    enrollPalm: false, termPalm: false
   };
   function flashGroupKey(key) { return key.indexOf('term') === 0 ? 'terminal' : key; }
-  function flashKeyForGroup(groupKey) { return groupKey === 'terminal' ? termFacingKey($('termMethod').value) : groupKey; }
+  function flashKeyForGroup(groupKey) { return groupKey === 'terminal' ? termFacingKey() : groupKey; }
   function flashVideoId(groupKey) {
-    return groupKey === 'enrollFace' ? 'faceVideo' : groupKey === 'enrollPalm' ? 'palmVideo' : groupKey === 'enrollFinger' ? 'fingerVideo' : 'termVideo';
+    return groupKey === 'enrollPalm' ? 'palmVideo' : 'termVideo';
   }
   function syncFlashToggle(groupKey) {
     var key = flashKeyForGroup(groupKey);
@@ -400,182 +397,6 @@
       });
     });
   }
-
-  /* ---------------- Face model (face-api) -------------------------------- */
-  var faceModelReady = null;
-  function loadFaceModel(statusEl) {
-    if (faceModelReady) return faceModelReady;
-    var MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.14/model/';
-    if (statusEl) statusEl.textContent = 'Loading face model from CDN...';
-    faceModelReady = Promise.all([
-      faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
-      faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-      faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
-    ]);
-    return faceModelReady;
-  }
-  var FACE_SCORE_FLOOR = 0.65;
-  function detectFaceDescriptor(video) {
-    // Strict: EXACTLY ONE face in frame, detection confidence at or above
-    // the floor, and a sane (non-degenerate) descriptor. Anything else is
-    // "no face" - it can never become a capture or a verification.
-    return loadFaceModel().then(function () {
-      return faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: FACE_SCORE_FLOOR }))
-        .withFaceLandmarks().withFaceDescriptors();
-    }).then(function (dets) {
-      if (!dets || dets.length !== 1) return null;
-      var det = dets[0];
-      if (!det.detection || det.detection.score < FACE_SCORE_FLOOR) return null;
-      var desc = Array.from(det.descriptor);
-      return B.faceDescriptorSane(desc) ? desc : null;
-    });
-  }
-
-  /* ---------------- Palm (MediaPipe Hands) ------------------------------- */
-  var Palm = {
-    hands: null, latest: null, running: false, video: null, buffer: [],
-    // Movement liveness (open -> close -> open). A photo cannot do this.
-    movement: { watching: false, samples: [], passed: false, statusEl: null, onPass: null },
-    init: function () {
-      if (this.hands) return;
-      var self = this;
-      this.hands = new Hands({ locateFile: function (f) { return 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/' + f; } });
-      this.hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.5 });
-      this.hands.onResults(function (res) {
-        self.latest = (res.multiHandLandmarks && res.multiHandLandmarks[0]) ? res.multiHandLandmarks[0] : null;
-        // Keep the last 8 landmark sets: captures average them, which cuts
-        // single-frame landmark jitter roughly in half - the main cause of
-        // genuine palm scans being rejected ("not properly scanning").
-        if (self.latest) {
-          self.buffer.push(self.latest);
-          if (self.buffer.length > 8) self.buffer.shift();
-          if (self.movement.watching) {
-            var op = B.palmOpenness(self.latest);
-            if (op !== null) {
-              self.movement.samples.push(op);
-              if (self.movement.samples.length > 90) self.movement.samples.shift();
-              var ev = B.evaluatePalmMovement(self.movement.samples);
-              if (self.movement.statusEl) {
-                if (ev.pass) {
-                  self.movement.statusEl.textContent = 'Movement confirmed - live hand. Hold your open palm still to capture.';
-                } else {
-                  // Step-by-step progress, so the person always sees
-                  // which part of the movement the system is waiting for.
-                  var stOpen = (ev.max !== null && ev.max >= B.PALM_OPEN_MIN) ? 'done' : 'waiting';
-                  var stClose = (ev.min !== null && ev.min <= B.PALM_CLOSED_MAX) ? 'done' : 'waiting';
-                  var stAgain = (stClose === 'done' && ev.last !== null && ev.last >= B.PALM_OPEN_MIN) ? 'done' : 'waiting';
-                  self.movement.statusEl.textContent = 'Movement check - Open: ' + stOpen + ' / Close: ' + stClose + ' / Open again: ' + stAgain + '. ' + ev.reason;
-                }
-              }
-              if (ev.pass) {
-                self.movement.passed = true;
-                self.movement.watching = false;
-                if (self.movement.onPass) self.movement.onPass();
-              }
-            }
-          }
-        } else if (self.movement.watching && self.movement.statusEl && self.movement.samples.length === 0) {
-          self.movement.statusEl.textContent = 'No hand detected yet - hold one open palm fully inside the guide, in good light.';
-        }
-      });
-    },
-    beginMovement: function (statusEl, onPass) {
-      this.movement = { watching: true, samples: [], passed: false, statusEl: statusEl || null, onPass: onPass || null };
-      if (statusEl) statusEl.textContent = 'Show one open palm, then close it into a loose fist, then open it again...';
-    },
-    resetMovement: function () {
-      this.movement = { watching: false, samples: [], passed: false, statusEl: null, onPass: null };
-    },
-    // Averaged landmarks over recent frames, or null if too few samples.
-    averagedLandmarks: function () {
-      if (this.buffer.length < 3) return null;
-      var sets = this.buffer.slice(-5);
-      var out = [];
-      for (var i = 0; i < 21; i++) {
-        var x = 0, y = 0, z = 0;
-        sets.forEach(function (s) { x += s[i].x; y += s[i].y; z += s[i].z || 0; });
-        out.push({ x: x / sets.length, y: y / sets.length, z: z / sets.length });
-      }
-      return out;
-    },
-    captureDescriptor: function () {
-      var avg = this.averagedLandmarks();
-      if (avg) { var d0 = B.palmDescriptorFromLandmarks(avg); if (d0) return d0; }
-      // Fallback: per-frame descriptors, most recent first, averaged over
-      // the frames that individually pass the plausibility gates. This
-      // matters right after the movement check: the buffer then holds a
-      // mix of open, fist and re-opening frames, and averaging those
-      // LANDMARK sets produces a half-curled "hand" the gates rightly
-      // reject - even though the same buffer holds perfectly good
-      // open-palm frames from seconds earlier. (Found on the first real
-      // phone verification attempt, 2026-11-20: movement passed, then
-      // "No usable open palm detected in the live frames.")
-      var valid = [];
-      for (var i = this.buffer.length - 1; i >= 0 && valid.length < 5; i--) {
-        var d = B.palmDescriptorFromLandmarks(this.buffer[i]);
-        if (d) valid.push(d);
-      }
-      if (!valid.length) return null;
-      if (valid.length === 1) return valid[0];
-      var out = [];
-      for (var j = 0; j < valid[0].length; j++) {
-        var s = 0;
-        valid.forEach(function (v) { s += v[j]; });
-        out.push(s / valid.length);
-      }
-      return B.palmDescriptorSane(out) ? out : valid[0];
-    },
-    /* Palm texture: LBP histogram of the palm region of the live frame,
-       cropped around the detected hand so it is the palm's own texture.
-       Used as a realness gate (see biometrics.js calibration note). */
-    captureTexture: function () {
-      try {
-        var video = this.video, lm = this.latest;
-        if (!video || !lm || !video.videoWidth || !video.videoHeight) return null;
-        var vw = video.videoWidth, vh = video.videoHeight;
-        var minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
-        lm.forEach(function (p) {
-          if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
-          if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
-        });
-        var cx = (minX + maxX) / 2 * vw, cy = (minY + maxY) / 2 * vh;
-        var side = Math.max(maxX - minX, maxY - minY) * 1.15 * Math.max(vw, vh);
-        side = Math.min(side, vw, vh);
-        if (!(side >= 40)) return null;
-        var sx = Math.max(0, Math.min(vw - side, cx - side / 2));
-        var sy = Math.max(0, Math.min(vh - side, cy - side / 2));
-        var size = 128;
-        var canvas = document.createElement('canvas'); canvas.width = size; canvas.height = size;
-        var ctx = canvas.getContext('2d');
-        ctx.drawImage(video, sx, sy, side, side, 0, 0, size, size);
-        var img = ctx.getImageData(0, 0, size, size).data;
-        var gray = new Array(size * size);
-        for (var i = 0; i < size * size; i++) gray[i] = Math.round(0.299 * img[i * 4] + 0.587 * img[i * 4 + 1] + 0.114 * img[i * 4 + 2]);
-        var tex = B.lbpHistogram(gray, size, size);
-        return B.palmTextureSane(tex) ? tex : null;
-      } catch (e) { return null; }
-    },
-    startLoop: function (video, statusEl) {
-      this.init();
-      this.video = video; this.running = true;
-      var self = this;
-      (function loop() {
-        if (!self.running) return;
-        // One inference at a time: on a phone each Hands inference can
-        // take longer than the 120ms tick, and unthrottled sends queue
-        // up until the movement samples lag seconds behind the real hand.
-        if (video.readyState >= 2 && !self._sending) {
-          self._sending = true;
-          self.hands.send({ image: video }).then(function () {
-            self._sending = false;
-            if (statusEl && !self.movement.watching) statusEl.textContent = self.latest ? 'Hand detected - hold still and capture.' : 'Show one open palm to the camera...';
-          }, function () { self._sending = false; });
-        }
-        setTimeout(loop, 120);
-      })();
-    },
-    stop: function () { this.running = false; this.latest = null; this.buffer = []; this.resetMovement(); }
-  };
 
   /* ---------------- Palm CLIP capture (recorded-clip path) --------------
      Why this exists: the live-stream palm path kept failing on a real
@@ -834,6 +655,29 @@
         try { self.w.postMessage({ id: id, profile: profile, liveCodes: liveCodes }); }
         catch (e) { clearTimeout(to); delete self.pending[id]; finishWith(null); }
       });
+    },
+    /* v33: verify from live ROIs — the worker re-encodes each ROI at
+       the 25 image-level shifts and applies the max rule. The
+       watchdog is longer than the code path's: a single ROI expands
+       to 50 encodes plus up to 300 code comparisons. Any failure
+       falls back to the identical main-thread function. */
+    verifyRois: function (profile, liveRois) {
+      this.init();
+      if (!this.w) return Promise.resolve(B.verifyPalmprintRois(profile, liveRois));
+      var self = this;
+      var id = ++this.seq;
+      return new Promise(function (resolve) {
+        var done = false;
+        var finishWith = function (r) {
+          if (done) return;
+          done = true;
+          resolve(r || B.verifyPalmprintRois(profile, liveRois));
+        };
+        var to = setTimeout(function () { delete self.pending[id]; finishWith(null); }, 20000);
+        self.pending[id] = function (r) { clearTimeout(to); finishWith(r); };
+        try { self.w.postMessage({ id: id, profile: profile, liveRois: liveRois }); }
+        catch (e) { clearTimeout(to); delete self.pending[id]; finishWith(null); }
+      });
     }
   };
 
@@ -1044,7 +888,6 @@
      spoof gate sampled per burst. Fail-closed throughout. */
   function streamVerifyPalm(video, statusEl, person, people, swapCamera, fieldRec) {
     var t0 = Date.now();
-    var isV3 = B.palmprintProfileSane(person.palmProfile);
     var tracker = makeSpoofTracker();
     var frames = [];
     var poses = [];
@@ -1055,12 +898,12 @@
     var MAXF = 24, deadline = t0 + 90000;
 
     function finish(out) { setRing($('termRing'), 'off'); return out; }
-    function impostorMaxFor(codes) {
+    function impostorMaxFor(rois) {
       var chain = Promise.resolve(null);
       (people || []).forEach(function (p) {
         if (p.id === person.id || !B.palmprintProfileSane(p.palmProfile)) return;
         chain = chain.then(function (cur) {
-          return Match.verify(p.palmProfile, codes).then(function (ro) {
+          return Match.verifyRois(p.palmProfile, rois).then(function (ro) {
             var s = ro && typeof ro.similarity === 'number' ? ro.similarity : null;
             return s !== null && (cur === null || s > cur) ? s : cur;
           });
@@ -1082,9 +925,9 @@
         : 'Liveness check failed: the view changed too abruptly for one held hand. Nothing was verified. Hold one open palm steady, inside the ring.' });
     }
     function verifiedOut() {
-      return impostorMaxFor(win.codes).then(function (impMax) {
+      return impostorMaxFor(win.rois).then(function (impMax) {
         fieldRec(win.res.similarity, impMax, 'pass', 'verified', tracker.state().lightTag);
-        var measured = 'Palmprint similarity ' + win.res.similarity.toFixed(3) + ' (threshold ' + win.res.threshold + ', best of ' + person.palmProfile.codes.length + ' enrolled print codes x ' + win.codes.length + ' live codes), passive liveness passed (natural micro-shift across rapid frames), Show & Pay streaming scan with two-frame early exit';
+        var measured = 'Palmprint similarity ' + win.res.similarity.toFixed(3) + ' (threshold ' + win.res.threshold + ', score-level max: best pair of the winning frame re-encoded at 25 image-level shifts against ' + person.palmProfile.codes.length + ' individual enrolled print codes), passive liveness passed (natural micro-shift across rapid frames), Show & Pay streaming scan with two-frame early exit';
         return finish({ r: win.res, measured: measured, latencyMs: Date.now() - t0 });
       });
     }
@@ -1092,31 +935,20 @@
       var sp = tracker.state();
       if (sp.spoof) return spoofOut(sp);
       var lv = B.passiveLivenessCheck(poses);
-      if (!isV3) {
-        var livePalm = B.selectPalmDescriptor(frames);
-        if (!livePalm) { fieldRec(null, null, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag); return finish({ fail: 'No usable open palm found in the scan. Nothing was verified. Hold one open palm still, fingers spread, inside the ring in good light, and run the scan again.' }); }
-        var bestTexture = null, bestSharp = -1;
-        B.palmUsableOpenFrames(frames).forEach(function (u) { if (u.texture && u.sharpness > bestSharp) { bestSharp = u.sharpness; bestTexture = u.texture; } });
-        var rp = B.verifyPalmProfile(person.palmProfile || person.palmDescriptor, { geometry: livePalm, texture: bestTexture });
-        fieldRec(null, null, lv.pass ? 'pass' : 'fail', rp.verified ? 'verified' : 'rejected', sp.lightTag);
-        var measuredL = 'Geometry distance ' + (rp.distance === null ? 'n/a' : rp.distance.toFixed(3)) + ' (threshold ' + rp.threshold + ')' +
-          (rp.textureSimilarity !== null && rp.textureSimilarity !== undefined ? ', palm texture similarity ' + rp.textureSimilarity.toFixed(3) + ' (realness floor ' + rp.textureThreshold + ')' : ', no texture gate (legacy enrollment)') +
-          ', passive liveness ' + lv.verdict + ', Show & Pay streaming scan';
-        return finish({ r: rp, measured: measuredL, latencyMs: Date.now() - t0 });
-      }
-      var liveCodes = B.selectPalmprintLiveCodes(frames);
-      if (!liveCodes) { fieldRec(null, null, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag); return finish({ fail: 'No usable open palm with readable print detail found in the scan. Nothing was verified. Hold one open palm still, fingers spread, inside the ring in good light, and run the scan again. (' + analysed + ' frames scanned, ' + coded + ' produced a readable palm code.' + (lastHint ? ' Last guidance shown: ' + lastHint : '') + ')' }); }
-      return Match.verify(person.palmProfile, liveCodes).then(function (res) {
-        return impostorMaxFor(liveCodes).then(function (impMax) {
+      var liveRois = B.selectPalmprintLiveRois(frames);
+      if (!liveRois) { fieldRec(null, null, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag); return finish({ fail: 'No usable open palm with readable print detail found in the scan. Nothing was verified. Hold one open palm still, fingers spread, inside the ring in good light, and run the scan again. (' + analysed + ' frames scanned, ' + coded + ' produced a readable palm code.' + (lastHint ? ' Last guidance shown: ' + lastHint : '') + ')' }); }
+      return Match.verifyRois(person.palmProfile, liveRois).then(function (res) {
+        return impostorMaxFor(liveRois).then(function (impMax) {
           var out = res;
           if (res && res.verified) {
             // Threshold reached on the collected set without two
-            // CONSECUTIVE matching frames: Show & Pay does not upgrade
-            // a single-frame match into a payment. Denial, reason stated.
+            // matching frames inside the rolling window: Show & Pay
+            // does not upgrade a single-frame match into a payment.
+            // Denial, reason stated.
             out = { ok: true, verified: false, similarity: res.similarity, threshold: res.threshold, reason: 'Matched on a single frame only - Show & Pay requires two matching frames close together. Hold the palm steady a moment longer and scan again.' };
           }
           fieldRec(res ? res.similarity : null, impMax, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag);
-          var measured = 'Palmprint similarity ' + (res && typeof res.similarity === 'number' ? res.similarity.toFixed(3) : 'n/a') + ' (threshold ' + B.PALMPRINT_THRESHOLD + ', best of ' + person.palmProfile.codes.length + ' enrolled print codes x ' + liveCodes.length + ' live codes), passive liveness ' + lv.verdict + ', Show & Pay streaming scan. Diagnostics: ' + analysed + ' frames scanned, ' + coded + ' with a readable code, best single-frame score ' + (matchState.best !== null ? matchState.best.toFixed(3) : 'n/a') + '.';
+          var measured = 'Palmprint similarity ' + (res && typeof res.similarity === 'number' ? res.similarity.toFixed(3) : 'n/a') + ' (threshold ' + B.PALMPRINT_THRESHOLD + ', score-level max: ' + liveRois.length + ' live frames each re-encoded at 25 image-level shifts against ' + person.palmProfile.codes.length + ' individual enrolled print codes), passive liveness ' + lv.verdict + ', Show & Pay streaming scan. Diagnostics: ' + analysed + ' frames scanned, ' + coded + ' with a readable code, best single-frame score ' + (matchState.best !== null ? matchState.best.toFixed(3) : 'n/a') + '.';
           return finish({ r: out, measured: measured, latencyMs: Date.now() - t0 });
         });
       });
@@ -1146,13 +978,15 @@
               var sane = !!(r.code && B.palmprintCodeSane(r.code));
               if (sane) coded++;
               if (sane && !locked) { locked = true; Snd.tick(); setRing($('termRing'), 'locked'); }
-              if (!isV3 || win) return;
-              if (sane) {
-                var codes = r.codeM ? [r.code, r.codeM] : [r.code];
-                return Match.verify(person.palmProfile, codes).then(function (res) {
+              if (win) return;
+              if (sane && r.roi) {
+                // v33: the frame's ROI is the probe — the matcher
+                // re-encodes it at the 25 image-level shifts and
+                // takes the best pair against the enrolled codes.
+                return Match.verifyRois(person.palmProfile, [r.roi]).then(function (res) {
                   var score = res && typeof res.similarity === 'number' ? res.similarity : null;
                   matchState = B.streamMatchUpdate(matchState, score);
-                  if (matchState.done) win = { res: res, codes: codes };
+                  if (matchState.done) win = { res: res, rois: [r.roi] };
                 });
               }
               matchState = B.streamMatchUpdate(matchState, null);
@@ -1178,7 +1012,6 @@
       if (win && lv.pass && statusEl) statusEl.textContent = 'Palm matched — confirming this is a live hand, not a screen…';
       if (lv.verdict === 'static' && bursts >= 2) return livenessFailOut(lv);
       if (lv.verdict === 'erratic') return livenessFailOut(lv);
-      if (!isV3 && lv.pass && B.palmprintUsableOpenFrames(frames).length >= 3) return finalOut();
       if (analysed >= MAXF || Date.now() > deadline) {
         if (win) {
           fieldRec(win.res.similarity, null, 'fail', 'rejected', sp.lightTag);
@@ -1201,55 +1034,12 @@
 
   var palmScanBusy = false;
 
-  /* ---------------- Fingerprint through camera --------------------------- */
-  function captureFinger(video, origCanvas, ridgeCanvas) {
-    var size = 480;
-    var tmp = document.createElement('canvas'); tmp.width = size; tmp.height = size;
-    var ctx = tmp.getContext('2d');
-    var vw = video.videoWidth, vh = video.videoHeight;
-    if (!vw || !vh) throw new Error('Camera frame not ready yet - wait a moment and retry.');
-    var side = Math.min(vw, vh);
-    ctx.drawImage(video, (vw - side) / 2, (vh - side) / 2, side, side, 0, 0, size, size);
-    var img = ctx.getImageData(0, 0, size, size).data;
-    var gray = new Array(size * size);
-    for (var i = 0; i < size * size; i++) {
-      gray[i] = Math.round(0.299 * img[i * 4] + 0.587 * img[i * 4 + 1] + 0.114 * img[i * 4 + 2]);
-    }
-    var stretched = B.contrastStretch(gray);
-    var sharp = B.sharpen(stretched, size, size);
-    var ridge = B.adaptiveThreshold(sharp, size, size, 10, 12);
-    drawGray(origCanvas, stretched, size, size);
-    drawGray(ridgeCanvas, ridge, size, size);
-    // The quality gate reads the ORIGINAL grayscale - never the stretched
-    // copy (stretching amplifies dark-room sensor noise until blank frames
-    // look "sharp", which let covered-camera frames pass the old gate).
-    var quality = B.fingerprintQuality(gray, size, size, ridge);
-    var record = null;
-    if (quality.ok) {
-      var template = B.downscaleTemplate(ridge, size, size, 96);
-      record = {
-        template: template,
-        texture: B.lbpHistogram(template, 96, 96),
-        quality: { sharpness: quality.sharpness, ridgeDensity: quality.ridgeDensity },
-        ridgeImage: ridgeCanvas.toDataURL('image/png')
-      };
-    }
-    return { record: record, quality: quality };
-  }
-  function drawGray(canvas, gray, w, h) {
-    canvas.width = w; canvas.height = h;
-    var ctx = canvas.getContext('2d');
-    var img = ctx.createImageData(w, h);
-    for (var i = 0; i < w * h; i++) { img.data[i * 4] = gray[i]; img.data[i * 4 + 1] = gray[i]; img.data[i * 4 + 2] = gray[i]; img.data[i * 4 + 3] = 255; }
-    ctx.putImageData(img, 0, 0);
-  }
-
   /* ---------------- Navigation ------------------------------------------- */
   function go(page) {
     var navPage = (page === 'stores' || page === 'logs' || page === 'partner') ? 'more' : page;
     document.querySelectorAll('#mainNav button').forEach(function (b) { b.classList.toggle('active', b.dataset.page === navPage); });
     document.querySelectorAll('section.page').forEach(function (s) { s.classList.toggle('active', s.id === 'page-' + page); });
-    if (page !== 'enroll' && page !== 'terminal') { Cam.stop(); Palm.stop(); stopFaceWatch(); }
+    if (page !== 'enroll' && page !== 'terminal') { Cam.stop(); }
     if (page === 'dashboard') renderDashboard();
     if (page === 'registry') renderRegistry();
     if (page === 'logs') renderLogs();
@@ -1285,46 +1075,41 @@
     });
   }
 
-  /* ---------------- Enroll flow ------------------------------------------ */
-  var ENROLL_ORDER = ['face', 'palm', 'finger'];
-  var METHOD_LABEL = { face: 'Face', palm: 'Palm', finger: 'Fingerprint' };
-  var enroll = { details: null, face: null, palm: null, finger: null, types: { face: true, palm: true, finger: true } };
-  var STEP_LABEL = { details: 'Details + Wallet', face: 'Face Scan', palm: 'Palm Scan', finger: 'Fingerprint Scan', done: 'Biom ID' };
+  /* ---------------- Enroll flow ------------------------------------------
+     Palm-only (v33): a Biom ID is created from the palm enrolment
+     alone — details, one movement-checked palm scan, done. */
+  var ENROLL_ORDER = ['palm'];
+  var METHOD_LABEL = { palm: 'Palm' };
+  var enroll = { details: null, palm: null, types: { palm: true } };
+  var STEP_LABEL = { details: 'Details + Wallet', palm: 'Palm Scan', done: 'Biom ID' };
   function setStep(step) {
-    ['details', 'face', 'palm', 'finger', 'done'].forEach(function (s) {
+    ['details', 'palm', 'done'].forEach(function (s) {
       $('enroll-' + s).classList.toggle('hidden', s !== step);
     });
-    // Simple progress: "Step 2 of 4 - Palm Scan", counting only the steps
-    // this enrollment actually takes (details + chosen biometrics + done).
-    var flow = ['details'].concat(ENROLL_ORDER.filter(function (s) { return enroll.types[s]; }), ['done']);
+    var flow = ['details', 'palm', 'done'];
     var idx = flow.indexOf(step);
     if (idx >= 0) {
       $('enrollProgress').textContent = 'Step ' + (idx + 1) + ' of ' + flow.length + ' — ' + STEP_LABEL[step];
       $('enrollProgressBar').style.width = Math.round(((idx + 1) / flow.length) * 100) + '%';
     }
   }
-  function capturedCount() { return [enroll.face, enroll.palm, enroll.finger].filter(function (v) { return !!v; }).length; }
+  function capturedCount() { return enroll.palm ? 1 : 0; }
   function advanceFrom(step) {
-    var idx = ENROLL_ORDER.indexOf(step);
-    var next = ENROLL_ORDER.slice(idx + 1).filter(function (s) { return enroll.types[s]; })[0];
-    if (next) { setStep(next); return; }
     finishEnrollment(step);
   }
   function finishEnrollment(fromStep) {
-    var msgIds = { face: 'faceMsg', palm: 'palmMsg', finger: 'fingerMsg' };
     function fail(html) {
-      var id = msgIds[fromStep];
-      if (id && $(id)) $(id).innerHTML = html;
-      toast('Enrollment not finished - no biometric was captured.');
+      if ($('palmMsg')) $('palmMsg').innerHTML = html;
+      toast('Enrollment not finished - the palm was not captured.');
       Snd.buzz();
       Snd.speak('Registration failed');
     }
     if (!enroll.details) { fail('<div class="error">Enrollment is incomplete - details are missing. Go back and start again.</div>'); return; }
     if (capturedCount() === 0) {
-      fail('<div class="error">No biometric was captured, so no Biom ID was issued. Capture at least one of Face, Palm or Fingerprint - each one works independently.</div>');
+      fail('<div class="error">No palm was captured, so no Biom ID was issued. A Biom ID is created from the palm scan — complete the palm capture above.</div>');
       return;
     }
-    Cam.stop(); Palm.stop(); stopFaceWatch();
+    Cam.stop();
     DB.nextSeq('biomSeq', 2841).then(function (seq) {
       var person = {
         id: 'TSG-BIO-' + seq,
@@ -1332,10 +1117,7 @@
         walletProvider: enroll.details.walletProvider, walletNumber: enroll.details.walletNumber,
         limits: { perTx: enroll.details.limitPerTx || null, daily: enroll.details.limitDaily || null },
         loyaltyPoints: 0,
-        faceDescriptor: enroll.face || null,
-        palmDescriptor: enroll.palm && enroll.palm.geometry ? enroll.palm.geometry[0] : null,
         palmProfile: enroll.palm || null,
-        fingerprint: enroll.finger ? { template: enroll.finger.template, texture: enroll.finger.texture, quality: enroll.finger.quality, ridgeImage: enroll.finger.ridgeImage } : null,
         enrolledAt: Date.now()
       };
       return DB.put('people', person).then(function () {
@@ -1343,13 +1125,11 @@
         $('enrollDoneBody').innerHTML =
           '<b>Name:</b> ' + esc(person.name) + '<br><b>Biom ID:</b> ' + esc(person.id) + '<br>' +
           '<b>Store:</b> ' + esc(person.store) + '<br>' +
-          '<b>Face:</b> ' + (person.faceDescriptor ? 'Enrolled (128-d descriptor)' : 'Not enrolled') + '<br>' +
-          '<b>Palm:</b> ' + (person.palmProfile && person.palmProfile.v === 3 ? 'Enrolled (palmprint — EDCC competitive code, ' + person.palmProfile.codes.length + ' captures, movement-checked)' : person.palmProfile ? 'Enrolled (3 geometry captures + palm texture, movement-checked)' : person.palmDescriptor ? 'Enrolled (hand geometry)' : 'Not enrolled') + '<br>' +
-          '<b>Fingerprint:</b> ' + (person.fingerprint ? 'Enrolled (camera template, quality ' + person.fingerprint.quality.sharpness.toFixed(1) + ')' : 'Not enrolled') + '<br>' +
+          '<b>Palm:</b> ' + (person.palmProfile && person.palmProfile.v === 3 ? 'Enrolled (palmprint — EDCC competitive code, ' + person.palmProfile.codes.length + ' individual captures, movement-checked)' : 'Not enrolled') + '<br>' +
           '<b>Wallet:</b> ' + (person.walletProvider ? esc(person.walletProvider) + ' ' + esc(B.maskWalletNumber(person.walletNumber)) : 'Not linked') + '<br>' +
           '<b>Biometric-only limits:</b> ' + (person.limits.perTx ? 'BDT ' + person.limits.perTx.toLocaleString() + ' per transaction' : 'No per-transaction limit') + (person.limits.daily ? ', BDT ' + person.limits.daily.toLocaleString() + ' per day' : '') + '<br>' +
           '<b>Palm Loyalty:</b> Active — 0 points';
-        enroll = { details: null, face: null, palm: null, finger: null, types: { face: true, palm: true, finger: true } };
+        enroll = { details: null, palm: null, types: { palm: true } };
         toast('Enrolled: ' + person.id);
         // Voice verdict (v23, his order): spoken ONLY here, after the
         // record is actually saved - never on a step, never early.
@@ -1376,12 +1156,9 @@
       if (!wallet) err = 'Wallet number is not a valid Bangladeshi mobile number (01 + 9 digits). It was not saved.';
     }
     if (!err && !provider && walletRaw) err = 'Choose bKash or Nagad, or clear the wallet number.';
-    var types = { face: $('enOptFace').checked, palm: $('enOptPalm').checked, finger: $('enOptFinger').checked };
-    if (!err && !types.face && !types.palm && !types.finger) err = 'Select at least one biometric to enroll (Face, Palm or Fingerprint) - each one works independently, but a Biom ID needs at least one captured.';
     if (err) { $('enrollDetailsError').innerHTML = '<div class="error">' + esc(err) + '</div>'; return; }
     $('enrollDetailsError').innerHTML = '';
-    enroll.types = types;
-    enroll.face = null; enroll.palm = null; enroll.finger = null;
+    enroll.palm = null;
     resetPalmEnroll();
     enroll.details = {
       name: name, phone: $('enPhone').value.trim(), type: $('enType').value, store: $('enStore').value,
@@ -1389,47 +1166,14 @@
       limitPerTx: Number($('enLimitPerTx').value) > 0 ? Number($('enLimitPerTx').value) : null,
       limitDaily: Number($('enLimitDaily').value) > 0 ? Number($('enLimitDaily').value) : null
     };
-    setStep(ENROLL_ORDER.filter(function (s) { return types[s]; })[0]);
+    setStep('palm');
   });
 
-  /* Face enroll */
-  var faceWatch = null;
-  function stopFaceWatch() { if (faceWatch) { clearInterval(faceWatch); faceWatch = null; } }
-  function startFaceCamera() {
-    var status = $('faceStatus');
-    loadFaceModel(status).catch(function () {});
-    Cam.start($('faceVideo'), camFacing.enrollFace, 'enrollFace').then(function () {
-      status.textContent = 'Loading face model / looking for a face...';
-      stopFaceWatch();
-      faceWatch = setInterval(function () {
-        detectFaceDescriptor($('faceVideo')).then(function (desc) {
-          if (desc) { status.textContent = 'Face detected - hold still and capture.'; $('faceCapture').disabled = false; }
-          else { status.textContent = 'No face detected - face the camera in good light.'; $('faceCapture').disabled = true; }
-        }).catch(function () { status.textContent = 'Face model still loading...'; });
-      }, 900);
-    }).catch(function (e) { $('faceMsg').innerHTML = cameraErrorHTML(e); status.textContent = 'Camera blocked.'; });
-  }
-  $('faceStart').addEventListener('click', startFaceCamera);
-  camRestarters.enrollFace = startFaceCamera;
-  $('faceCapture').addEventListener('click', function () {
-    detectFaceDescriptor($('faceVideo')).then(function (desc) {
-      if (!desc) { $('faceMsg').innerHTML = '<div class="error">No face detected in this frame. Nothing was stored. Reposition and capture again.</div>'; return; }
-      enroll.face = desc; stopFaceWatch(); Cam.stop();
-      $('faceMsg').innerHTML = '<div class="success">Real face descriptor captured (128 points).</div>';
-      advanceFrom('face');
-    });
-  });
-  $('faceSkip').addEventListener('click', function () {
-    enroll.face = null; stopFaceWatch(); Cam.stop();
-    toast('Face skipped - it will show as Not enrolled.');
-    advanceFrom('face');
-  });
-
-  /* Palm enroll - recorded-clip path: one 4-second clip carries the
-     whole enrolment. The movement check runs on the clip's openness
-     series (a photo has no series), and the stored profile (v3) keeps
-     3 palmprint codes read from the clip's best open-palm frames
-     spread across the recording. */
+  /* Palm enroll - live auto-capture: the app watches the camera,
+     runs a random movement sequence (a photo cannot perform one),
+     and banks the individual palmprint codes (profile v3) read from
+     the best fully-open frames — v33 stores those individual capture
+     codes only, no fused template. */
   function resetPalmEnroll() { /* clip enrolment keeps no partial state */ }
   function startPalmCamera() {
     Cam.start($('palmVideo'), camFacing.enrollPalm, 'enrollPalm').then(function () {
@@ -1483,47 +1227,6 @@
       $('palmMsg').innerHTML = '<div class="error">Palm capture failed: ' + esc(e && e.message ? e.message : e) + ' Nothing was stored.</div>';
     });
   });
-  $('palmSkip').addEventListener('click', function () {
-    enroll.palm = null; resetPalmEnroll(); Palm.stop(); Cam.stop();
-    toast('Palm skipped - it will show as Not enrolled.');
-    advanceFrom('palm');
-  });
-
-  /* Finger enroll */
-  function startFingerCamera() {
-    Cam.start($('fingerVideo'), camFacing.enrollFinger, 'enrollFinger').then(function () {
-      $('fingerStatus').textContent = (camFacing.enrollFinger === 'environment' ? 'Back' : 'Front') + ' camera on - fingertip 5-8 cm away, filling the guide.';
-      $('fingerCapture').disabled = false;
-    }).catch(function (e) { $('fingerMsg').innerHTML = cameraErrorHTML(e); $('fingerStatus').textContent = 'Camera blocked.'; });
-  }
-  $('fingerStart').addEventListener('click', startFingerCamera);
-  camRestarters.enrollFinger = startFingerCamera;
-  $('fingerSkip').addEventListener('click', function () {
-    enroll.finger = null; Cam.stop();
-    $('fingerAccept').classList.add('hidden');
-    toast('Fingerprint skipped - it will show as Not enrolled.');
-    advanceFrom('finger');
-  });
-  $('fingerCapture').addEventListener('click', function () {
-    try {
-      var res = captureFinger($('fingerVideo'), $('fingerOriginal'), $('fingerRidge'));
-      if (!res.record) {
-        $('fingerMsg').innerHTML = '<div class="error">Print rejected by the quality gate: ' + esc(res.quality.reason) + ' Sharpness measured: ' + res.quality.sharpness.toFixed(1) + '. Nothing was stored.</div>';
-        $('fingerAccept').classList.add('hidden');
-        return;
-      }
-      enroll.finger = res.record;
-      $('fingerMsg').innerHTML = '<div class="success">Ridges captured from real camera pixels. Sharpness ' + res.quality.sharpness.toFixed(1) + ', ridge density ' + res.quality.ridgeDensity.toFixed(2) + '. Check the ridge image above is your print, then accept.</div>';
-      $('fingerAccept').classList.remove('hidden');
-    } catch (e) { $('fingerMsg').innerHTML = cameraErrorHTML(e); }
-  });
-  $('fingerAccept').addEventListener('click', function () {
-    if (!enroll.finger) {
-      $('fingerMsg').innerHTML = '<div class="error">No fingerprint print has been accepted yet - capture a clear print first, or Skip this step.</div>'; return;
-    }
-    advanceFrom('finger');
-  });
-
   /* ---------------- Terminal --------------------------------------------- */
   var termPeopleCache = [];
   function renderTermPeople() {
@@ -1537,7 +1240,7 @@
       : '<option value="">' + (termPeopleCache.length ? 'No one matches that search' : 'No one enrolled on this device yet') + '</option>';
     if (list.some(function (p) { return p.id === current; })) $('termPerson').value = current;
     else if (list.length) $('termPerson').value = list[0].id; // first fill: select the first person explicitly - an innerHTML rebuild can otherwise leave the dropdown showing a name while its value stays empty (found by the 2026-11-20 end-to-end test)
-    fillTermMethods();
+    fillTermMethodNote();
   }
   function fillTerminalPeople() {
     return DB.all('people').then(function (people) {
@@ -1545,32 +1248,26 @@
       renderTermPeople();
     });
   }
-  // Method list shows ONLY what the selected person actually enrolled.
-  function fillTermMethods() {
+  // Palm-only (v33): the note states the selected person's palm status.
+  function fillTermMethodNote() {
     var person = termPeopleCache.find(function (p) { return p.id === $('termPerson').value; }) || null;
-    var current = $('termMethod').value;
-    var available = ENROLL_ORDER.filter(function (m) { return personHasMethod(person, m); });
-    $('termMethod').innerHTML = available.length
-      ? available.map(function (m) { return '<option value="' + m + '">' + esc(METHOD_LABEL[m]) + (m === 'palm' ? ' — Palmprint' : m === 'finger' ? ' (camera)' : '') + '</option>'; }).join('')
-      : '<option value="">No biometrics enrolled for this person</option>';
-    if (available.indexOf(current) >= 0) $('termMethod').value = current;
     $('termMethodNote').textContent = person
-      ? (available.length ? person.name + ' enrolled: ' + available.map(function (m) { return METHOD_LABEL[m]; }).join(', ') + '.' : person.name + ' has no usable biometric enrolled - re-enroll this person first.')
+      ? (personHasMethod(person) ? person.name + ' enrolled: Palm — Palmprint.' : person.name + ' has no usable palm enrolled - re-enroll this person first.')
       : '';
-    $('termMethod').dispatchEvent(new Event('change'));
+    $('termScan').disabled = true;
+    syncCamToggle('terminal');
+    syncFlashToggle('terminal');
+    setFlashNote('terminal', flashState[termFacingKey()] ? 'Flash is set On - it will light when this camera starts.' : '');
+    applyMirror('termVideo', camFacing[termFacingKey()]);
   }
-  function personHasMethod(person, method) {
+  function personHasMethod(person) {
     // An enrollment only counts if the stored data is present AND sane -
-    // a missing, empty or degenerate template can never be verified against.
+    // a missing, empty or degenerate profile can never be verified against.
     if (!person) return false;
-    if (method === 'face') return B.faceDescriptorSane(person.faceDescriptor);
-    if (method === 'palm') return B.palmprintProfileSane(person.palmProfile) || B.palmProfileSane(person.palmProfile) || B.palmDescriptorSane(person.palmDescriptor);
-    return B.fingerprintRecordSane(person.fingerprint);
+    return B.palmprintProfileSane(person.palmProfile);
   }
-  function notEnrolledMessage(person, method) {
-    return 'This person has no ' + METHOD_LABEL[method] + ' enrolled - choose a method they enrolled. ' +
-      esc(person.name) + ' enrolled: ' +
-      ['face', 'palm', 'finger'].filter(function (m) { return personHasMethod(person, m); }).map(function (m) { return METHOD_LABEL[m]; }).join(', ') + '.';
+  function notEnrolledMessage(person) {
+    return 'This person has no usable palmprint enrolled - re-enroll this person first.';
   }
   function getTerminalPerson() {
     var personId = $('termPerson').value;
@@ -1578,38 +1275,22 @@
       return people.find(function (p) { return p.id === personId; }) || null;
     });
   }
-  $('termMethod').addEventListener('change', function () {
-    var m = $('termMethod').value;
-    $('termGuide').className = m === 'finger' ? 'finger' : m === 'palm' ? 'hand' : 'oval';
-    // The fingerprint preview pair belongs to finger scans only; on face
-    // and palm scans it showed as two empty black boxes (v15 tidy-up).
-    $('termFingerPreviews').classList.toggle('hidden', m !== 'finger');
-    $('termScan').disabled = true;
-    syncCamToggle('terminal');
-    syncFlashToggle('terminal');
-    setFlashNote('terminal', flashState[termFacingKey(m)] ? 'Flash is set On - it will light when this camera starts.' : '');
-    applyMirror('termVideo', camFacing[termFacingKey(m)]);
-    if (Cam.stream && Cam.video === $('termVideo')) startTermCamera();
-  });
-  $('termPerson').addEventListener('change', function () { $('termScan').disabled = true; fillTermMethods(); });
+  $('termPerson').addEventListener('change', function () { fillTermMethodNote(); if (Cam.stream && Cam.video === $('termVideo')) startTermCamera(); });
   $('termSearch').addEventListener('input', renderTermPeople);
   function startTermCamera() {
-    var method = $('termMethod').value;
     var status = $('termStatus');
     getTerminalPerson().then(function (person) {
       if (!person) { $('termResult').innerHTML = '<div class="error">Select an enrolled person first. Enroll on this device if the registry is empty.</div>'; return; }
-      if (!personHasMethod(person, method)) {
-        Cam.stop(); Palm.stop();
+      if (!personHasMethod(person)) {
+        Cam.stop();
         $('termScan').disabled = true;
         status.textContent = 'Camera not started.';
-        $('termResult').innerHTML = '<div class="error">' + notEnrolledMessage(person, method) + '</div>';
+        $('termResult').innerHTML = '<div class="error">' + notEnrolledMessage(person) + '</div>';
         return;
       }
-      if (method === 'face') loadFaceModel(status).catch(function () {});
-      Cam.start($('termVideo'), camFacing[termFacingKey(method)], termFacingKey(method)).then(function () {
-        status.textContent = method === 'finger' ? 'Camera on - fingertip 5-8 cm away, filling the guide.' : 'Camera on - position for the scan, then Run Scan.';
+      Cam.start($('termVideo'), camFacing[termFacingKey()], termFacingKey()).then(function () {
         $('termScan').disabled = false;
-        if (method === 'palm') status.textContent = 'Camera on - tap SCAN and the customer holds an open palm toward the camera, inside the ring, about 30 cm away - like tapping a card. No movement routine at checkout: Show & Pay reads the palm as it streams.';
+        status.textContent = 'Camera on - tap SCAN and the customer holds an open palm toward the camera, inside the ring, about 30 cm away - like tapping a card. No movement routine at checkout: Show & Pay reads the palm as it streams.';
       }).catch(function (e) { $('termResult').innerHTML = cameraErrorHTML(e); status.textContent = 'Camera blocked.'; });
     });
   }
@@ -1651,66 +1332,47 @@
 
   $('termScan').addEventListener('click', function () {
     var personId = $('termPerson').value;
-    var method = $('termMethod').value;
+    var method = 'palm';
     var amount = Number($('termAmount').value || 0);
     $('termResult').innerHTML = '<div class="notice">Scanning — comparing against the stored enrollment...</div>';
     DB.all('people').then(function (people) {
       var person = people.find(function (p) { return p.id === personId; });
       if (!person) { $('termResult').innerHTML = '<div class="error">Select an enrolled person first. Enroll on this device if the registry is empty.</div>'; return null; }
-      if (!personHasMethod(person, method)) {
-        $('termResult').innerHTML = '<div class="error">' + notEnrolledMessage(person, method) + ' No scan was run and nothing was verified.</div>';
+      if (!personHasMethod(person)) {
+        $('termResult').innerHTML = '<div class="error">' + notEnrolledMessage(person) + ' No scan was run and nothing was verified.</div>';
         return null;
       }
 
-      var attempt;
-      if (method === 'face') {
-        attempt = detectFaceDescriptor($('termVideo')).then(function (live) {
-          if (!live) return { fail: 'No face detected in the live frame. Nothing was verified.' };
-          var r = B.verifyFace(person.faceDescriptor, live);
-          return { r: r, measured: 'Euclidean distance ' + (r.distance === null ? 'n/a' : r.distance.toFixed(3)) + ' (threshold ' + r.threshold + ')' };
+      if (palmScanBusy) return null;
+      palmScanBusy = true;
+      $('termScan').disabled = true;
+      $('termResult').innerHTML = '<div class="notice">Show &amp; Pay — the customer simply holds an open palm toward the camera, like tapping a card. Scanning...</div>';
+      var fieldRec = function (genuineScore, impostorMax, liveness, result, lightTag) {
+        if (!fieldModeOn()) return;
+        writeFieldRecord({
+          ts: Date.now(), biomId: person.id, camera: currentCameraTag(termFacingKey()),
+          lighting: lightTag || '', genuineScore: genuineScore, impostorMax: impostorMax,
+          liveness: liveness, spoofTag: $('fieldAttemptTag').value, result: result
         });
-      } else if (method === 'palm') {
-        if (palmScanBusy) return null;
-        palmScanBusy = true;
-        $('termScan').disabled = true;
-        $('termResult').innerHTML = '<div class="notice">Show &amp; Pay — the customer simply holds an open palm toward the camera, like tapping a card. Scanning...</div>';
-        var fieldRec = function (genuineScore, impostorMax, liveness, result, lightTag) {
-          if (!fieldModeOn()) return;
-          writeFieldRecord({
-            ts: Date.now(), biomId: person.id, camera: currentCameraTag(termFacingKey('palm')),
-            lighting: lightTag || '', genuineScore: genuineScore, impostorMax: impostorMax,
-            liveness: liveness, spoofTag: $('fieldAttemptTag').value, result: result
-          });
-        };
-        attempt = streamVerifyPalm($('termVideo'), $('termStatus'), person, people, function () {
-          var k = termFacingKey($('termMethod').value);
-          camFacing[k] = camFacing[k] === 'user' ? 'environment' : 'user';
-          syncCamToggle('terminal');
-          return Cam.start($('termVideo'), camFacing[k], 'terminal');
-        }, fieldRec).then(function (out) {
-          palmScanBusy = false;
-          $('termScan').disabled = false;
-          return out;
-        }).catch(function (e) {
-          palmScanBusy = false;
-          $('termScan').disabled = false;
-          return { fail: 'Palm scan failed: ' + (e && e.message ? e.message : e) + ' Nothing was verified.' };
-        });
-      } else {
-        var cap;
-        try { cap = captureFinger($('termVideo'), $('termFingerOriginal'), $('termFingerRidge')); }
-        catch (e) { $('termResult').innerHTML = cameraErrorHTML(e); return null; }
-        if (!cap.record) {
-          $('termResult').innerHTML = '<div class="error">Fingerprint rejected by the quality gate: ' + esc(cap.quality.reason) + ' Nothing was verified.</div>';
-          return null;
-        }
-        var rf = B.verifyFingerprint(person.fingerprint, cap.record);
-        attempt = Promise.resolve({ r: rf, measured: 'Template correlation ' + (rf.correlation === null ? 'n/a' : rf.correlation.toFixed(3)) + ' (needs ' + rf.threshold + '), texture similarity ' + (rf.textureSimilarity === null ? 'n/a' : rf.textureSimilarity.toFixed(3)) + ' (needs ' + rf.textureThreshold + ') - both must pass' });
-      }
+      };
+      var attempt = streamVerifyPalm($('termVideo'), $('termStatus'), person, people, function () {
+        var k = termFacingKey();
+        camFacing[k] = camFacing[k] === 'user' ? 'environment' : 'user';
+        syncCamToggle('terminal');
+        return Cam.start($('termVideo'), camFacing[k], 'terminal');
+      }, fieldRec).then(function (out) {
+        palmScanBusy = false;
+        $('termScan').disabled = false;
+        return out;
+      }).catch(function (e) {
+        palmScanBusy = false;
+        $('termScan').disabled = false;
+        return { fail: 'Palm scan failed: ' + (e && e.message ? e.message : e) + ' Nothing was verified.' };
+      });
 
       return Promise.resolve(attempt).then(function (out) {
         if (!out) return;
-        if (out.fail) { if (method === 'palm') Snd.buzz(); $('termResult').innerHTML = '<div class="error">' + esc(out.fail) + '</div>'; return; }
+        if (out.fail) { Snd.buzz(); $('termResult').innerHTML = '<div class="error">' + esc(out.fail) + '</div>'; return; }
         var r = out.r;
         var verified = r.ok === true && r.verified === true; // fail closed: only an explicit pass verifies
         return logVerification(person, method, out.measured, verified ? 'Verified' : 'Denied').then(function () {
@@ -1721,29 +1383,27 @@
             ? '<div class="who">' + (verified ? 'Verified' : 'Scanned') + ' in ' + out.latencyMs.toLocaleString() + ' ms' + (r && typeof r.similarity === 'number' ? ' • Score ' + r.similarity.toFixed(2) : '') + '</div>'
             : '';
           if (!verified) {
-            html = '<div class="resultbig bad"><div class="verdict">NOT VERIFIED</div><div class="who">' + esc(person.name) + ' — ' + esc(METHOD_LABEL[method]) + ' scan did not match</div>' + latencyLine + '<div class="meas">' + esc(r.reason) + '<br>Measured: ' + esc(out.measured) + '</div></div>';
+            html = '<div class="resultbig bad"><div class="verdict">NOT VERIFIED</div><div class="who">' + esc(person.name) + ' — Palm scan did not match</div>' + latencyLine + '<div class="meas">' + esc(r.reason) + '<br>Measured: ' + esc(out.measured) + '</div></div>';
             $('termResult').innerHTML = html;
-            if (method === 'palm') Snd.buzz();
+            Snd.buzz();
             return;
           }
-          if (method === 'palm') Snd.chime();
+          Snd.chime();
           html = '<div class="resultbig ok"><div class="verdict">VERIFIED</div><div class="who">' + esc(person.name) + ' (' + esc(person.id) + ')</div>' + latencyLine + '<div class="meas">Measured: ' + esc(out.measured) + '</div></div>';
           // Palm Loyalty (live mode, v18): every verified palm scan
           // earns points - 1 per BDT 10 on a payment, 5 for a visit
           // scan - credited to the customer's Biom ID record.
           var loyaltyLine = '';
-          if (method === 'palm') {
-            var pts = amount > 0 ? Math.floor(amount / 10) : 5;
-            if (pts > 0) {
-              person.loyaltyPoints = (person.loyaltyPoints || 0) + pts;
-              loyaltyLine = '<div class="notice" style="margin-top:10px">Palm Loyalty: +' + pts + ' points awarded — balance ' + person.loyaltyPoints + ' points.</div>';
-              DB.put('people', person);
-            }
+          var pts = amount > 0 ? Math.floor(amount / 10) : 5;
+          if (pts > 0) {
+            person.loyaltyPoints = (person.loyaltyPoints || 0) + pts;
+            loyaltyLine = '<div class="notice" style="margin-top:10px">Palm Loyalty: +' + pts + ' points awarded — balance ' + person.loyaltyPoints + ' points.</div>';
+            DB.put('people', person);
           }
           if (amount > 0) {
             if (!person.walletProvider) {
               $('termResult').innerHTML = html + loyaltyLine + '<div class="error" style="margin-top:10px">Biom Pay not created: this person has no linked bKash / Nagad wallet.</div>';
-              if (method === 'palm') Snd.speak('Palm recognized');
+              Snd.speak('Palm recognized');
               return;
             }
             var createPay = function () {
@@ -1760,10 +1420,10 @@
                     '<b>Paid by:</b> ' + esc(person.name) + '<br>' +
                     '<b>Wallet:</b> ' + esc(tx.provider) + ' ' + esc(tx.walletMasked) + '<br>' +
                     '<b>Record ID:</b> ' + esc(tx.id) + ' (TSG Biom record — not a ' + esc(tx.provider) + ' TrxID)<br>' +
-                    '<b>Store:</b> ' + esc(tx.store) + '<br><b>Authorized by:</b> ' + esc(METHOD_LABEL[method]) + ' scan — ' + esc(out.measured) + '<br>' +
+                    '<b>Store:</b> ' + esc(tx.store) + '<br><b>Authorized by:</b> ' + 'Palm' + ' scan — ' + esc(out.measured) + '<br>' +
                     '<b>Status:</b> ' + esc(tx.status) + '</div></div>';
                   toast('Biom Pay authorized: ' + tx.id);
-                  if (method === 'palm') Snd.speak('Payment complete');
+                  Snd.speak('Payment complete');
                 });
               });
             };
@@ -1772,7 +1432,7 @@
             // confirmation is required, so nothing is recorded as paid.
             if (person.limits && person.limits.perTx && amount > person.limits.perTx) {
               $('termResult').innerHTML = html + loyaltyLine + '<div class="error" style="margin-top:10px">Biom Pay not created: BDT ' + amount.toLocaleString() + ' exceeds this customer\'s biometric-only per-transaction limit of BDT ' + person.limits.perTx.toLocaleString() + '. PIN confirmation is required above the limit.</div>';
-              if (method === 'palm') Snd.speak('Palm recognized');
+              Snd.speak('Palm recognized');
               return;
             }
             if (person.limits && person.limits.daily) {
@@ -1781,7 +1441,7 @@
                 var todaySum = txs.filter(function (t) { return t.personId === person.id && t.ts >= dayStart.getTime(); }).reduce(function (s, t) { return s + Number(t.amount || 0); }, 0);
                 if (todaySum + amount > person.limits.daily) {
                   $('termResult').innerHTML = html + loyaltyLine + '<div class="error" style="margin-top:10px">Biom Pay not created: this payment would take today\'s total to BDT ' + (todaySum + amount).toLocaleString() + ', above this customer\'s biometric-only daily limit of BDT ' + person.limits.daily.toLocaleString() + '. PIN confirmation is required above the limit.</div>';
-                  if (method === 'palm') Snd.speak('Palm recognized');
+                  Snd.speak('Palm recognized');
                   return;
                 }
                 return createPay();
@@ -1790,7 +1450,7 @@
             return createPay();
           }
           $('termResult').innerHTML = html + loyaltyLine;
-          if (method === 'palm') Snd.speak('Palm recognized');
+          Snd.speak('Palm recognized');
         });
       });
     }).catch(function (e) { $('termResult').innerHTML = '<div class="error">Scan failed: ' + esc(e && e.message ? e.message : e) + '</div>'; });
@@ -1805,20 +1465,18 @@
       }).map(function (p) {
         return '<tr><td><b>' + esc(p.name) + '</b><br><span style="color:var(--muted)">' + esc(p.phone || '') + '</span>' + (p.loyaltyPoints ? '<br><span style="color:var(--muted)">Loyalty: ' + p.loyaltyPoints + ' pts</span>' : '') + '</td>' +
           '<td>' + esc(p.id) + '</td><td>' + esc(p.type) + '<br><span style="color:var(--muted)">' + esc(p.store) + '</span></td>' +
-          '<td>' + (personHasMethod(p, 'face') ? '<span class="badge ok">Enrolled</span>' : '<span class="badge bad">Not enrolled</span>') + '</td>' +
-          '<td>' + (personHasMethod(p, 'palm') ? '<span class="badge ok">Enrolled</span>' : '<span class="badge bad">Not enrolled</span>') + '</td>' +
-          '<td>' + (personHasMethod(p, 'finger') ? '<img class="thumb" src="' + p.fingerprint.ridgeImage + '" alt="Captured fingerprint ridges"><br><span class="badge ok">Enrolled</span>' : '<span class="badge bad">Not enrolled</span>') + '</td>' +
+          '<td>' + (personHasMethod(p) ? '<span class="badge ok">Enrolled</span>' : '<span class="badge bad">Not enrolled</span>') + '</td>' +
           '<td>' + (p.walletProvider ? esc(p.walletProvider) + '<br>' + esc(B.maskWalletNumber(p.walletNumber)) : '—') + '</td>' +
           '<td><button class="btn small" data-verify="' + esc(p.id) + '">Verify</button></td></tr>';
       }).join('');
-      $('registryBody').innerHTML = rows || '<tr><td colspan="8" style="color:var(--muted)">No enrollments on this device yet.</td></tr>';
+      $('registryBody').innerHTML = rows || '<tr><td colspan="6" style="color:var(--muted)">No enrollments on this device yet.</td></tr>';
       document.querySelectorAll('[data-verify]').forEach(function (b) {
         b.addEventListener('click', function () {
           go('terminal');
           $('termSearch').value = '';
           renderTermPeople();
           $('termPerson').value = b.dataset.verify;
-          fillTermMethods();
+          fillTermMethodNote();
         });
       });
     });
@@ -1889,7 +1547,7 @@
   wireFlashToggles();
   setFieldMode(fieldModeOn());
   syncCamToggle('terminal');
-  ['enrollFace', 'enrollPalm', 'enrollFinger', 'terminal'].forEach(function (g) { syncFlashToggle(g); });
+  ['enrollPalm', 'terminal'].forEach(function (g) { syncFlashToggle(g); });
   fillStoreSelects();
   DB.open().then(function () { renderDashboard(); fillTerminalPeople(); });
 })();

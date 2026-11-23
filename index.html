@@ -3,14 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>TSG Biom — Face, Palm &amp; Camera Fingerprint for Stores</title>
-<meta name="description" content="TSG Biom by TwoSide Group: hardware-free biometric enrollment and verification — real face recognition, palmprint recognition and fingerprint through the camera, with bKash / Nagad Biom Pay for CVS, retail, supermarkets and malls.">
+<title>TSG Biom — Palmprint for Stores</title>
+<meta name="description" content="TSG Biom by TwoSide Group: hardware-free palmprint enrollment and verification through a phone or tablet camera, with bKash / Nagad Biom Pay for pharmacies, retail, supermarkets and malls.">
 <meta name="theme-color" content="#075e55">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-180.png">
 <link rel="stylesheet" href="styles.css">
-<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.14/dist/face-api.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"></script>
 <script src="biometrics.js"></script>
 </head>
@@ -40,7 +39,7 @@
     <div class="desk-actions">
       <button class="bigaction register" data-go="enroll">
         <span class="ba-title">Register Person</span>
-        <span class="ba-sub">New customer or staff — face, palm or fingerprint, any one is enough</span>
+        <span class="ba-sub">New customer or staff — one palm scan is all it takes</span>
       </button>
       <button class="bigaction pay" data-go="terminal">
         <span class="ba-title">Verify &amp; Pay</span>
@@ -87,11 +86,10 @@
     </div>
     <div class="card" style="margin-top:16px"><h2>How the real scanning works</h2>
       <p class="sub" style="margin:0">
-        Face: a real face-recognition model extracts a 128-point descriptor; verification measures the actual distance between scans.
-        Palm: MediaPipe landmarks locate the palm, a square palm image is cut out and aligned, and an EDCC palmprint encoder reads the palm's own print pattern — the method family used by real palmprint systems.
-        Fingerprint: a camera photographs your fingertip and the system enhances and matches the real ridge pattern from those pixels.
-        Nothing here is simulated — if no face, hand or clear print is seen, the scan fails openly.
-        Enroll any one, two, or all three - each biometric works independently.
+        TSG Biom is palm-only. MediaPipe landmarks locate the palm, a square palm image is cut out and aligned, and an EDCC palmprint encoder reads the palm's own print pattern — the method family used by real palmprint systems.
+        Enrolment banks the individual print codes from the best fully-open frames. At verification the live palm image is re-encoded at 25 small shifts and the best match against the enrolled codes decides — the score-level max rule.
+        Nothing here is simulated — if no hand or no clear print is seen, the scan fails openly.
+        Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.
       </p>
     </div>
   </section>
@@ -99,9 +97,9 @@
   <!-- ENROLL -->
   <section class="page" id="page-enroll">
     <h1>regBIOM — Customer Registration</h1>
-    <p class="sub">One registration creates one TSG Biom ID. Enroll any one, two, or all three biometrics — each works on its own, and at least one must be captured. Wallet linking is optional.</p>
-    <div class="progresslabel" id="enrollProgress">Step 1 of 5 — Details + Wallet</div>
-    <div class="progress" style="margin:10px 0 16px"><i id="enrollProgressBar" style="width:20%"></i></div>
+    <p class="sub">One registration creates one TSG Biom ID, from one palm enrolment. Wallet linking is optional.</p>
+    <div class="progresslabel" id="enrollProgress">Step 1 of 3 — Details + Wallet</div>
+    <div class="progress" style="margin:10px 0 16px"><i id="enrollProgressBar" style="width:33%"></i></div>
 
     <div id="enroll-details" class="card">
       <div class="row">
@@ -127,44 +125,13 @@
         <div><label>Daily limit (BDT)</label><input id="enLimitDaily" type="number" min="0" placeholder="e.g. 5000 — blank = no limit"></div>
       </div>
       <p class="sub" style="margin-top:10px">Above a limit, a Palm Pay payment is not created on palm alone — PIN confirmation is required. Leave blank for no limit.</p>
-      <h2 style="margin-top:18px">Biometrics to enroll — each one is optional</h2>
-      <p class="sub" style="margin:0">Enroll any one, two, or all three - each biometric works independently. Unchecked types are skipped entirely; you can also Skip a step during capture. At least one type must be captured to issue a Biom ID.</p>
-      <div class="checkrow">
-        <label class="check"><input type="checkbox" id="enOptFace" checked> Enroll: Face</label>
-        <label class="check"><input type="checkbox" id="enOptPalm" checked> Enroll: Palm</label>
-        <label class="check"><input type="checkbox" id="enOptFinger" checked> Enroll: Fingerprint</label>
-      </div>
       <div id="enrollDetailsError"></div>
-      <button class="btn primary" id="enrollDetailsNext">Continue to First Selected Scan</button>
-    </div>
-
-    <div id="enroll-face" class="card hidden">
-      <h2>Step 2 — Face scan (real)</h2>
-      <p class="sub">Look straight at the camera, face inside the oval, good light. The model must really detect your face before capture is enabled.</p>
-      <div class="camtoggle" data-cam-toggle="enrollFace" role="group" aria-label="Face camera choice">
-        <button type="button" data-facing="user" class="on">Front camera</button>
-        <button type="button" data-facing="environment">Back camera</button>
-      </div>
-      <p class="camnote">Front camera = self-scan. Back camera = a cashier scans a customer across the counter. This choice applies to this step only.</p>
-      <div class="camtoggle flashtoggle" data-flash-toggle="enrollFace" role="group" aria-label="Face flash choice">
-        <button type="button" data-flash="off" class="on">Flash Off</button>
-        <button type="button" data-flash="on">Flash On</button>
-      </div>
-      <p class="camnote flashnote" data-flash-note="enrollFace"></p>
-      <div class="camwrap"><video id="faceVideo" autoplay playsinline muted></video>
-        <div class="guide"><div class="oval"></div></div>
-        <div class="camstatus" id="faceStatus">Camera not started.</div></div>
-      <div class="row" style="margin-top:12px">
-        <div><button class="btn" id="faceStart">Start Camera</button></div>
-        <div><button class="btn primary" id="faceCapture" disabled>Capture Face</button></div>
-        <div><button class="btn danger" id="faceSkip" type="button">Skip Face</button></div>
-      </div>
-      <div id="faceMsg" style="margin-top:12px"></div>
+      <button class="btn primary" id="enrollDetailsNext">Continue to Palm Scan</button>
     </div>
 
     <div id="enroll-palm" class="card hidden">
-      <h2>Step 3 — Palm scan (real palmprint)</h2>
-      <p class="sub">Palmprint enrollment from a short recorded clip: tap Record and, during the 4 seconds, open the palm wide, close it into a loose fist, then open it wide again and hold it open — a photo cannot do this, and a single photo is never accepted. Hold the phone about 30 cm away so the whole hand fits inside the frame; a palm pressed close to the lens cannot be read. The clip is analysed frame by frame: the movement is checked, the palm square is cut out and aligned from the hand landmarks, and an <b>EDCC palmprint encoder</b> reads the palm's own print pattern from the best open-palm frames — <b>three print codes</b> are stored. Labelled honestly: this is <b>Palm — Palmprint</b>, the print-pattern method real palmprint systems use. Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.</p>
+      <h2>Step 2 — Palm scan (real palmprint)</h2>
+      <p class="sub">Tap Auto-Capture Palm and follow the movement prompts as they appear — the sequence is picked at random each time, and a photo cannot perform it, so a single photo is never accepted. Hold the phone about 30 cm away so the whole hand fits inside the ring; a palm pressed close to the lens cannot be read. The app watches live: the movement is checked, the palm square is cut out and aligned from the hand landmarks, and an <b>EDCC palmprint encoder</b> reads the palm's own print pattern from the best fully-open frames — the individual print codes are stored. Labelled honestly: this is <b>Palm — Palmprint</b>, the print-pattern method real palmprint systems use. Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.</p>
       <div class="camtoggle" data-cam-toggle="enrollPalm" role="group" aria-label="Palm camera choice">
         <button type="button" data-facing="user" class="on">Front camera</button>
         <button type="button" data-facing="environment">Back camera</button>
@@ -182,38 +149,8 @@
       <div class="row" style="margin-top:12px">
         <div><button class="btn" id="palmStart">Start Camera</button></div>
         <div><button class="btn primary" id="palmCapture" disabled>Auto-Capture Palm</button></div>
-        <div><button class="btn danger" id="palmSkip" type="button">Skip Palm</button></div>
       </div>
       <div id="palmMsg" style="margin-top:12px"></div>
-    </div>
-
-    <div id="enroll-finger" class="card hidden">
-      <h2>Step 4 — Fingerprint through the camera (real)</h2>
-      <p class="sub">Defaults to the <b>back camera</b> — you can switch to the front camera with the toggle below. Hold your fingertip facing the camera, <b>5–8 cm away</b>, filling the guide, in good light, and keep still. Turn Flash On if the fingertip is too dark - flash is manual, it never comes on by itself. You will see your original photo and the enhanced ridge image taken from its real pixels. Blurry prints are rejected — never invented.</p>
-      <div class="camtoggle" data-cam-toggle="enrollFinger" role="group" aria-label="Fingerprint camera choice">
-        <button type="button" data-facing="user">Front camera</button>
-        <button type="button" data-facing="environment" class="on">Back camera</button>
-      </div>
-      <p class="camnote">Back camera = a cashier scans a customer's fingertip across the counter (default for fingerprint). Front camera = self-scan. This choice applies to this step only.</p>
-      <div class="camtoggle flashtoggle" data-flash-toggle="enrollFinger" role="group" aria-label="Fingerprint flash choice">
-        <button type="button" data-flash="off" class="on">Flash Off</button>
-        <button type="button" data-flash="on">Flash On</button>
-      </div>
-      <p class="camnote flashnote" data-flash-note="enrollFinger"></p>
-      <div class="camwrap"><video id="fingerVideo" autoplay playsinline muted></video>
-        <div class="guide"><div class="finger"></div></div>
-        <div class="camstatus" id="fingerStatus">Camera not started.</div></div>
-      <div class="row" style="margin-top:12px">
-        <div><button class="btn" id="fingerStart">Start Camera</button></div>
-        <div><button class="btn primary" id="fingerCapture" disabled>Capture Fingerprint</button></div>
-        <div><button class="btn danger" id="fingerSkip" type="button">Skip Fingerprint</button></div>
-      </div>
-      <div class="row" style="margin-top:14px">
-        <div><p class="sub" style="margin:0 0 6px">Original crop</p><canvas class="preview" id="fingerOriginal" width="240" height="240"></canvas></div>
-        <div><p class="sub" style="margin:0 0 6px">Enhanced ridges (real pixels)</p><canvas class="preview" id="fingerRidge" width="240" height="240"></canvas></div>
-      </div>
-      <div id="fingerMsg" style="margin-top:12px"></div>
-      <button class="btn primary hidden" id="fingerAccept">Accept Print &amp; Finish Enrollment</button>
     </div>
 
     <div id="enroll-done" class="card hidden">
@@ -236,8 +173,8 @@
       </div>
       <div class="row">
         <div><label>Store</label><select id="termStore"></select></div>
-        <div><label>Scan with (only what this person enrolled)</label>
-          <select id="termMethod"><option value="face">Face</option><option value="palm">Palm — Palmprint</option><option value="finger">Fingerprint (camera)</option></select>
+        <div><label>Scan with</label>
+          <p class="scanwith">Palm — Palmprint</p>
           <p class="camnote" id="termMethodNote"></p></div>
       </div>
       <div class="row">
@@ -252,24 +189,20 @@
         <button type="button" data-facing="user" class="on">Front camera</button>
         <button type="button" data-facing="environment">Back camera</button>
       </div>
-      <p class="camnote">Front camera = self-scan. Back camera = a cashier scans a customer across the counter. The terminal remembers a separate choice for each method (Face / Palm / Fingerprint).</p>
+      <p class="camnote">Front camera = self-scan. Back camera = a cashier scans a customer across the counter. This choice applies to the terminal.</p>
       <div class="camtoggle flashtoggle" data-flash-toggle="terminal" role="group" aria-label="Terminal flash choice">
         <button type="button" data-flash="off" class="on">Flash Off</button>
         <button type="button" data-flash="on">Flash On</button>
       </div>
       <p class="camnote flashnote" data-flash-note="terminal"></p>
       <div class="camwrap" style="margin-top:14px"><video id="termVideo" autoplay playsinline muted></video>
-        <div class="guide"><div class="oval" id="termGuide"></div></div>
+        <div class="guide"><div class="hand"></div></div>
         <div class="palmring" id="termRing"></div>
         <div class="camstatus" id="termStatus">Camera not started.</div></div>
       <div class="row" style="margin-top:12px">
         <div><button class="btn big" id="termStart">Start Camera</button></div>
       </div>
       <button class="btn primary bigscan" id="termScan" disabled>SCAN</button>
-      <div class="row hidden" id="termFingerPreviews" style="margin-top:14px">
-        <div><p class="sub" style="margin:0 0 6px">Fingerprint — original crop</p><canvas class="preview" id="termFingerOriginal" width="240" height="240"></canvas></div>
-        <div><p class="sub" style="margin:0 0 6px">Fingerprint — enhanced ridges</p><canvas class="preview" id="termFingerRidge" width="240" height="240"></canvas></div>
-      </div>
       <div id="termResult" style="margin-top:14px"></div>
     </div>
   </section>
@@ -283,10 +216,10 @@
         <p>Prescription pickup identity check, age verification for restricted items, loyalty at the counter, and Biom Pay against a linked bKash / Nagad wallet.</p>
         <button class="btn primary" data-launch="GreenCare Pharmacy (CVS)">Launch Terminal</button></div>
       <div class="card modecard"><h3>Supermarket</h3>
-        <p>Biom Pay checkout — the customer pays with face, palm or camera fingerprint, no card, phone or cash in hand. Wallet: bKash / Nagad.</p>
+        <p>Biom Pay checkout — the customer pays with a palm scan, no card, phone or cash in hand. Wallet: bKash / Nagad.</p>
         <button class="btn primary" data-launch="FreshMart Supermarket">Launch Terminal</button></div>
       <div class="card modecard"><h3>Retail Store</h3>
-        <p>Loyalty identification at till, staff attendance clock-in by face, and Biom Pay checkout with bKash / Nagad.</p>
+        <p>Loyalty identification at till, staff attendance clock-in by palm, and Biom Pay checkout with bKash / Nagad.</p>
         <button class="btn primary" data-launch="UrbanStyle Retail">Launch Terminal</button></div>
       <div class="card modecard"><h3>Mall</h3>
         <p>Entry verification, VIP lounge access, parking charges and visitor flow — one Biom ID across the whole mall, with Biom Pay where a charge applies.</p>
@@ -297,10 +230,10 @@
   <!-- REGISTRY -->
   <section class="page" id="page-registry">
     <h1>People Registry</h1>
-    <p class="sub">Everyone enrolled on this device. Wallet numbers are masked. The ridge thumbnail is the person's real captured print image.</p>
+    <p class="sub">Everyone enrolled on this device. Wallet numbers are masked.</p>
     <input id="registrySearch" placeholder="Search by name, Biom ID or phone">
     <div class="card" style="margin-top:14px;overflow-x:auto"><table>
-      <thead><tr><th>Person</th><th>Biom ID</th><th>Type / Store</th><th>Face</th><th>Palm</th><th>Finger</th><th>Wallet</th><th></th></tr></thead>
+      <thead><tr><th>Person</th><th>Biom ID</th><th>Type / Store</th><th>Palm</th><th>Wallet</th><th></th></tr></thead>
       <tbody id="registryBody"></tbody>
     </table></div>
   </section>
