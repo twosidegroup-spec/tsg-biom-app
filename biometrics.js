@@ -1542,7 +1542,7 @@
       p = landmarks[tips[i]];
       if (!p || !isFinite(Number(p.x)) || !isFinite(Number(p.y))) continue;
       if (Number(p.x) < 0.02 || Number(p.x) > 0.98 || Number(p.y) < 0.02 || Number(p.y) > 0.98) {
-        return 'Whole hand in view — part of the hand is being cut off. Move the palm back a little and centre it inside the ring.';
+        return 'Whole hand in view — part of the hand is being cut off. Move the palm back a little so the whole hand shows.';
       }
     }
     var pose = palmFramePose(landmarks);

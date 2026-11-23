@@ -81,8 +81,6 @@ input:focus,select:focus{outline:2px solid rgba(11,122,110,.35);border-color:var
 .checkrow .check{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:10px 14px;font-size:14px;font-weight:700;color:var(--text);margin:0;cursor:pointer}
 .checkrow .check input{width:auto;accent-color:var(--teal);margin:0}
 .steps span.skipped{opacity:.38;text-decoration:line-through}
-.guide{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
-.guide .hand{width:240px;height:240px;border:3px dashed rgba(47,230,176,.9);border-radius:40% 40% 46% 46%}
 .camstatus{position:absolute;left:10px;bottom:10px;background:rgba(4,32,28,.78);color:#eafffa;padding:7px 11px;border-radius:9px;font-size:13px}
 .notice{border:1px solid #ecd9a8;color:#7a5a0e;border-radius:14px;padding:12px 14px;font-size:14px;line-height:1.5;background:#fdf6e0}
 .error{border:1px solid #f0caca;color:#8f1d1d;border-radius:14px;padding:12px 14px;font-size:14px;line-height:1.5;background:#fdf0f0}
@@ -141,9 +139,3 @@ input,select{padding:14px;font-size:16px;min-height:52px}
 .checkrow .check{min-height:52px}
 @media (max-width:640px){ h1{font-size:23px }
   .desk-actions{grid-template-columns:1fr} .resultbig .verdict{font-size:32px} }
-
-/* v20 alignment ring: appears while a palm stream is live; turns
-   solid green the moment a sharp open palm locks inside it. */
-.palmring{position:absolute;top:50%;left:50%;width:250px;height:250px;transform:translate(-50%,-50%);border:3px dashed rgba(255,255,255,.55);border-radius:50%;pointer-events:none;opacity:0;transition:opacity .25s,border-color .2s,box-shadow .2s}
-.palmring.on{opacity:1}
-.palmring.locked{border:4px solid #2fe0a8;box-shadow:0 0 0 6px rgba(47,224,168,.18),0 0 34px rgba(47,224,168,.35)}

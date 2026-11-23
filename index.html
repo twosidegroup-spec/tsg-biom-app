@@ -131,7 +131,7 @@
 
     <div id="enroll-palm" class="card hidden">
       <h2>Step 2 — Palm scan (real palmprint)</h2>
-      <p class="sub">Tap Auto-Capture Palm and follow the movement prompts as they appear — the sequence is picked at random each time, and a photo cannot perform it, so a single photo is never accepted. Hold the phone about 30 cm away so the whole hand fits inside the ring; a palm pressed close to the lens cannot be read. The app watches live: the movement is checked, the palm square is cut out and aligned from the hand landmarks, and an <b>EDCC palmprint encoder</b> reads the palm's own print pattern from the best fully-open frames — the individual print codes are stored. Labelled honestly: this is <b>Palm — Palmprint</b>, the print-pattern method real palmprint systems use. Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.</p>
+      <p class="sub">Tap Auto-Capture Palm and follow the movement prompts as they appear — the sequence is picked at random each time, and a photo cannot perform it, so a single photo is never accepted. Just show your open hand to the camera, anywhere in the frame, at a natural distance — there is nothing to line up: the app finds the hand by itself. A palm pressed right against the lens cannot be read, so keep a natural distance. The app watches live: the movement is checked, the palm square is cut out and aligned from the hand landmarks, and an <b>EDCC palmprint encoder</b> reads the palm's own print pattern from the best fully-open frames — the individual print codes are stored. Labelled honestly: this is <b>Palm — Palmprint</b>, the print-pattern method real palmprint systems use. Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.</p>
       <div class="camtoggle" data-cam-toggle="enrollPalm" role="group" aria-label="Palm camera choice">
         <button type="button" data-facing="user" class="on">Front camera</button>
         <button type="button" data-facing="environment">Back camera</button>
@@ -143,8 +143,6 @@
       </div>
       <p class="camnote flashnote" data-flash-note="enrollPalm"></p>
       <div class="camwrap"><video id="palmVideo" autoplay playsinline muted></video>
-        <div class="guide"><div class="hand"></div></div>
-        <div class="palmring" id="palmRing"></div>
         <div class="camstatus" id="palmStatus">Camera not started.</div></div>
       <div class="row" style="margin-top:12px">
         <div><button class="btn" id="palmStart">Start Camera</button></div>
@@ -196,8 +194,6 @@
       </div>
       <p class="camnote flashnote" data-flash-note="terminal"></p>
       <div class="camwrap" style="margin-top:14px"><video id="termVideo" autoplay playsinline muted></video>
-        <div class="guide"><div class="hand"></div></div>
-        <div class="palmring" id="termRing"></div>
         <div class="camstatus" id="termStatus">Camera not started.</div></div>
       <div class="row" style="margin-top:12px">
         <div><button class="btn big" id="termStart">Start Camera</button></div>

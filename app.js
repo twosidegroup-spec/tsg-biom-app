@@ -14,7 +14,7 @@
      matching code do not read reliably against a new one. Bump
      APP_DATA_VERSION together with the service-worker shell on any
      build that changes enrolment or matching. */
-  var APP_DATA_VERSION = 'v33';
+  var APP_DATA_VERSION = 'v34';
   /* DEVELOPMENT ONLY (his order, 2026-11-20): the wipe below runs
      only in development builds. A commercial build ships with
      BUILD_MODE set to 'commercial' and never wipes - real customer
@@ -213,8 +213,8 @@
       }
       // Capture tuning (v21): ask the track for continuous auto-focus
       // and continuous auto-exposure, metered on the centre of the
-      // frame where the guide ring sits, so palm creases stay sharp
-      // instead of the lens hunting to the background. Every key is
+      // frame, so palm creases stay sharp instead of the lens hunting
+      // to the background. Every key is
       // capability-gated: Android Chrome exposes focusMode on many
       // devices, iOS Safari exposes almost none of this - unsupported
       // keys are skipped silently and the stream runs as before.
@@ -681,12 +681,6 @@
     }
   };
 
-  function setRing(el, state) {
-    if (!el) return;
-    el.classList.toggle('on', state !== 'off');
-    el.classList.toggle('locked', state === 'locked');
-  }
-
   /* One streamed frame, analysed: landmarks, openness, EDCC codes
      (aligned + mirror), texture/sharpness, and the palm pose used by
      passive liveness. Same frame-result shape the clip pipeline used. */
@@ -738,7 +732,10 @@
      liveness gate, judged on the streamed measures with the same
      index-based window as the clip pipeline. Finishes the moment the
      sequence passes with at least two usable fully-open codes banked.
-     Returns the same shape capturePalmResults returned. */
+     Returns the same shape capturePalmResults returned.
+     v34: free-form scanning - there is no guide overlay and nothing
+     to line up; the user simply shows an open hand anywhere in the
+     frame and the landmark ROI follows the hand. */
   function streamEnrolPalm(video, statusEl, sequence, swapCamera) {
     var t0 = Date.now();
     var results = [];
@@ -793,7 +790,6 @@
       return inBand >= 6 || (inBand >= 3 && analysed >= 150);
     }
     function finish() {
-      setRing($('palmRing'), 'off');
       var sp = tracker.state();
       return {
         results: results,
@@ -821,10 +817,9 @@
             // evaluator is the liveness judge, not the descriptor gate.
             if (typeof r.openness === 'number') measures.push({ openness: r.openness, spread: r.spread, tilt: r.tilt });
             var isLock = !!(r.code && B.palmprintCodeSane(r.code));
-            setRing($('palmRing'), isLock ? 'locked' : 'on');
             if (isLock && !locked) { locked = true; Snd.tick(); }
             if (!isLock) locked = false;
-            if (statusEl) statusEl.textContent = 'Step ' + (stageIdxNow() + 1) + ' of ' + sequence.stages.length + ' — ' + (B.PALM_STAGE_PROMPTS[sequence.stages[stageIdxNow()]] || '') + ' Keep the whole hand inside the ring, about 30 cm away.';
+            if (statusEl) statusEl.textContent = 'Step ' + (stageIdxNow() + 1) + ' of ' + sequence.stages.length + ' — ' + (B.PALM_STAGE_PROMPTS[sequence.stages[stageIdxNow()]] || '');
           });
         });
       });
@@ -857,15 +852,15 @@
           var usableNow = B.palmprintUsableOpenFrames(results);
           var maxOpenNow = usableNow.length ? Math.max.apply(null, usableNow.map(function (u) { return u.openness; })) : 0;
           var bankedNow = usableNow.filter(function (u) { return u.openness >= maxOpenNow - 0.30; }).length;
-          statusEl.textContent = 'Movement complete — hold your open palm still inside the ring, fingers spread wide. Capturing print detail: ' + Math.min(bankedNow, 6) + ' of 6 codes.';
+          statusEl.textContent = 'Hand detected — hold steady, palm open, fingers spread wide. Capturing print detail: ' + Math.min(bankedNow, 6) + ' of 6 codes.';
         } else if (analysed >= 12 && !seenHand) {
-          statusEl.textContent = 'No hand seen yet — hold your open palm inside the ring, facing the camera, about 30 cm away.';
+          statusEl.textContent = 'No hand seen yet — show your open hand to the camera, fingers spread.';
         } else if (lastResult && lastResult.framing) {
           statusEl.textContent = lastResult.framing;
         } else if (analysed >= 24 && seenHand && stageIdxNow() === 0) {
-          statusEl.textContent = 'Hand seen — now open it wide: fingers spread, palm flat, facing the camera.';
+          statusEl.textContent = 'Hand detected — now open it wide: fingers spread, palm flat, facing the camera.';
         } else {
-          statusEl.textContent = 'Step ' + (stageIdxNow() + 1) + ' of ' + sequence.stages.length + ' — ' + (B.PALM_STAGE_PROMPTS[sequence.stages[stageIdxNow()]] || '') + ' Keep the whole hand inside the ring, about 30 cm away.';
+          statusEl.textContent = 'Step ' + (stageIdxNow() + 1) + ' of ' + sequence.stages.length + ' — ' + (B.PALM_STAGE_PROMPTS[sequence.stages[stageIdxNow()]] || '');
         }
       }
       // Persona-style pacing (v27, his order): short 1.5 s capture
@@ -878,14 +873,16 @@
       // sampling to one point of the movement cycle.
       return recordBurst(1000).then(analyseBurst).then(cycle);
     }
-    setRing($('palmRing'), 'on');
     return cycle();
   }
 
   /* Show & Pay checkout (v20): no movement sequence. Rapid bursts of
      three frames; per-frame matching in the worker with the two-frame
      early exit; passive liveness on the burst poses; the coherence
-     spoof gate sampled per burst. Fail-closed throughout. */
+     spoof gate sampled per burst. Fail-closed throughout.
+     v34: free-form scanning - no guide overlay; the customer simply
+     shows an open hand anywhere in the frame and the landmark ROI
+     follows the hand. */
   function streamVerifyPalm(video, statusEl, person, people, swapCamera, fieldRec) {
     var t0 = Date.now();
     var tracker = makeSpoofTracker();
@@ -897,7 +894,7 @@
     var lastHint = null, coded = 0;
     var MAXF = 24, deadline = t0 + 90000;
 
-    function finish(out) { setRing($('termRing'), 'off'); return out; }
+    function finish(out) { return out; }
     function impostorMaxFor(rois) {
       var chain = Promise.resolve(null);
       (people || []).forEach(function (p) {
@@ -922,7 +919,7 @@
       Snd.buzz();
       return finish({ fail: lv.verdict === 'static'
         ? 'Liveness check failed: the palm did not move naturally at all — a still photo or a frozen image cannot be used. Nothing was verified. Present the real hand, held live in front of the camera.'
-        : 'Liveness check failed: the view changed too abruptly for one held hand. Nothing was verified. Hold one open palm steady, inside the ring.' });
+        : 'Liveness check failed: the view changed too abruptly for one held hand. Nothing was verified. Hold one open palm steady in front of the camera.' });
     }
     function verifiedOut() {
       return impostorMaxFor(win.rois).then(function (impMax) {
@@ -936,7 +933,7 @@
       if (sp.spoof) return spoofOut(sp);
       var lv = B.passiveLivenessCheck(poses);
       var liveRois = B.selectPalmprintLiveRois(frames);
-      if (!liveRois) { fieldRec(null, null, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag); return finish({ fail: 'No usable open palm with readable print detail found in the scan. Nothing was verified. Hold one open palm still, fingers spread, inside the ring in good light, and run the scan again. (' + analysed + ' frames scanned, ' + coded + ' produced a readable palm code.' + (lastHint ? ' Last guidance shown: ' + lastHint : '') + ')' }); }
+      if (!liveRois) { fieldRec(null, null, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag); return finish({ fail: 'No usable open palm with readable print detail found in the scan. Nothing was verified. Show one open palm to the camera, fingers spread, in good light, and run the scan again. (' + analysed + ' frames scanned, ' + coded + ' produced a readable palm code.' + (lastHint ? ' Last guidance shown: ' + lastHint : '') + ')' }); }
       return Match.verifyRois(person.palmProfile, liveRois).then(function (res) {
         return impostorMaxFor(liveRois).then(function (impMax) {
           var out = res;
@@ -977,7 +974,7 @@
               if (r.pose) { poses.push(r.pose); if (poses.length > 6) poses.shift(); }
               var sane = !!(r.code && B.palmprintCodeSane(r.code));
               if (sane) coded++;
-              if (sane && !locked) { locked = true; Snd.tick(); setRing($('termRing'), 'locked'); }
+              if (sane && !locked) { locked = true; Snd.tick(); }
               if (win) return;
               if (sane && r.roi) {
                 // v33: the frame's ROI is the probe — the matcher
@@ -1025,10 +1022,12 @@
         if (statusEl) statusEl.textContent = 'No hand was seen by this camera - switching to the other camera and trying once more.';
         return swapCamera().then(function () { return loop(); }, function () { return loop(); });
       }
-      if (statusEl) statusEl.textContent = lastHint || 'Show & Pay scanning — hold the open palm inside the ring, like tapping a card.';
+      if (statusEl) {
+        var seenHandNow = frames.some(function (x) { return typeof x.openness === 'number'; });
+        statusEl.textContent = lastHint || (seenHandNow ? 'Hand detected — hold steady.' : 'Show & Pay scanning — show an open hand to the camera.');
+      }
       return burst().then(function () { return waitMs(300); }).then(loop);
     }
-    setRing($('termRing'), 'on');
     return loop();
   }
 
@@ -1177,7 +1176,7 @@
   function resetPalmEnroll() { /* clip enrolment keeps no partial state */ }
   function startPalmCamera() {
     Cam.start($('palmVideo'), camFacing.enrollPalm, 'enrollPalm').then(function () {
-      $('palmStatus').textContent = 'Camera on - tap Auto-Capture Palm, hold the phone about 30 cm away so your whole hand fits inside the ring. The app watches live and captures by itself: follow the movement prompts as they appear (the sequence is picked at random each time), and it finishes the moment the movement is complete.';
+      $('palmStatus').textContent = 'Camera on - tap Auto-Capture Palm, then show your open hand to the camera, anywhere in the frame. The app watches live and captures by itself: follow the movement prompts as they appear (the sequence is picked at random each time), and it finishes the moment the movement is complete.';
       $('palmCapture').disabled = false;
     }).catch(function (e) { $('palmMsg').innerHTML = cameraErrorHTML(e); $('palmStatus').textContent = 'Camera blocked.'; });
   }
@@ -1210,7 +1209,7 @@
       }
       var codes = B.selectPalmprintProfileCodes(res.results);
       if (!codes) {
-        $('palmMsg').innerHTML = '<div class="error">No usable open palm with readable print detail was captured. Nothing was stored. Hold one open palm still, fingers spread, inside the ring in good light, and try again.</div>';
+        $('palmMsg').innerHTML = '<div class="error">No usable open palm with readable print detail was captured. Nothing was stored. Show one open palm to the camera, fingers spread, in good light, and try again.</div>';
         $('palmCapture').disabled = false;
         return;
       }
@@ -1290,7 +1289,7 @@
       }
       Cam.start($('termVideo'), camFacing[termFacingKey()], termFacingKey()).then(function () {
         $('termScan').disabled = false;
-        status.textContent = 'Camera on - tap SCAN and the customer holds an open palm toward the camera, inside the ring, about 30 cm away - like tapping a card. No movement routine at checkout: Show & Pay reads the palm as it streams.';
+        status.textContent = 'Camera on - tap SCAN and the customer shows an open hand to the camera, anywhere in the frame - like tapping a card. No movement routine at checkout: Show & Pay reads the palm as it streams.';
       }).catch(function (e) { $('termResult').innerHTML = cameraErrorHTML(e); status.textContent = 'Camera blocked.'; });
     });
   }
