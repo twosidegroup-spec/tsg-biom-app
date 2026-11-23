@@ -35,7 +35,7 @@
      is skipped, nothing is deleted, and the next launch retries —
      the app boots on the un-migrated data either way, because its
      readers fail closed per record. */
-  var APP_DATA_VERSION = 'v43';
+  var APP_DATA_VERSION = 'v44';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -468,8 +468,17 @@
      unchanged. Only the detector's input shrinks. The scratch
      canvas follows the same discipline as the verify loop's reused
      capture canvas: it is redrawn only inside a landmarks() call,
-     and every pipeline awaits a call's results before the next. */
-  var ANALYSIS_MAX = 480;
+     and every pipeline awaits a call's results before the next.
+     v44: the cap drops 480 -> 320 on a fixture measurement, not a
+     guess (2026-11-23): landmarks quantised to the analysis grid
+     (the rig-visible part of reading them from the smaller copy),
+     warped from the full frame and scored under the full rule —
+     genuine flat 0.499-0.511 at 320 vs 0.504-0.518 at 480, the
+     tilt band (av 0.85) 0.518-0.522 vs 0.500-0.504, tilt av 0.90
+     0.345-0.351 vs 0.338-0.341, impostor max 0.146 vs 0.142. The
+     genuine band holds with the same margin; the saving is the
+     smaller graph input handed over on every analysed frame. */
+  var ANALYSIS_MAX = 320;
   var analysisScratch = null;
   function analysisImage(image) {
     var w = image && image.width, h = image && image.height;
@@ -774,8 +783,17 @@
     verifyRois: function (profile, liveRois, opts) {
       this.init();
       var fast = !!(opts && opts.fast);
+      // v44: opts.geoFloor carries the measured band gate into the
+      // fast path (streaming per-frame calls only — the exact path
+      // never gates), and the matcher's stage-timing sink rides
+      // back on the result as r.timing for the scan diagnostics.
+      var geoFloor = (opts && typeof opts.geoFloor === 'number') ? opts.geoFloor : null;
       var mainThread = function () {
-        return fast ? B.verifyPalmprintRoisFast(profile, liveRois) : B.verifyPalmprintRois(profile, liveRois);
+        if (!fast) return B.verifyPalmprintRois(profile, liveRois);
+        var sink = {};
+        var r = B.verifyPalmprintRoisFast(profile, liveRois, { geoFloor: geoFloor, timing: sink });
+        if (r) r.timing = sink;
+        return r;
       };
       if (!this.w) return Promise.resolve(mainThread());
       var self = this;
@@ -788,8 +806,13 @@
           resolve(r || mainThread());
         };
         var to = setTimeout(function () { delete self.pending[id]; finishWith(null); }, 20000);
-        self.pending[id] = function (msg) { clearTimeout(to); finishWith(msg && msg.result); };
-        try { self.w.postMessage({ id: id, profile: profile, liveRois: liveRois, fast: fast }); }
+        self.pending[id] = function (msg) {
+          clearTimeout(to);
+          var r = msg && msg.result;
+          if (r && msg.timing) r.timing = msg.timing;
+          finishWith(r);
+        };
+        try { self.w.postMessage({ id: id, profile: profile, liveRois: liveRois, fast: fast, geoFloor: geoFloor }); }
         catch (e) { clearTimeout(to); delete self.pending[id]; finishWith(null); }
       });
     },
@@ -799,15 +822,20 @@
        full re-encode per profile. Each result is the exact
        verifyPalmprintProfile result for that profile. Used by the
        impostor-max diagnostic in streamVerifyPalm. */
-    verifyRoisMulti: function (profiles, liveRois) {
+    verifyRoisMulti: function (profiles, liveRois, opts) {
       this.init();
+      // v44: one shared composition (B.verifyPalmprintProfilesRois)
+      // on both sides of the worker boundary. opts.geoFloor gates
+      // the geometric encodes per ROI for the streaming identify
+      // calls; callers that omit it (the impostor-max diagnostic,
+      // the end-of-scan exact judgement) get the full v43 set.
+      // The stage-timing sink rides back as results.timing.
+      var geoFloor = (opts && typeof opts.geoFloor === 'number') ? opts.geoFloor : null;
       var mainThread = function () {
-        var codes = [];
-        (liveRois || []).forEach(function (roi) {
-          B.palmprintProbeCodes(roi).forEach(function (c) { codes.push(c); });
-          B.palmprintProbeCodesGeo(roi).forEach(function (c) { codes.push(c); });
-        });
-        return profiles.map(function (p) { return B.verifyPalmprintProfile(p, codes); });
+        var sink = {};
+        var rs = B.verifyPalmprintProfilesRois(profiles, liveRois, { geoFloor: geoFloor, timing: sink });
+        rs.timing = sink;
+        return rs;
       };
       if (!this.w) return Promise.resolve(mainThread());
       var self = this;
@@ -820,8 +848,13 @@
           resolve(rs || mainThread());
         };
         var to = setTimeout(function () { delete self.pending[id]; finishWith(null); }, 20000);
-        self.pending[id] = function (msg) { clearTimeout(to); finishWith(msg && msg.results); };
-        try { self.w.postMessage({ id: id, profiles: profiles, liveRois: liveRois }); }
+        self.pending[id] = function (msg) {
+          clearTimeout(to);
+          var rs = msg && msg.results;
+          if (rs && msg.timing) rs.timing = msg.timing;
+          finishWith(rs);
+        };
+        try { self.w.postMessage({ id: id, profiles: profiles, liveRois: liveRois, geoFloor: geoFloor }); }
         catch (e) { clearTimeout(to); delete self.pending[id]; finishWith(null); }
       });
     }
@@ -879,8 +912,14 @@
      (aligned + mirror), texture/sharpness, and the palm pose used by
      passive liveness. Same frame-result shape the clip pipeline used. */
   function analysePalmFrame(frame) {
+    // v44: per-stage timing rides the frame result (lmMs = landmark
+    // inference, encMs = ROI warp + base EDCC encodes) so the scan
+    // diagnostics can report the phone's own per-frame stage costs
+    // instead of one opaque total.
+    var tLm = performance.now();
     return PalmProc.landmarks(frame).then(function (lm) {
-      if (!lm) return { openness: null, descriptor: null, code: null, codeM: null, roi: null, sharpness: 0, texture: null, spread: null, tilt: null, pose: null, framing: null, lm: null };
+      var lmMs = performance.now() - tLm;
+      if (!lm) return { openness: null, descriptor: null, code: null, codeM: null, roi: null, sharpness: 0, texture: null, spread: null, tilt: null, pose: null, framing: null, lm: null, lmMs: lmMs, encMs: 0 };
       var openness = B.palmOpenness(lm);
       var descriptor = B.palmDescriptorFromLandmarks(lm);
       var meas = descriptor ? palmFrameMeasures(frame, frame.width, frame.height, lm) : { texture: null, sharpness: 0 };
@@ -895,8 +934,10 @@
       // v24: codes are PRODUCED from the live bar (1.55) so a natural
       // checkout palm yields candidates; enrolment still BANKS only
       // fully-open frames (its selection gate stays at PALM_OPEN_MIN).
+      var tEnc = performance.now();
       var codes = (typeof openness === 'number' && openness >= B.PALM_LIVE_OPEN_MIN) ? palmCodesFromFrame(frame, lm) : null;
-      return { openness: openness, descriptor: descriptor, code: codes ? codes.code : null, codeM: codes ? codes.codeM : null, roi: codes ? codes.roi : null, sharpness: meas.sharpness, texture: meas.texture, spread: B.palmSpread(lm), tilt: B.palmTilt(lm), pose: B.palmFramePose(lm), framing: B.palmFramingHint(lm), lm: lm };
+      var encMs = performance.now() - tEnc;
+      return { openness: openness, descriptor: descriptor, code: codes ? codes.code : null, codeM: codes ? codes.codeM : null, roi: codes ? codes.roi : null, sharpness: meas.sharpness, texture: meas.texture, spread: B.palmSpread(lm), tilt: B.palmTilt(lm), pose: B.palmFramePose(lm), framing: B.palmFramingHint(lm), lm: lm, lmMs: lmMs, encMs: encMs };
     });
   }
 
@@ -1179,7 +1220,23 @@
     // v43: the latest frame's quality signals, feeding the live
     // guidance pill (B.palmGuidance) and the caller's scan session.
     var lastOpen = null, lastSampleB = null, lastGlare = null, lastSharp = null;
-    var MAXF = 24, deadline = t0 + 90000;
+    // v44: the no-match grind is bounded by the wall clock, not
+    // only by the frame count — MAXF stays as the backstop (it
+    // binds first on fast devices), the budget binds first on a
+    // slow phone. Basis at B.SCAN_TIME_BUDGET_MS.
+    var MAXF = 24, deadline = t0 + B.SCAN_TIME_BUDGET_MS;
+    // v44: per-stage timing accumulators for the result-panel
+    // diagnostics — the phone's own numbers, measured on-device:
+    // landmark inference + ROI/base encode from analysePalmFrame,
+    // matching (base + geometric phases) from the matcher's sink.
+    var stLm = 0, stEnc = 0, stMatch = 0, stGeo = 0, geoFrames = 0;
+    function diagStr() {
+      var wall = Date.now() - t0;
+      var n = Math.max(1, analysed);
+      var s = 'Scan timing: ' + analysed + ' frames analysed in ' + wall + ' ms (' + (analysed / Math.max(1, wall) * 1000).toFixed(1) + ' frames/s); per frame — landmarks ' + Math.round(stLm / n) + ' ms, palm code ' + Math.round(stEnc / n) + ' ms, matching ' + Math.round(stMatch / n) + ' ms';
+      if (geoFrames) s += ' (geometric variants ' + Math.round(stGeo) + ' ms in total, on ' + geoFrames + ' of ' + analysed + ' frames)';
+      return s + '.';
+    }
     // v37 continuous pipeline state: one reused capture canvas (each
     // frame is fully analysed before the next grab), the video-clock
     // time of the last grab (pacing), and the previous frame's match
@@ -1224,16 +1281,16 @@
     function verifiedOut() {
       return impostorMaxFor(win.rois).then(function (impMax) {
         fieldRec(win.res.similarity, impMax, 'pass', 'verified', tracker.state().lightTag);
-        var measured = 'Palmprint similarity ' + win.res.similarity.toFixed(3) + ' (threshold ' + win.res.threshold + ', score-level max: best pair of the winning frame re-encoded at 25 image-level shifts plus the v41 geometric variants against ' + person.palmProfile.codes.length + ' individual enrolled print codes), passive liveness passed (' + (win.fast ? 'natural micro-shift between the two matched frames; fast win honoured on the matched pair, both frames spoof-clean' : 'natural micro-shift across rapid frames') + '), Show & Pay streaming scan with two-frame early exit';
+        var measured = 'Palmprint similarity ' + win.res.similarity.toFixed(3) + ' (threshold ' + win.res.threshold + ', score-level max: best pair of the winning frame re-encoded at 25 image-level shifts plus the v41 geometric variants against ' + person.palmProfile.codes.length + ' individual enrolled print codes), passive liveness passed (' + (win.fast ? 'natural micro-shift between the two matched frames; fast win honoured on the matched pair, both frames spoof-clean' : 'natural micro-shift across rapid frames') + '), Show & Pay streaming scan with two-frame early exit. ' + diagStr();
         return finish({ r: win.res, measured: measured, latencyMs: Date.now() - t0 });
       });
     }
-    function finalOut() {
+    function finalOut(timedOut) {
       var sp = tracker.state();
       if (sp.spoof) return spoofOut(sp);
       var lv = B.passiveLivenessCheck(poses);
       var liveRois = B.selectPalmprintLiveRois(frames);
-      if (!liveRois) { fieldRec(null, null, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag); return finish({ fail: 'No usable open palm with readable print detail found in the scan. Nothing was verified. Show one open palm to the camera, fingers spread, in good light, and run the scan again. (' + analysed + ' frames scanned, ' + coded + ' produced a readable palm code.' + (lastHint ? ' Last guidance shown: ' + lastHint : '') + ')' }); }
+      if (!liveRois) { fieldRec(null, null, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag); return finish({ fail: 'No usable open palm with readable print detail found in the scan. Nothing was verified. Show one open palm to the camera, fingers spread, in good light, and run the scan again. (' + analysed + ' frames scanned, ' + coded + ' produced a readable palm code.' + (lastHint ? ' Last guidance shown: ' + lastHint : '') + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr() + ')' }); }
       return Match.verifyRois(person.palmProfile, liveRois).then(function (res) {
         return impostorMaxFor(liveRois).then(function (impMax) {
           var out = res;
@@ -1245,7 +1302,7 @@
             out = { ok: true, verified: false, similarity: res.similarity, threshold: res.threshold, reason: 'Matched on a single frame only - Show & Pay requires two matching frames close together. Hold the palm steady a moment longer and scan again.' };
           }
           fieldRec(res ? res.similarity : null, impMax, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag);
-          var measured = 'Palmprint similarity ' + (res && typeof res.similarity === 'number' ? res.similarity.toFixed(3) : 'n/a') + ' (threshold ' + B.PALMPRINT_THRESHOLD + ', score-level max: ' + liveRois.length + ' live frames each re-encoded at 25 image-level shifts plus the v41 geometric variants against ' + person.palmProfile.codes.length + ' individual enrolled print codes), passive liveness ' + lv.verdict + ', Show & Pay streaming scan. Diagnostics: ' + analysed + ' frames scanned, ' + coded + ' with a readable code, best single-frame score ' + (matchState.best !== null ? matchState.best.toFixed(3) : 'n/a') + '.';
+          var measured = 'Palmprint similarity ' + (res && typeof res.similarity === 'number' ? res.similarity.toFixed(3) : 'n/a') + ' (threshold ' + B.PALMPRINT_THRESHOLD + ', score-level max: ' + liveRois.length + ' live frames each re-encoded at 25 image-level shifts plus the v41 geometric variants against ' + person.palmProfile.codes.length + ' individual enrolled print codes), passive liveness ' + lv.verdict + ', Show & Pay streaming scan. Diagnostics: ' + analysed + ' frames scanned, ' + coded + ' with a readable code, best single-frame score ' + (matchState.best !== null ? matchState.best.toFixed(3) : 'n/a') + '.' + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr();
           return finish({ r: out, measured: measured, latencyMs: Date.now() - t0 });
         });
       });
@@ -1262,6 +1319,13 @@
        reads, and B.streamFastWinCheck decides whether the win may
        be honoured on that pair at two frames. */
     function applyMatch(res, roi, frameIdx) {
+      // v44: fold this frame's matcher stage costs into the scan
+      // diagnostics (the sink rides on the result as r.timing).
+      if (res && res.timing) {
+        stMatch += (res.timing.baseMs || 0) + (res.timing.geoMs || 0) + (res.timing.matchMs || 0);
+        stGeo += res.timing.geoMs || 0;
+        if (res.timing.geoEncodes > 0) geoFrames++;
+      }
       var score = res && typeof res.similarity === 'number' ? res.similarity : null;
       matchState = B.streamMatchUpdate(matchState, score);
       var entry = {
@@ -1309,6 +1373,7 @@
         lastGrabT = video.currentTime;
         return analysePalmFrame(frame).then(function (r) {
           analysed++;
+          stLm += r.lmMs || 0; stEnc += r.encMs || 0;
           // Every analysed frame feeds the spoof tracker, carrying
           // its landmarks so the v36 grid gate reads the palm region
           // only — same evidence, same aggregation as the bursts.
@@ -1346,7 +1411,12 @@
               // with a threshold short-circuit. v37: the call now
               // overlaps the NEXT frame's analysis instead of
               // blocking this frame's step.
-              prevMatch = { roi: r.roi, frameIdx: myIdx, promise: Match.verifyRois(person.palmProfile, [r.roi], { fast: true }) };
+              // v44: the per-frame call carries the geo band gate —
+              // frames whose base max lands below the measured
+              // rescue floor skip the geometric encodes; in-band
+              // frames are judged exactly as v43 judged them. The
+              // end-of-scan exact judgement (finalOut) never gates.
+              prevMatch = { roi: r.roi, frameIdx: myIdx, promise: Match.verifyRois(person.palmProfile, [r.roi], { fast: true, geoFloor: B.PALMPRINT_GEO_FLOOR }) };
             } else {
               applyMatch(null, null, myIdx);
             }
@@ -1405,7 +1475,7 @@
           Snd.buzz();
           return finish({ fail: 'Liveness could not be confirmed: the palm matched, but no natural micro-movement was observed. Nothing was verified. Present the real hand, held live — do not use a photo or a recording.' });
         }
-        return finalOut();
+        return finalOut(Date.now() > deadline);
       }
       // v37: the burst-era fallback (six bursts without a single
       // hand reading) is eighteen analysed frames in continuous
@@ -1460,7 +1530,17 @@
     // v43: the latest frame's quality signals, feeding the live
     // guidance pill (B.palmGuidance) and the caller's scan session.
     var lastOpen = null, lastSampleB = null, lastGlare = null, lastSharp = null;
-    var MAXF = 24, deadline = t0 + 90000;
+    // v44: same wall-clock budget as the verify stream (MAXF is
+    // the backstop), and the same per-stage diagnostics sinks.
+    var MAXF = 24, deadline = t0 + B.SCAN_TIME_BUDGET_MS;
+    var stLm = 0, stEnc = 0, stMatch = 0, stGeo = 0, geoFrames = 0;
+    function diagStr() {
+      var wall = Date.now() - t0;
+      var n = Math.max(1, analysed);
+      var s = 'Scan timing: ' + analysed + ' frames analysed in ' + wall + ' ms (' + (analysed / Math.max(1, wall) * 1000).toFixed(1) + ' frames/s); per frame — landmarks ' + Math.round(stLm / n) + ' ms, palm code ' + Math.round(stEnc / n) + ' ms, matching ' + Math.round(stMatch / n) + ' ms';
+      if (geoFrames) s += ' (geometric variants ' + Math.round(stGeo) + ' ms in total, on ' + geoFrames + ' of ' + analysed + ' frames)';
+      return s + '.';
+    }
     var frameCanvas = null;
     var lastGrabT = -1;
     var prevMatch = null;
@@ -1477,16 +1557,16 @@
         : 'Liveness check failed: the view changed too abruptly for one held hand. Nothing was verified. Hold one open palm steady in front of the camera.' };
     }
     function identifiedOut() {
-      var measured = 'Palmprint similarity ' + win.res.similarity.toFixed(3) + ' (threshold ' + win.res.threshold + ', score-level max: best pair of the winning frame re-encoded at 25 image-level shifts plus the v41 geometric variants against ' + win.person.palmProfile.codes.length + ' individual enrolled print codes), passive liveness passed (' + (win.fast ? 'natural micro-shift between the two matched frames; fast win honoured on the matched pair, both frames spoof-clean' : 'natural micro-shift across rapid frames') + '), wallet identification scan (1:N over ' + candidates.length + ' enrolled palms)';
+      var measured = 'Palmprint similarity ' + win.res.similarity.toFixed(3) + ' (threshold ' + win.res.threshold + ', score-level max: best pair of the winning frame re-encoded at 25 image-level shifts plus the v41 geometric variants against ' + win.person.palmProfile.codes.length + ' individual enrolled print codes), passive liveness passed (' + (win.fast ? 'natural micro-shift between the two matched frames; fast win honoured on the matched pair, both frames spoof-clean' : 'natural micro-shift across rapid frames') + '), wallet identification scan (1:N over ' + candidates.length + ' enrolled palms). ' + diagStr();
       return { person: win.person, r: win.res, measured: measured, latencyMs: Date.now() - t0 };
     }
-    function finalOut() {
+    function finalOut(timedOut) {
       var sp = tracker.state();
       if (sp.spoof) return spoofOut(sp);
       var lv = B.passiveLivenessCheck(poses);
       var liveRois = B.selectPalmprintLiveRois(frames);
       if (!liveRois) {
-        return { fail: 'No usable open palm with readable print detail found in the scan. Nothing was verified. Show one open palm to the camera, fingers spread, in good light, and run the scan again. (' + analysed + ' frames scanned, ' + coded + ' produced a readable palm code.' + (lastHint ? ' Last guidance shown: ' + lastHint : '') + ')' };
+        return { fail: 'No usable open palm with readable print detail found in the scan. Nothing was verified. Show one open palm to the camera, fingers spread, in good light, and run the scan again. (' + analysed + ' frames scanned, ' + coded + ' produced a readable palm code.' + (lastHint ? ' Last guidance shown: ' + lastHint : '') + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr() + ')' };
       }
       return Match.verifyRoisMulti(candidates.map(function (p) { return p.palmProfile; }), liveRois).then(function (results) {
         var best = null, bestPerson = null;
@@ -1498,7 +1578,7 @@
           // identification — the rolling window must complete.
           return { fail: 'That palm matched ' + bestPerson.name + ' on a single frame only — identification requires two matching frames close together. Hold the palm steady a moment longer and scan again. Nothing was opened.' };
         }
-        return { fail: 'This palm did not match any registered palm on this device, so nothing was opened and no one was identified. (' + analysed + ' frames scanned, ' + coded + ' with a readable code, best score ' + (best && typeof best.similarity === 'number' ? best.similarity.toFixed(3) : 'n/a') + ' against any enrolled palm.)' };
+        return { fail: 'This palm did not match any registered palm on this device, so nothing was opened and no one was identified. (' + analysed + ' frames scanned, ' + coded + ' with a readable code, best score ' + (best && typeof best.similarity === 'number' ? best.similarity.toFixed(3) : 'n/a') + ' against any enrolled palm.' + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr() + ')' };
       });
     }
     function pushApplied(p, score, frameIdx) {
@@ -1511,6 +1591,13 @@
       return entry;
     }
     function applyMatch(results, roi, frameIdx) {
+      // v44: fold the composition's stage costs into the scan
+      // diagnostics (the sink rides on the results array).
+      if (results && results.timing) {
+        stMatch += (results.timing.baseMs || 0) + (results.timing.geoMs || 0) + (results.timing.matchMs || 0);
+        stGeo += results.timing.geoMs || 0;
+        if (results.timing.geoEncodes > 0) geoFrames++;
+      }
       candidates.forEach(function (p, i) {
         var res = results ? results[i] : null;
         var score = res && typeof res.similarity === 'number' ? res.similarity : null;
@@ -1544,6 +1631,7 @@
         lastGrabT = video.currentTime;
         return analysePalmFrame(frame).then(function (r) {
           analysed++;
+          stLm += r.lmMs || 0; stEnc += r.encMs || 0;
           var sample = tracker.add(frame, r.lm);
           frames.push(r);
           frameSpoof.push(sample ? !!sample.spoof : null);
@@ -1569,7 +1657,10 @@
             : Promise.resolve();
           return drained.then(function () {
             if (sane && r.roi) {
-              prevMatch = { roi: r.roi, frameIdx: myIdx, promise: Match.verifyRoisMulti(candidates.map(function (p) { return p.palmProfile; }), [r.roi]) };
+              // v44: the per-frame identify call carries the geo
+              // band gate, exactly as the 1:1 stream does; the
+              // end-of-scan composition in finalOut never gates.
+              prevMatch = { roi: r.roi, frameIdx: myIdx, promise: Match.verifyRoisMulti(candidates.map(function (p) { return p.palmProfile; }), [r.roi], { geoFloor: B.PALMPRINT_GEO_FLOOR }) };
             } else {
               applyMatch(null, null, myIdx);
             }
@@ -1598,7 +1689,7 @@
           Snd.buzz();
           return { fail: 'Liveness could not be confirmed: the palm matched, but no natural micro-movement was observed. Nothing was verified. Present the real hand, held live — do not use a photo or a recording.' };
         }
-        return finalOut();
+        return finalOut(Date.now() > deadline);
       }
       if (!swapped && swapCamera && analysed >= 18 && frames.every(function (x) { return typeof x.openness !== 'number'; })) {
         swapped = true;

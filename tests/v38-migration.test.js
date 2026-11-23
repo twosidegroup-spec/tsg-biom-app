@@ -44,7 +44,16 @@
    array on v43 saves), but no stored field changes shape, so a
    v42 store — wallet balance, statement and linked accounts
    included — opens under v43 byte-identical. The v43 section
-   below proves exactly that on a wallet-carrying store. */
+   below proves exactly that on a wallet-carrying store.
+
+   Extended for v44 (2026-11-23): the chain gains 'v44' — an
+   ADOPTION step. v44 changes only how long scans run and what
+   they report (the wall-clock scan budget, the geometric-variant
+   band gate, per-stage scan diagnostics, the 320 px analysis
+   copy); no stored field changes shape, so a v43 store — wallet
+   balance, statement and linked accounts included — opens under
+   v44 byte-identical. The v44 section below proves exactly that
+   on the same wallet-carrying store. */
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -158,8 +167,8 @@ check('MIGRATE a store with a missing logs array keeps the people', Array.isArra
    its migration step is an adoption like v38's. A store written by
    v38 (and one written by v37, through both steps) must open under
    v39 with the person, codes and points intact and still verify. */
-check('CHAIN v43 is the newest link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v43' &&
-  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40,v41,v42,v43', B.BIOM_DATA_VERSIONS.join(','));
+check('CHAIN v44 is the newest link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v44' &&
+  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40,v41,v42,v43,v44', B.BIOM_DATA_VERSIONS.join(','));
 const mig39 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v38', 'v39');
 check('MIGRATE v38->v39 runs the v39 step', mig39.appliedSteps.indexOf('v39') !== -1, mig39.appliedSteps.join(','));
 check('MIGRATE v38->v39 is an adoption: no store rewritten', mig39.changed === false && mig39.changedStores.length === 0,
@@ -299,14 +308,40 @@ const migAgain43 = B.migrateBiomData(mig43.snapshot, 'v43', 'v43');
 check('MIGRATE is idempotent at v43', migAgain43.appliedSteps.length === 0 && migAgain43.changed === false &&
   migAgain43.snapshot.people[0].wallet.balance === 450 && migAgain43.snapshot.people[0].wallet.statement.length === 1);
 
+/* ---------- v44: the adoption — a wallet-carrying store survives --
+   v44 changes scan duration and reporting, never stored shapes,
+   so its step is the identity, like v43's: the wallet-carrying
+   v43 store must open under v44 with the whole person record —
+   enrolment codes, wallet balance, statement, linked account —
+   byte-identical, and the migrated palm must still verify. */
+const mig44 = B.migrateBiomData(JSON.parse(JSON.stringify(v43WalletStore)), 'v43', 'v44');
+check('MIGRATE v43->v44 runs the v44 step', mig44.appliedSteps.indexOf('v44') !== -1, mig44.appliedSteps.join(','));
+check('MIGRATE v43->v44 is an adoption: no store rewritten', mig44.changed === false && mig44.changedStores.length === 0,
+  'changedStores=' + JSON.stringify(mig44.changedStores));
+const mp44 = mig44.snapshot.people[0];
+check('WALLET v44 balance, statement and linked account byte-identical', JSON.stringify(mp44) === v43PersonBefore,
+  mp44 && 'balance=' + mp44.wallet.balance + ' stmt=' + mp44.wallet.statement.length + ' accts=' + mp44.wallet.linkedAccounts.length);
+check('SURVIVE v44 palm codes byte-identical', !!mp44 && JSON.stringify(mp44.palmProfile.codes) === JSON.stringify(enrolledCodes));
+const migChain44 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v37', 'v44');
+check('MIGRATE v37->v44 runs all seven steps in order', migChain44.appliedSteps.join(',') === 'v38,v39,v40,v41,v42,v43,v44', migChain44.appliedSteps.join(','));
+check('MIGRATE v37->v44 keeps the person, points and gains the wallet', migChain44.snapshot.people.length === 1 &&
+  migChain44.snapshot.people[0].loyaltyPoints === 137 && migChain44.snapshot.people[0].wallet.balance === 0);
+const rSame44 = B.verifyPalmprintProfile(mp44.palmProfile, probeSame);
+check('VERIFY the v44-migrated profile accepts the same palm', rSame44.verified === true, 'sim=' + (rSame44.similarity && rSame44.similarity.toFixed(3)));
+const rOther44 = B.verifyPalmprintProfile(mp44.palmProfile, probeOther);
+check('VERIFY the v44-migrated profile still rejects another palm', rOther44.verified === false, 'sim=' + (rOther44.similarity && rOther44.similarity.toFixed(3)));
+const migAgain44 = B.migrateBiomData(mig44.snapshot, 'v44', 'v44');
+check('MIGRATE is idempotent at v44', migAgain44.appliedSteps.length === 0 && migAgain44.changed === false &&
+  migAgain44.snapshot.people[0].wallet.balance === 450 && migAgain44.snapshot.people[0].wallet.statement.length === 1);
+
 /* ---------- the shipped app source carries no wipe ----------------- */
 const appSrc = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
-check('APP declares the current data version (v43)', appSrc.indexOf("APP_DATA_VERSION = 'v43'") !== -1);
+check('APP declares the current data version (v44)', appSrc.indexOf("APP_DATA_VERSION = 'v44'") !== -1);
 check('APP startup runs the migration', appSrc.indexOf('migrateBiomData') !== -1 && appSrc.indexOf('migrateDbStores') !== -1);
 check('APP contains no database deletion (the retired wipe)', appSrc.indexOf('deleteDatabase') === -1);
 check('APP contains no store-key removal (the retired wipe)', !/removeItem\(\s*'tsgbiom_/.test(appSrc));
 const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
-check('APP shell is v43', swSrc.indexOf('tsg-biom-shell-v43') !== -1);
+check('APP shell is v44', swSrc.indexOf('tsg-biom-shell-v44') !== -1);
 
 console.log(fail === 0 ? 'ALL MIGRATION TESTS PASSED (' + pass + ')' : fail + ' FAILURES, ' + pass + ' passed');
 process.exit(fail === 0 ? 0 : 1);

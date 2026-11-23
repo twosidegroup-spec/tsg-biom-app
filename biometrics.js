@@ -1510,6 +1510,30 @@
     return out;
   }
 
+  /* v44 PROMISING-BAND FLOOR for the geometric variants (the
+     Chairman's phone verdict on v43, 2026-11-23 17:42: "verify and
+     payment scan takes too timeeeee" — on his device a full-window
+     run measured 24 frames in 11,752 ms, ~490 ms per analysed
+     frame, and every non-matching frame was paying all 18 geo
+     encodes plus their scoring before the scan moved on).
+     MEASUREMENT (2026-11-23, the v41 fixture families, per single
+     frame against a flat enrolment): geo-RESCUABLE genuine frames
+     — base below 0.32, full rule at/above 0.32 — scored base
+     0.158..0.314 (n=40; the lowest was a tilt av=0.70 frame at
+     0.158; his own failure band, tilt av=0.85, sat at 0.215-0.224).
+     Impostor frames scored base max 0.174 (n=80, median 0.120).
+     The distributions overlap, and that is safe here: skipping the
+     geo set can only LOWER a frame's score (a max over a subset of
+     the pairs), so the gate can never create an accept — the only
+     thing a floor can lose is a rescue, and no rescue has been
+     observed below a base of 0.158. The floor is set at 0.14:
+     0.018 under the lowest measured rescuable frame, above the
+     impostor median, so most junk frames skip the geo work while
+     every frame at/above the floor receives the identical full
+     v43 judgement (same variants, same max rule). The field test
+     remains the real-world judge of the rescue floor. */
+  var PALMPRINT_GEO_FLOOR = 0.14;
+
   /* --- Palm ROI extraction: landmarks locate, they do not identify ---
      Palm frame built in PIXEL space (landmark coords are per-axis
      normalised, so geometry must be computed after scaling). v20
@@ -1803,7 +1827,7 @@
      non-pass still reports the identical full max, and a pass
      still reports one true pair score. A scan the base set passes
      never pays for the geo encodes. */
-  function verifyPalmprintRoisFast(stored, liveRois) {
+  function verifyPalmprintRoisFast(stored, liveRois, opts) {
     var fail = function (reason, similarity) {
       return { ok: false, verified: false, similarity: similarity, threshold: PALMPRINT_THRESHOLD, reason: reason };
     };
@@ -1812,6 +1836,28 @@
     var best = null;
     var anyCode = false;
     var rois = liveRois || [];
+    /* v44 measured-work controls (opts is optional; absent opts
+       reproduce the v43 judgement exactly, pair for pair):
+       - opts.geoFloor (PALMPRINT_GEO_FLOOR): an ROI whose BASE-rule
+         max lands below the floor skips its geometric variants.
+         Skipping can only lower that ROI's score (a max over fewer
+         pairs), so it can never create an accept; the floor sits
+         below every measured geo-rescuable base score, so it does
+         not remove a rescue either (the measurement is recorded at
+         PALMPRINT_GEO_FLOOR). An ROI inside the band — and any ROI
+         whose base produced no score at all — receives the IDENTICAL
+         full v43 judgement: same variants, same max rule.
+       - opts.timing: a caller-owned sink filled with per-phase ms
+         and encode counts for the scan diagnostics (v44 item 1).
+         It never influences the verdict. */
+    var geoFloor = opts && typeof opts.geoFloor === 'number' ? opts.geoFloor : null;
+    var tm = opts && opts.timing ? opts.timing : null;
+    if (tm) { tm.baseMs = tm.baseMs || 0; tm.geoMs = tm.geoMs || 0; tm.baseEncodes = tm.baseEncodes || 0; tm.geoEncodes = tm.geoEncodes || 0; }
+    var nowMs = (typeof performance !== 'undefined' && performance && typeof performance.now === 'function')
+      ? function () { return performance.now(); } : function () { return Date.now(); };
+    // The current ROI's base-rule max, tracked while its base
+    // expansion runs (the band gate reads it; nothing else does).
+    var curRoiBase = null, inBase = false;
     // One probe code, scored against the profile: updates the
     // running max and reports whether the threshold is reached.
     // Shared by the base shift expansion and the v41 geometric
@@ -1824,6 +1870,7 @@
         var s = palmprintSimilaritySeeded(profile.codes[ci], cb, best);
         if (s === null || !isFinite(s)) return null;
         if (best === null || s > best) best = s;
+        if (inBase && (curRoiBase === null || s > curRoiBase)) curRoiBase = s;
         if (best >= PALMPRINT_THRESHOLD) return true;
       }
       return false;
@@ -1833,38 +1880,104 @@
       if (!roi || roi.length !== PALMPRINT_ROI_SIZE * PALMPRINT_ROI_SIZE) continue;
       var flipped = flipGrayHorizontal(roi, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
       var imgs = flipped ? [roi, flipped] : [roi];
-      for (var si = 0; si < PALMPRINT_SHIFT_ORDER.length; si++) {
+      curRoiBase = null; inBase = true;
+      var tBase = tm ? nowMs() : 0;
+      var passed = false;
+      for (var si = 0; si < PALMPRINT_SHIFT_ORDER.length && !passed; si++) {
         var dx = PALMPRINT_SHIFT_ORDER[si][0], dy = PALMPRINT_SHIFT_ORDER[si][1];
         for (var oi = 0; oi < imgs.length; oi++) {
           var src = (dx === 0 && dy === 0) ? imgs[oi] : shiftGrayClamped(imgs[oi], PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE, dx, dy);
           if (!src) continue;
           var code = palmprintEncode(src, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
+          if (tm) tm.baseEncodes++;
           if (!code || !palmprintCodeSane(code)) continue;
           var hit = scoreProbe(code);
-          if (hit === null) return fail('Palmprint comparison failed.', null);
-          if (hit) return palmprintMatchResult(best);
+          if (hit === null) { if (tm) tm.baseMs += nowMs() - tBase; return fail('Palmprint comparison failed.', null); }
+          if (hit) { passed = true; break; }
         }
       }
+      if (tm) tm.baseMs += nowMs() - tBase;
+      inBase = false;
+      if (passed) return palmprintMatchResult(best);
       // v41: geometric variants for THIS roi, only after its base
       // expansion — a scan the base set already passes pays nothing
       // for them, and a scan nothing passes has enumerated exactly
       // the exact path's pair set (base + geo), so a non-pass score
       // stays the identical full max.
-      for (var gi = 0; gi < PALMPRINT_GEO_VARIANTS.length; gi++) {
-        var gv = PALMPRINT_GEO_VARIANTS[gi];
-        for (var go = 0; go < imgs.length; go++) {
-          var scaled = scaleGrayCentre(imgs[go], PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE, gv.zx, gv.zy);
-          if (!scaled) continue;
-          var gcode = palmprintEncode(scaled, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
-          if (!gcode || !palmprintCodeSane(gcode)) continue;
-          var ghit = scoreProbe(gcode);
-          if (ghit === null) return fail('Palmprint comparison failed.', null);
-          if (ghit) return palmprintMatchResult(best);
+      // v44: the band gate above may skip this loop for an ROI whose
+      // base max is measured below the rescue floor.
+      var geoAllowed = geoFloor === null || curRoiBase === null || curRoiBase >= geoFloor;
+      if (geoAllowed) {
+        var tGeo = tm ? nowMs() : 0;
+        var gpassed = false;
+        for (var gi = 0; gi < PALMPRINT_GEO_VARIANTS.length && !gpassed; gi++) {
+          var gv = PALMPRINT_GEO_VARIANTS[gi];
+          for (var go = 0; go < imgs.length; go++) {
+            var scaled = scaleGrayCentre(imgs[go], PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE, gv.zx, gv.zy);
+            if (!scaled) continue;
+            var gcode = palmprintEncode(scaled, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
+            if (tm) tm.geoEncodes++;
+            if (!gcode || !palmprintCodeSane(gcode)) continue;
+            var ghit = scoreProbe(gcode);
+            if (ghit === null) { if (tm) tm.geoMs += nowMs() - tGeo; return fail('Palmprint comparison failed.', null); }
+            if (ghit) { gpassed = true; break; }
+          }
         }
+        if (tm) tm.geoMs += nowMs() - tGeo;
+        if (gpassed) return palmprintMatchResult(best);
       }
     }
     if (!anyCode || best === null) return fail('No real open palm with readable print detail was detected in this scan.', null);
     return palmprintMatchResult(best);
+  }
+
+  /* v44: the multi-profile composition (wallet identification +
+     the impostor-max diagnostic), factored out of the worker
+     handler so the main thread, the worker and the tests run ONE
+     implementation. The probe codes are encoded once and scored
+     against every profile with verifyPalmprintProfile — each
+     result is exactly that profile's v33 result over the shared
+     code set. opts.geoFloor applies the same measured band gate
+     as verifyPalmprintRoisFast, per ROI: an ROI's geometric codes
+     are produced only when its base max over these profiles
+     reaches the floor (or its base produced no codes at all);
+     with no floor the composition is the v43 one, unchanged.
+     opts.timing fills the same diagnostics sink (here baseMs /
+     geoMs are the ENCODE times and matchMs the scoring time —
+     the composition encodes first and scores after). */
+  function verifyPalmprintProfilesRois(profiles, liveRois, opts) {
+    var geoFloor = opts && typeof opts.geoFloor === 'number' ? opts.geoFloor : null;
+    var tm = opts && opts.timing ? opts.timing : null;
+    if (tm) { tm.baseMs = tm.baseMs || 0; tm.geoMs = tm.geoMs || 0; tm.matchMs = tm.matchMs || 0; tm.baseEncodes = tm.baseEncodes || 0; tm.geoEncodes = tm.geoEncodes || 0; }
+    var nowMs = (typeof performance !== 'undefined' && performance && typeof performance.now === 'function')
+      ? function () { return performance.now(); } : function () { return Date.now(); };
+    var profs = profiles || [];
+    var codes = [];
+    (liveRois || []).forEach(function (roi) {
+      var tB = tm ? nowMs() : 0;
+      var bc = palmprintProbeCodes(roi);
+      if (tm) { tm.baseMs += nowMs() - tB; tm.baseEncodes += bc.length; }
+      bc.forEach(function (c) { codes.push(c); });
+      var runGeo = true;
+      if (geoFloor !== null && bc.length) {
+        var fm = null;
+        profs.forEach(function (p) {
+          var r = verifyPalmprintProfile(p, bc);
+          if (r && typeof r.similarity === 'number' && (fm === null || r.similarity > fm)) fm = r.similarity;
+        });
+        runGeo = fm === null || fm >= geoFloor;
+      }
+      if (runGeo) {
+        var tG = tm ? nowMs() : 0;
+        var gc = palmprintProbeCodesGeo(roi);
+        if (tm) { tm.geoMs += nowMs() - tG; tm.geoEncodes += gc.length; }
+        gc.forEach(function (c) { codes.push(c); });
+      }
+    });
+    var tM = tm ? nowMs() : 0;
+    var results = profs.map(function (p) { return verifyPalmprintProfile(p, codes); });
+    if (tm) tm.matchMs += nowMs() - tM;
+    return results;
   }
 
   /* Clip frames for the palmprint path carry { openness, code,
@@ -2435,6 +2548,23 @@
     return passiveLivenessEval(list.slice(-2));
   }
 
+  /* v44 WALL-CLOCK SCAN BUDGET (ms) for the streaming verify /
+     identify scans: the frame-count window (MAXF 24 in the app)
+     stays as the backstop, but on a slow phone 24 frames at the
+     measured ~490 ms per analysed frame (the Chairman's device,
+     2026-11-23) is an 11.7 s no-match grind — the deadline, not
+     the frame cap, is what a refused customer actually waits out.
+     BASIS: across 18 fixture genuine sequences (flat, tilt band,
+     span error, combined, tilted enrolment), every verdict landed
+     at analysed frame 3 — the minimum the evidence rules allow
+     (two matched frames inside the rolling window, at least three
+     spoof-examined frames). The budget allows 12 analysed frames
+     — 4x that count, absorbing hand-entry and blurred frames —
+     at his phone's measured rate: 12 x ~490 ms ~ 5.9 s, set to
+     6000 ms. Spoof and liveness rejections are untouched: they
+     fire the moment their evidence completes, deadline or not. */
+  var SCAN_TIME_BUDGET_MS = 6000;
+
   /* Streaming early-exit rule (v20): the checkout completes the
      millisecond TWO CONSECUTIVE analysed frames each score at or
      above the match threshold. A frame with no usable code (fist
@@ -2522,15 +2652,20 @@
     // messages carrying profiles + liveRois verify the SAME probe
     // codes — encoded once — against every profile (the impostor-max
     // composition), answering with a results array.
-    var fns = [reflect101, resizeGrayBilinear, convolveSeparable, convolve2d, gaborKernelReal, palmprintKernels, palmprintEnhance, palmprintEncode, palmprintCodeFromBase64, palmprintCodeBytes, palmprintCodeSane, edccScoreAtShift, palmprintSimilaritySeeded, palmprintSimilarity, flipGrayHorizontal, scaleGrayCentre, shiftGrayClamped, palmprintProbeCodes, palmprintProbeCodesGeo, normalisePalmprintProfile, palmprintMatchResult, verifyPalmprintProfile, verifyPalmprintRois, verifyPalmprintRoisFast];
+    var fns = [reflect101, resizeGrayBilinear, convolveSeparable, convolve2d, gaborKernelReal, palmprintKernels, palmprintEnhance, palmprintEncode, palmprintCodeFromBase64, palmprintCodeBytes, palmprintCodeSane, edccScoreAtShift, palmprintSimilaritySeeded, palmprintSimilarity, flipGrayHorizontal, scaleGrayCentre, shiftGrayClamped, palmprintProbeCodes, palmprintProbeCodesGeo, normalisePalmprintProfile, palmprintMatchResult, verifyPalmprintProfile, verifyPalmprintRois, verifyPalmprintRoisFast, verifyPalmprintProfilesRois];
     var body = fns.map(function (f) { return f.toString(); }).join('\n');
-    var handler = 'onmessage=function(e){var d=e.data||{};var r=null;var rs=null;' +
+    // v44: the fast and multi-profile branches accept the measured
+    // geo band gate (d.geoFloor, a number or absent) and always
+    // answer with their stage-timing sink (d.timing consumers in
+    // the app read it for the scan diagnostics; it never changes a
+    // verdict). The exact branches are byte-identical to before.
+    var handler = 'onmessage=function(e){var d=e.data||{};var r=null;var rs=null;var tm=null;' +
       'try{' +
-      'if(d.profiles){var codes=[];(d.liveRois||[]).forEach(function(roi){palmprintProbeCodes(roi).forEach(function(c){codes.push(c);});palmprintProbeCodesGeo(roi).forEach(function(c){codes.push(c);});});rs=d.profiles.map(function(p){return verifyPalmprintProfile(p,codes);});}' +
-      'else if(d.fast){r=verifyPalmprintRoisFast(d.profile,d.liveRois);}' +
+      'if(d.profiles){tm={};rs=verifyPalmprintProfilesRois(d.profiles,d.liveRois,{geoFloor:(typeof d.geoFloor==="number"?d.geoFloor:null),timing:tm});}' +
+      'else if(d.fast){tm={};r=verifyPalmprintRoisFast(d.profile,d.liveRois,{geoFloor:(typeof d.geoFloor==="number"?d.geoFloor:null),timing:tm});}' +
       'else{r=(d.liveRois?verifyPalmprintRois(d.profile,d.liveRois):verifyPalmprintProfile(d.profile,d.liveCodes));}' +
-      '}catch(err){r=null;rs=null;}' +
-      'postMessage({id:d.id,result:r,results:rs});};';
+      '}catch(err){r=null;rs=null;tm=null;}' +
+      'postMessage({id:d.id,result:r,results:rs,timing:tm});};';
     return consts + '\n' + body + '\n' + handler;
   }
 
@@ -3011,14 +3146,24 @@
      readers ignore it and profiles without it stay fully valid).
      No stored field changes shape, so its step is the identity,
      and a v42 store — wallet balance, statement and linked
-     accounts included — opens under v43 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43'];
+     accounts included — opens under v43 byte-identical.
+
+     v43 -> v44 is an ADOPTION: v44 changes only how long scans
+     run and what they report (the wall-clock scan budget, the
+     geometric-variant band gate, per-stage scan diagnostics, the
+     320 px analysis copy) — matching semantics for judged frames,
+     enrolment and wallet shapes are all unchanged, and no stored
+     field changes shape, so its step is the identity, and a v43
+     store — enrolment codes, wallet balance, statement and linked
+     accounts included — opens under v44 byte-identical. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
     'v40': function (snap) { return snap; },
     'v41': function (snap) { return snap; },
     'v43': function (snap) { return snap; },
+    'v44': function (snap) { return snap; },
     'v42': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
@@ -3122,6 +3267,9 @@
     palmprintProbeCodesGeo: palmprintProbeCodesGeo,
     verifyPalmprintRois: verifyPalmprintRois,
     verifyPalmprintRoisFast: verifyPalmprintRoisFast,
+    verifyPalmprintProfilesRois: verifyPalmprintProfilesRois,
+    PALMPRINT_GEO_FLOOR: PALMPRINT_GEO_FLOOR,
+    SCAN_TIME_BUDGET_MS: SCAN_TIME_BUDGET_MS,
     palmprintUsableOpenFrames: palmprintUsableOpenFrames,
     selectPalmprintProfileCodes: selectPalmprintProfileCodes,
     PALMPRINT_POSES: PALMPRINT_POSES,
