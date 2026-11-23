@@ -35,7 +35,7 @@
      is skipped, nothing is deleted, and the next launch retries —
      the app boots on the un-migrated data either way, because its
      readers fail closed per record. */
-  var APP_DATA_VERSION = 'v38';
+  var APP_DATA_VERSION = 'v39';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -819,7 +819,10 @@
      it landed inside the first scan, against ~0.7 s per frame once
      warm. Both camera-start handlers call this so the load happens
      while the camera is opening and the customer is still raising
-     their hand, not after SCAN is tapped. Fire-and-forget: a warmup
+     their hand, not after SCAN is tapped. v39: opening the takeBIOM
+     view (go('terminal')) calls it too, so the load starts when the
+     operator reaches the terminal — before a person is even
+     selected, let alone the camera started. Fire-and-forget: a warmup
      failure is silent (the scan path initialises everything itself),
      and if a real scan starts first, PalmProc's orphan guard hands
      the pending slot to the scan's call — the warmup can never block
@@ -871,7 +874,12 @@
   function makeSpoofTracker() {
     var checks = [];
     return {
-      add: function (frame, lm) { var s = spoofSample(frame, lm); if (s) checks.push(s); },
+      // Returns the frame's own sample (or null when the detector
+      // could not run on it) so the verify stream can record the
+      // per-frame verdict alongside the frame — the v39 fast win
+      // reads the two matched frames' own samples, not just the
+      // aggregate. Aggregation behaviour is unchanged.
+      add: function (frame, lm) { var s = spoofSample(frame, lm); if (s) checks.push(s); return s || null; },
       state: function () {
         var flagged = checks.filter(function (c) { return c.spoof; });
         var meanB = checks.length ? checks.reduce(function (s, c) { return s + c.meanBrightness; }, 0) / checks.length : null;
@@ -1053,12 +1061,31 @@
      next frame's analysis and results apply in capture order; the
      win is honoured the moment the deciding score lands. Every gate
      (two-frame rolling window, passive liveness, spoof aggregation,
-     MAXF, deadline) judges the same evidence as the burst design. */
+     MAXF, deadline) judges the same evidence as the burst design.
+     v39: FAST WIN (the Chairman's authorised trade after his v38
+     phone verdict — still too slow at payment time): the win may
+     be honoured on the matched PAIR at two analysed frames when
+     both frames carry clean per-frame spoof samples and the pair's
+     poses show a real micro-shift (B.streamFastWinCheck). The
+     standard honour — 3-pose liveness plus at least three spoof-
+     gate frames — still completes any scan the fast path does not,
+     and every rejection path is exactly as before: this change
+     only moves how early a WIN may be honoured, never how a
+     rejection is reached. */
   function streamVerifyPalm(video, statusEl, person, people, swapCamera, fieldRec) {
     var t0 = Date.now();
     var tracker = makeSpoofTracker();
     var frames = [];
     var poses = [];
+    // v39: per-frame evidence for the fast win, kept in lockstep
+    // with the other streams — frameSpoof[i] is frame i's own
+    // detector verdict (true flagged / false examined-clean / null
+    // never examined), and applied[] holds one evidence record per
+    // applyMatch call, in the same capture order streamMatchUpdate
+    // judges, so the matched pair can be found exactly as the
+    // rolling-window rule paired it.
+    var frameSpoof = [];
+    var applied = [];
     var matchState = { streak: 0, best: null };
     var win = null;
     var analysed = 0, swapped = false, locked = false;
@@ -1108,7 +1135,7 @@
     function verifiedOut() {
       return impostorMaxFor(win.rois).then(function (impMax) {
         fieldRec(win.res.similarity, impMax, 'pass', 'verified', tracker.state().lightTag);
-        var measured = 'Palmprint similarity ' + win.res.similarity.toFixed(3) + ' (threshold ' + win.res.threshold + ', score-level max: best pair of the winning frame re-encoded at 25 image-level shifts against ' + person.palmProfile.codes.length + ' individual enrolled print codes), passive liveness passed (natural micro-shift across rapid frames), Show & Pay streaming scan with two-frame early exit';
+        var measured = 'Palmprint similarity ' + win.res.similarity.toFixed(3) + ' (threshold ' + win.res.threshold + ', score-level max: best pair of the winning frame re-encoded at 25 image-level shifts against ' + person.palmProfile.codes.length + ' individual enrolled print codes), passive liveness passed (' + (win.fast ? 'natural micro-shift between the two matched frames; fast win honoured on the matched pair, both frames spoof-clean' : 'natural micro-shift across rapid frames') + '), Show & Pay streaming scan with two-frame early exit';
         return finish({ r: win.res, measured: measured, latencyMs: Date.now() - t0 });
       });
     }
@@ -1137,11 +1164,31 @@
     /* Apply one frame's match result to the rolling-window rule, in
        capture order (v37: extracted so the pipelined loop applies
        results in exactly the order the burst chain did). A code-less
-       or ROI-less frame applies a null score, as before. */
-    function applyMatch(res, roi) {
+       or ROI-less frame applies a null score, as before.
+       v39: each application also records the frame's evidence
+       (matched at the same threshold streamMatchUpdate uses, the
+       frame's pose, the frame's own spoof verdict). When the rule
+       completes the match, the partner is the most recent matched
+       record within the same two-back window the rule itself
+       reads, and B.streamFastWinCheck decides whether the win may
+       be honoured on that pair at two frames. */
+    function applyMatch(res, roi, frameIdx) {
       var score = res && typeof res.similarity === 'number' ? res.similarity : null;
       matchState = B.streamMatchUpdate(matchState, score);
-      if (matchState.done && !win) win = { res: res, rois: [roi] };
+      var entry = {
+        matched: typeof score === 'number' && score >= B.PALMPRINT_THRESHOLD,
+        pose: (typeof frameIdx === 'number' && frames[frameIdx]) ? frames[frameIdx].pose : null,
+        spoof: (typeof frameIdx === 'number' && frameIdx < frameSpoof.length) ? frameSpoof[frameIdx] : null
+      };
+      applied.push(entry);
+      if (matchState.done && !win) {
+        win = { res: res, rois: [roi], fast: false };
+        var partner = null;
+        for (var k = applied.length - 2; k >= applied.length - 3 && k >= 0; k--) {
+          if (applied[k].matched) { partner = applied[k]; break; }
+        }
+        if (partner && B.streamFastWinCheck(partner, entry).ok) win.fast = true;
+      }
     }
     /* Pace grabs to the camera clock (v37): at least ~100 ms of
        stream time between analysed frames, so consecutive poses are
@@ -1176,8 +1223,12 @@
           // Every analysed frame feeds the spoof tracker, carrying
           // its landmarks so the v36 grid gate reads the palm region
           // only — same evidence, same aggregation as the bursts.
-          tracker.add(frame, r.lm);
+          // v39: the frame's own sample verdict is also recorded
+          // against its frame index for the fast-win pair check.
+          var sample = tracker.add(frame, r.lm);
           frames.push(r);
+          frameSpoof.push(sample ? !!sample.spoof : null);
+          var myIdx = frames.length - 1;
           if (typeof r.openness === 'number') lastHint = r.framing || null;
           if (r.pose) { poses.push(r.pose); if (poses.length > 6) poses.shift(); }
           var sane = !!(r.code && B.palmprintCodeSane(r.code));
@@ -1185,7 +1236,7 @@
           if (sane && !locked) { locked = true; Snd.tick(); }
           var prev = prevMatch; prevMatch = null;
           var drained = prev
-            ? prev.promise.then(function (res) { applyMatch(res, prev.roi); })
+            ? prev.promise.then(function (res) { applyMatch(res, prev.roi, prev.frameIdx); })
             : Promise.resolve();
           return drained.then(function () {
             if (sane && r.roi) {
@@ -1196,9 +1247,9 @@
               // with a threshold short-circuit. v37: the call now
               // overlaps the NEXT frame's analysis instead of
               // blocking this frame's step.
-              prevMatch = { roi: r.roi, promise: Match.verifyRois(person.palmProfile, [r.roi], { fast: true }) };
+              prevMatch = { roi: r.roi, frameIdx: myIdx, promise: Match.verifyRois(person.palmProfile, [r.roi], { fast: true }) };
             } else {
-              applyMatch(null, null);
+              applyMatch(null, null, myIdx);
             }
           });
         });
@@ -1208,6 +1259,18 @@
       var sp = tracker.state();
       if (sp.spoof) return spoofOut(sp);
       var lv = B.passiveLivenessCheck(poses);
+      // v39 FAST WIN: the matched pair carried its own complete
+      // evidence — both frames' own spoof samples clean, a real
+      // micro-shift between their poses — so the win is honoured
+      // at two analysed frames. The aggregate rejection above
+      // still runs first: if the tracker has convicted the scan on
+      // the frames examined so far, no win of either kind is
+      // honoured. A replay whose frames trip the detector can
+      // never take this path, because each matched frame's own
+      // sample must be clean — stricter for the pair than the
+      // aggregation rule (half the frames, at least two) that
+      // governs rejection.
+      if (win && win.fast) return verifiedOut();
       // A match may not be honoured until the spoof gate has examined
       // at least three frames. The two-frame win can complete inside
       // the first burst, before the tracker's aggregation rule (at
@@ -1215,7 +1278,9 @@
       // replay leg, 2026-11-20: a screen replay of the enrolled palm
       // was VERIFIED at 0.445 while every replay frame, checked
       // directly against the detector, trips it. The detector was
-      // right; the win simply outran the gate.
+      // right; the win simply outran the gate. (The v39 fast win
+      // above does not outrun anything: it reads the two matched
+      // frames' own already-recorded samples directly.)
       if (win && lv.pass && sp.framesChecked >= 3) return verifiedOut();
       if (win && lv.pass && statusEl) statusEl.textContent = 'Palm matched — confirming this is a live hand, not a screen…';
       // v37: the burst-era "two bursts" static guard is the same
@@ -1230,7 +1295,7 @@
         // every match before loop() ever saw the caps.
         if (prevMatch) {
           var prev = prevMatch; prevMatch = null;
-          return prev.promise.then(function (res) { applyMatch(res, prev.roi); return loop(); });
+          return prev.promise.then(function (res) { applyMatch(res, prev.roi, prev.frameIdx); return loop(); });
         }
         if (win) {
           fieldRec(win.res.similarity, null, 'fail', 'rejected', sp.lightTag);
@@ -1268,7 +1333,7 @@
     if (page === 'dashboard') renderDashboard();
     if (page === 'registry') renderRegistry();
     if (page === 'logs') renderLogs();
-    if (page === 'terminal') fillTerminalPeople();
+    if (page === 'terminal') { fillTerminalPeople(); prewarmPalmPipeline(); }
     window.scrollTo(0, 0);
   }
   document.querySelectorAll('#mainNav button').forEach(function (b) {

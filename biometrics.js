@@ -1754,9 +1754,16 @@
   var PASSIVE_STATIC_EPS = 0.0006;   // max centre shift below this = frozen
   var PASSIVE_NATURAL_MIN = 0.0020;  // centre shift at/above this = natural
   var PASSIVE_ERRATIC_MAX = 0.09;    // centre shift above this = scene jump
-  function passiveLivenessCheck(poses) {
-    var list = (poses || []).filter(function (p) { return p && isFinite(p.cx) && isFinite(p.cy) && isFinite(p.span) && p.span > 0; });
-    if (list.length < 3) return { pass: false, verdict: 'inconclusive', maxShift: 0, spanChange: 0 };
+  function passiveLivenessPoses(poses) {
+    return (poses || []).filter(function (p) { return p && isFinite(p.cx) && isFinite(p.cy) && isFinite(p.span) && p.span > 0; });
+  }
+  /* The verdict maths over an already-filtered pose list of at
+     least two: maxShift is the largest CONSECUTIVE-step centre
+     shift, spanChange the largest span drift from the first pose,
+     and the bands are the constants above. Shared verbatim by the
+     3-pose check and the v39 pair path, so a single step is judged
+     by exactly the same numbers in both paths. */
+  function passiveLivenessEval(list) {
     var maxShift = 0, spanChange = 0;
     for (var i = 1; i < list.length; i++) {
       var d = Math.hypot(list[i].cx - list[i - 1].cx, list[i].cy - list[i - 1].cy);
@@ -1770,6 +1777,27 @@
     if (maxShift < PASSIVE_STATIC_EPS && spanChange < 0.002) return { pass: false, verdict: 'static', maxShift: maxShift, spanChange: spanChange };
     if (maxShift >= PASSIVE_NATURAL_MIN || spanChange >= 0.006) return { pass: true, verdict: 'natural', maxShift: maxShift, spanChange: spanChange };
     return { pass: false, verdict: 'inconclusive', maxShift: maxShift, spanChange: spanChange };
+  }
+  function passiveLivenessCheck(poses) {
+    var list = passiveLivenessPoses(poses);
+    if (list.length < 3) return { pass: false, verdict: 'inconclusive', maxShift: 0, spanChange: 0 };
+    return passiveLivenessEval(list);
+  }
+  /* v39 fast-win liveness: the SAME verdict maths over exactly the
+     two matched frames' poses (the last two valid poses given).
+     The pair passes only on 'natural' — a real micro-shift between
+     the two instants the palm actually matched at, judged by the
+     same per-step thresholds the 3-pose path uses. A static pair
+     (a held photograph yields detector-noise displacement only)
+     reads 'static' and does NOT pass: the scan simply keeps
+     collecting frames and the 3-pose path can still complete it —
+     never a hard fail for a live user holding still. No number is
+     loosened: the EPS / NATURAL_MIN / ERRATIC_MAX constants and
+     the span bands are shared with the 3-pose path, not copied. */
+  function passiveLivenessPairCheck(poses) {
+    var list = passiveLivenessPoses(poses);
+    if (list.length < 2) return { pass: false, verdict: 'inconclusive', maxShift: 0, spanChange: 0 };
+    return passiveLivenessEval(list.slice(-2));
   }
 
   /* Streaming early-exit rule (v20): the checkout completes the
@@ -1798,6 +1826,39 @@
     var streak = 0;
     for (var i = hist.length - 1; i >= 0 && hist[i]; i--) streak++;
     return { streak: streak, best: best, hist: hist.slice(-3), done: done };
+  }
+
+  /* v39 FAST WIN (Show & Pay): when streamMatchUpdate completes
+     the two-frame match, the win may be honoured on the matched
+     PAIR itself — at two analysed frames instead of three — when
+     the pair carries its own complete evidence:
+       - both frames matched (the caller passes the two frames the
+         rolling-window rule paired, in capture order);
+       - BOTH frames carry a CLEAN per-frame spoof sample: the
+         screenSpoofCheck verdict for that exact frame (the v36
+         palm-region grid gate plus glare/bezel), recorded as
+         spoof === false. A flagged frame blocks the fast win, and
+         so does a frame the detector never examined (spoof null) —
+         unexamined is not clean. Fail-closed.
+       - the pair's poses pass passiveLivenessPairCheck: a real
+         micro-shift between the two matched instants, at the same
+         thresholds as the 3-pose path.
+     This function only decides how early a WIN may be honoured.
+     It never contributes to a rejection: the spoof tracker's
+     aggregation rule and the no-match path are untouched, and a
+     pair that fails here simply keeps the scan collecting frames
+     toward the standard three-frame honour. Pure function of the
+     two evidence records so the rule is unit-testable without a
+     camera, like streamMatchUpdate. Evidence record shape:
+       { matched: bool, pose: palmFramePose|null,
+         spoof: true (flagged) | false (examined, clean) |
+                null (never examined) } */
+  function streamFastWinCheck(a, b) {
+    if (!a || !b || !a.matched || !b.matched) return { ok: false, reason: 'pair-not-matched', liveness: null };
+    if (a.spoof !== false || b.spoof !== false) return { ok: false, reason: 'spoof-not-clean', liveness: null };
+    var lv = passiveLivenessPairCheck([a.pose, b.pose]);
+    if (!lv.pass) return { ok: false, reason: 'liveness-' + lv.verdict, liveness: lv };
+    return { ok: true, reason: 'fast-win', liveness: lv };
   }
 
   /* Self-contained Web Worker source for palmprint matching (v20):
@@ -2088,10 +2149,17 @@
      survival test exercises the real path a future conversion will
      take. When a future version DOES change a stored field, add its
      step here and its version to BIOM_DATA_VERSIONS; the app side
-     needs no new plumbing. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38'];
+     needs no new plumbing.
+
+     v38 -> v39 is likewise an ADOPTION: v39 changes only the Show
+     & Pay win rule (the fast win on the matched pair) and startup
+     pre-warming — no stored field changes shape, so its step is
+     also the identity, and a v38 enrolment opens under v39 with
+     the person, palm codes and points intact. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39'];
   var BIOM_DATA_STEPS = {
-    'v38': function (snap) { return snap; }
+    'v38': function (snap) { return snap; },
+    'v39': function (snap) { return snap; }
   };
   var BIOM_DATA_STORES = ['people', 'logs', 'transactions', 'meta'];
   function migrateBiomData(snapshot, fromVersion, toVersion) {
@@ -2189,7 +2257,9 @@
     palmFramePose: palmFramePose,
     palmFramingHint: palmFramingHint,
     passiveLivenessCheck: passiveLivenessCheck,
+    passiveLivenessPairCheck: passiveLivenessPairCheck,
     streamMatchUpdate: streamMatchUpdate,
+    streamFastWinCheck: streamFastWinCheck,
     palmprintWorkerSource: palmprintWorkerSource,
     laplacianVariance: laplacianVariance,
     contrastStretch: contrastStretch,

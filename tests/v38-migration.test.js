@@ -14,7 +14,14 @@
    untouched, and the migrated profile still VERIFIES against a
    fresh probe of the same palm (and still rejects another palm).
    Fixtures are the palmprint.test.js synthetic palms — the profile
-   codes are real EDCC codes in the stored base64 form. */
+   codes are real EDCC codes in the stored base64 form.
+
+   Extended for v39 (2026-11-23): the chain gains 'v39' (an
+   adoption step — v39 changes the win rule, not stored data), and
+   this suite proves a v38 store, and a v37 store through both
+   steps, opens under v39 intact and still verifies. The two
+   version-string source pins below name the CURRENT version, as
+   they did when they pinned v38. */
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -123,14 +130,39 @@ const migDamaged = B.migrateBiomData(damaged, 'v37', 'v38');
 check('MIGRATE a store with a missing logs array keeps the people', Array.isArray(migDamaged.snapshot.logs) &&
   migDamaged.snapshot.people.length === 1 && migDamaged.snapshot.people[0].id === 'TSG-BIO-2841');
 
+/* ---------- v39: the chain grows, the data still survives ---------
+   v39 changes only the Show & Pay win rule and startup pre-warm;
+   its migration step is an adoption like v38's. A store written by
+   v38 (and one written by v37, through both steps) must open under
+   v39 with the person, codes and points intact and still verify. */
+check('CHAIN v39 is the newest link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v39' &&
+  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39', B.BIOM_DATA_VERSIONS.join(','));
+const mig39 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v38', 'v39');
+check('MIGRATE v38->v39 runs the v39 step', mig39.appliedSteps.indexOf('v39') !== -1, mig39.appliedSteps.join(','));
+check('MIGRATE v38->v39 is an adoption: no store rewritten', mig39.changed === false && mig39.changedStores.length === 0,
+  'changedStores=' + JSON.stringify(mig39.changedStores));
+const mp39 = mig39.snapshot.people[0];
+check('SURVIVE v39 person, points and codes intact', !!mp39 && mp39.id === 'TSG-BIO-2841' && mp39.loyaltyPoints === 137 &&
+  JSON.stringify(mp39.palmProfile.codes) === JSON.stringify(enrolledCodes));
+const migChain39 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v37', 'v39');
+check('MIGRATE v37->v39 runs both steps in order', migChain39.appliedSteps.join(',') === 'v38,v39', migChain39.appliedSteps.join(','));
+check('MIGRATE v37->v39 keeps the person and points', migChain39.snapshot.people.length === 1 && migChain39.snapshot.people[0].loyaltyPoints === 137);
+const rSame39 = B.verifyPalmprintProfile(mp39.palmProfile, probeSame);
+check('VERIFY the v39-migrated profile accepts the same palm', rSame39.verified === true, 'sim=' + (rSame39.similarity && rSame39.similarity.toFixed(3)));
+const rOther39 = B.verifyPalmprintProfile(mp39.palmProfile, probeOther);
+check('VERIFY the v39-migrated profile still rejects another palm', rOther39.verified === false, 'sim=' + (rOther39.similarity && rOther39.similarity.toFixed(3)));
+const migAgain39 = B.migrateBiomData(mig39.snapshot, 'v39', 'v39');
+check('MIGRATE is idempotent at v39', migAgain39.appliedSteps.length === 0 && migAgain39.changed === false &&
+  migAgain39.snapshot.people.length === 1 && migAgain39.snapshot.people[0].loyaltyPoints === 137);
+
 /* ---------- the shipped app source carries no wipe ----------------- */
 const appSrc = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
-check('APP v38 declares the data version', appSrc.indexOf("APP_DATA_VERSION = 'v38'") !== -1);
+check('APP declares the current data version (v39)', appSrc.indexOf("APP_DATA_VERSION = 'v39'") !== -1);
 check('APP startup runs the migration', appSrc.indexOf('migrateBiomData') !== -1 && appSrc.indexOf('migrateDbStores') !== -1);
 check('APP contains no database deletion (the retired wipe)', appSrc.indexOf('deleteDatabase') === -1);
 check('APP contains no store-key removal (the retired wipe)', !/removeItem\(\s*'tsgbiom_/.test(appSrc));
 const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
-check('APP shell is v38', swSrc.indexOf('tsg-biom-shell-v38') !== -1);
+check('APP shell is v39', swSrc.indexOf('tsg-biom-shell-v39') !== -1);
 
 console.log(fail === 0 ? 'ALL MIGRATION TESTS PASSED (' + pass + ')' : fail + ' FAILURES, ' + pass + ' passed');
 process.exit(fail === 0 ? 0 : 1);
