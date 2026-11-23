@@ -25,6 +25,12 @@
      mode that wipes: development and commercial builds migrate
      identically.
 
+     The single exception, and it is not a build behaviour: the
+     device owner's own Delete All Data action (More page, v46,
+     the Chairman's order 2026-11-23 21:40), behind a type-to-
+     confirm flow — see wireWipeData below and B.wipeBiomData.
+     Nothing automatic ever calls it.
+
      Mechanics: the localStorage snapshot is migrated here, before
      boot, and only stores the migration actually changed are
      written back. The IndexedDB copy holds the same record shapes;
@@ -35,7 +41,7 @@
      is skipped, nothing is deleted, and the next launch retries —
      the app boots on the un-migrated data either way, because its
      readers fail closed per record. */
-  var APP_DATA_VERSION = 'v45';
+  var APP_DATA_VERSION = 'v46';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -136,6 +142,45 @@
       var self = this;
       return this.getMeta(key, base).then(function (v) {
         return self.setMeta(key, v + 1).then(function () { return v; });
+      });
+    },
+    /* Delete All Data (v46): clear EVERY data store in BOTH
+       backends — the localStorage snapshot keys are set to empty
+       arrays (a valid empty store, never removed keys) and the
+       IndexedDB object stores are cleared — so no copy of the
+       registry survives in the inactive backend either. Used ONLY
+       by the owner's confirmed Delete All Data action
+       (wireWipeData); nothing in boot or migration calls this.
+       If this session fell back to localStorage while an IndexedDB
+       database still exists from an earlier session, a fresh
+       connection is opened just to clear it, so a later healthy
+       launch cannot resurrect the wiped registry. */
+    clearAll: function () {
+      var self = this;
+      B.BIOM_DATA_STORES.forEach(function (s) { self.lsSet(s, []); });
+      var clearIn = function (db, closeAfter) {
+        return new Promise(function (resolve) {
+          try {
+            var tx = db.transaction(B.BIOM_DATA_STORES, 'readwrite');
+            B.BIOM_DATA_STORES.forEach(function (s) { tx.objectStore(s).clear(); });
+            var done = function () { if (closeAfter) { try { db.close(); } catch (e) {} } resolve(); };
+            tx.oncomplete = done;
+            tx.onerror = done;
+            tx.onabort = done;
+          } catch (e) { if (closeAfter) { try { db.close(); } catch (e2) {} } resolve(); }
+        });
+      };
+      if (this.db) return clearIn(this.db, false);
+      if (!('indexedDB' in window)) return Promise.resolve();
+      return new Promise(function (resolve) {
+        var settled = false;
+        var finish = function () { if (!settled) { settled = true; resolve(); } };
+        var req;
+        try { req = indexedDB.open('tsg-biom', 1); } catch (e) { finish(); return; }
+        req.onsuccess = function () { clearIn(req.result, true).then(finish); };
+        req.onerror = finish;
+        req.onblocked = finish;
+        setTimeout(finish, 2500);
       });
     }
   };
@@ -2694,6 +2739,83 @@
   if ($('fieldExhaustiveToggle')) $('fieldExhaustiveToggle').addEventListener('change', function () { setFieldExhaustive(this.checked); toast(this.checked ? 'Exhaustive shift logging ON — every scan evaluates all five shifts and logs them.' : 'Exhaustive shift logging OFF.'); });
   if ($('fieldExhaustiveToggle2')) $('fieldExhaustiveToggle2').addEventListener('change', function () { setFieldExhaustive(this.checked); toast(this.checked ? 'Exhaustive shift logging ON — every scan evaluates all five shifts and logs them.' : 'Exhaustive shift logging OFF.'); });
   setFieldExhaustive(fieldExhaustiveOn());
+
+  /* ---------------- Delete All Data (v46) -------------------------------
+     The device owner's own erase, ordered by the Chairman
+     (2026-11-23 21:40) so he can clear an old registry and
+     re-register cleanly. Deliberate by construction: the button
+     only OPENS the confirmation; the wipe runs only after the
+     owner types DELETE and taps the distinct "Delete everything"
+     button. The counts in the confirmation come from the live
+     store, so what will be deleted is stated, not implied. On
+     completion both backends are empty (DB.clearAll), the data
+     version stamps are set to the current version (the post-wipe
+     store is a valid empty store AT this version, so no migration
+     runs against it), a plain confirmation is shown, and the app
+     reloads into its clean first-run state. */
+  function loadSnapshot() {
+    return Promise.all(B.BIOM_DATA_STORES.map(function (s) { return DB.all(s); })).then(function (rows) {
+      var snap = {};
+      B.BIOM_DATA_STORES.forEach(function (s, i) { snap[s] = rows[i]; });
+      return snap;
+    });
+  }
+  function wireWipeData() {
+    var btn = $('wipeDataBtn');
+    if (!btn) return;
+    var panel = $('wipeConfirm'), input = $('wipeConfirmInput'),
+      confirmBtn = $('wipeConfirmBtn'), cancelBtn = $('wipeCancelBtn'), msg = $('wipeMsg');
+    function closePanel() {
+      panel.classList.add('hidden');
+      btn.disabled = false;
+      input.value = '';
+      confirmBtn.disabled = true;
+    }
+    btn.addEventListener('click', function () {
+      msg.innerHTML = '';
+      loadSnapshot().then(function (snap) {
+        var removed = B.wipeBiomData(snap).removed;
+        $('wipeCounts').textContent = 'Currently stored on this device: ' +
+          removed.people + (removed.people === 1 ? ' registered person' : ' registered people') +
+          ' (with their palm templates, wallets, balances, statements and linked accounts), ' +
+          removed.transactions + (removed.transactions === 1 ? ' transaction' : ' transactions') + ' and ' +
+          removed.logs + (removed.logs === 1 ? ' log entry' : ' log entries') + '.';
+        panel.classList.remove('hidden');
+        btn.disabled = true;
+        input.value = '';
+        confirmBtn.disabled = true;
+        input.focus();
+      });
+    });
+    input.addEventListener('input', function () {
+      confirmBtn.disabled = input.value.trim() !== 'DELETE';
+    });
+    cancelBtn.addEventListener('click', closePanel);
+    confirmBtn.addEventListener('click', function () {
+      if (input.value.trim() !== 'DELETE') return;
+      confirmBtn.disabled = true;
+      cancelBtn.disabled = true;
+      loadSnapshot().then(function (snap) {
+        var wiped = B.wipeBiomData(snap);
+        return DB.clearAll().then(function () { return wiped; });
+      }).then(function (wiped) {
+        try { localStorage.setItem(DV_KEY, APP_DATA_VERSION); } catch (e) {}
+        try { localStorage.setItem(DBV_KEY, APP_DATA_VERSION); } catch (e) {}
+        closePanel();
+        cancelBtn.disabled = false;
+        msg.innerHTML = '<div class="success">All data deleted — ' + wiped.removedTotal +
+          (wiped.removedTotal === 1 ? ' stored record' : ' stored records') +
+          ' removed. This device now holds an empty registry. Reloading…</div>';
+        toast('All data deleted. The app is empty.');
+        setTimeout(function () { location.reload(); }, 1500);
+      }).catch(function () {
+        msg.innerHTML = '<div class="error">Delete failed — nothing was erased. Your data is unchanged; please try again.</div>';
+        confirmBtn.disabled = false;
+        cancelBtn.disabled = false;
+      });
+    });
+  }
+  wireWipeData();
 
   /* ---------------- Install (PWA) ---------------------------------------- */
   var deferredPrompt = null;

@@ -69,7 +69,15 @@
    current reader); preservation is still proven byte-for-byte at
    every step, and the v45 section proves the conversion itself,
    the wallet's survival through it, and the fail-closed verify
-   with the honest re-scan reason. */
+   with the honest re-scan reason.
+
+   Extended for v46 (2026-11-23): the chain gains 'v46' — an
+   ADOPTION step. v46 changes no stored field; it adds the
+   user-operated Delete All Data action (More page, type-to-
+   confirm; the wipe itself is proven in v46-wipe.test.js). That
+   action is NOT a migration step: the v46 section below proves a
+   wallet-carrying v45 store opens under v46 byte-identical, and
+   the full chain still preserves everything end to end. */
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -191,8 +199,8 @@ check('MIGRATE a store with a missing logs array keeps the people', Array.isArra
    its migration step is an adoption like v38's. A store written by
    v38 (and one written by v37, through both steps) must open under
    v39 with the person, codes and points intact and still verify. */
-check('CHAIN v45 is the newest link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v45' &&
-  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40,v41,v42,v43,v44,v45', B.BIOM_DATA_VERSIONS.join(','));
+check('CHAIN v46 is the newest link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v46' &&
+  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40,v41,v42,v43,v44,v45,v46', B.BIOM_DATA_VERSIONS.join(','));
 const mig39 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v38', 'v39');
 check('MIGRATE v38->v39 runs the v39 step', mig39.appliedSteps.indexOf('v39') !== -1, mig39.appliedSteps.join(','));
 check('MIGRATE v38->v39 is an adoption: no store rewritten', mig39.changed === false && mig39.changedStores.length === 0,
@@ -405,14 +413,42 @@ const mig45Twice = B.migrateBiomData(JSON.parse(JSON.stringify(mig45.snapshot)),
 check('MIGRATE re-running the v45 step over a flagged profile changes nothing further',
   mig45Twice.changed === false && JSON.stringify(mig45Twice.snapshot.people[0].palmProfile.legacyCodes) === JSON.stringify(enrolledCodes));
 
-/* ---------- the shipped app source carries no wipe ----------------- */
+/* ---------- v46: adoption — a v45 store opens byte-identical -------
+   v46 adds the owner's Delete All Data ACTION, not a migration
+   step: the v45 wallet-carrying store (post-v45 shape: balance
+   450, DEMO-1, one linked account, legacy-flagged palm) must pass
+   through the v46 step with nothing rewritten at all. */
+const v46Store = JSON.parse(JSON.stringify(mig45.snapshot));
+const v46Before = JSON.stringify(v46Store);
+const mig46 = B.migrateBiomData(v46Store, 'v45', 'v46');
+check('MIGRATE v45->v46 runs the v46 step', mig46.appliedSteps.indexOf('v46') !== -1, mig46.appliedSteps.join(','));
+check('MIGRATE v45->v46 rewrites NOTHING (pure adoption)', mig46.changed === false && JSON.stringify(mig46.snapshot) === v46Before,
+  'changedStores=' + JSON.stringify(mig46.changedStores));
+check('SURVIVE v46 wallet, statement, linked account and flagged palm intact',
+  mig46.snapshot.people[0].wallet.balance === 450 && mig46.snapshot.people[0].wallet.statement.length === 1 &&
+  mig46.snapshot.people[0].wallet.linkedAccounts.length === 1 && mig46.snapshot.people[0].palmProfile.format === 'legacy');
+const migChain46 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v37', 'v46');
+check('MIGRATE v37->v46 runs all nine steps in order', migChain46.appliedSteps.join(',') === 'v38,v39,v40,v41,v42,v43,v44,v45,v46', migChain46.appliedSteps.join(','));
+check('MIGRATE v37->v46 keeps the person, gains the wallet, flags the palm',
+  migChain46.snapshot.people.length === 1 && migChain46.snapshot.people[0].loyaltyPoints === 137 &&
+  migChain46.snapshot.people[0].wallet.balance === 0 && migChain46.snapshot.people[0].palmProfile.format === 'legacy');
+const migAgain46 = B.migrateBiomData(mig46.snapshot, 'v46', 'v46');
+check('MIGRATE is idempotent at v46', migAgain46.appliedSteps.length === 0 && migAgain46.changed === false &&
+  migAgain46.snapshot.people[0].wallet.balance === 450);
+
+/* ---------- the shipped app source carries no AUTOMATIC wipe -------
+   v46 note: the only erase in the app is the owner's confirmed
+   Delete All Data action (DB.clearAll + B.wipeBiomData, wired in
+   wireWipeData — proven in v46-wipe.test.js). What stays banned,
+   and is still pinned here: deleting the whole database and
+   removing store keys, the retired update-time wipe mechanics. */
 const appSrc = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
-check('APP declares the current data version (v45)', appSrc.indexOf("APP_DATA_VERSION = 'v45'") !== -1);
+check('APP declares the current data version (v46)', appSrc.indexOf("APP_DATA_VERSION = 'v46'") !== -1);
 check('APP startup runs the migration', appSrc.indexOf('migrateBiomData') !== -1 && appSrc.indexOf('migrateDbStores') !== -1);
 check('APP contains no database deletion (the retired wipe)', appSrc.indexOf('deleteDatabase') === -1);
 check('APP contains no store-key removal (the retired wipe)', !/removeItem\(\s*'tsgbiom_/.test(appSrc));
 const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
-check('APP shell is v45', swSrc.indexOf('tsg-biom-shell-v45') !== -1);
+check('APP shell is v46', swSrc.indexOf('tsg-biom-shell-v46') !== -1);
 
 console.log(fail === 0 ? 'ALL MIGRATION TESTS PASSED (' + pass + ')' : fail + ' FAILURES, ' + pass + ' passed');
 process.exit(fail === 0 ? 0 : 1);

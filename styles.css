@@ -32,6 +32,8 @@ button{font-family:inherit}
 .btn.primary{background:var(--teal);border:none;color:#fff;box-shadow:0 8px 20px rgba(7,94,85,.28)}
 .btn.primary:hover{background:var(--teal-dark)}
 .btn.danger{border-color:#f0caca;color:var(--danger);background:#fff}
+.btn.danger.solid{background:var(--danger);border-color:var(--danger);color:#fff}
+.btn.danger.solid:disabled{background:#e8b4b4;border-color:#e8b4b4;color:#fff}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 .btn.small{padding:7px 12px;font-size:13px}
 .nav{position:fixed;left:0;right:0;bottom:0;z-index:50;background:#fff;

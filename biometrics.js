@@ -3582,8 +3582,20 @@
      Add Angles) before scanning works again. Profiles already in
      the v4 packed format, and people without a palm profile, are
      returned by identity. The step is idempotent: a marked
-     profile is recognised by its format + archive and skipped. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45'];
+     profile is recognised by its format + archive and skipped.
+
+     v45 -> v46 is an ADOPTION: v46 changes no stored field. It
+     adds the user-operated Delete All Data action (see the wipe
+     section below) — a deliberate manual erase by the device
+     owner, behind a type-to-confirm flow, ordered by the Chairman
+     2026-11-23 21:40 so he can clear his own device's registry and
+     re-register cleanly. That action is NOT a migration step and
+     does not weaken the rule above: updates still migrate and
+     never wipe; only the owner's own confirmed tap erases. The
+     step here is the identity, and a v45 store — wallet balance,
+     statement and linked accounts included — opens under v46
+     byte-identical. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -3591,6 +3603,7 @@
     'v41': function (snap) { return snap; },
     'v43': function (snap) { return snap; },
     'v44': function (snap) { return snap; },
+    'v46': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
@@ -3653,6 +3666,41 @@
       snapshot: snap, appliedSteps: applied,
       changedStores: changedStores, changed: changedStores.length > 0
     };
+  }
+
+  /* ================= Delete All Data (v46) =======================
+     The ONE sanctioned erase in this codebase, and it is not an
+     update behaviour: it is the device OWNER's own deliberate
+     action (the Chairman's order, 2026-11-23 21:40 — "so i can dlt
+     my old registry"), reached from More → Delete All Data behind
+     a type-to-confirm flow in app.js. The standing rule above is
+     untouched: migrations adopt and preserve, always; nothing in
+     the boot or update path calls this.
+
+     wipeBiomData is the pure store-layer half: given the current
+     snapshot it returns a fresh EMPTY snapshot in the current
+     shape (every store an empty array — a valid first-run store
+     that the load/migration path accepts unchanged at the current
+     version) plus the per-store counts of what was removed, so
+     the UI can state plainly what was deleted. The input snapshot
+     is never mutated. The app half (DB.clearAll in app.js) clears
+     both persistence backends and re-stamps the data version, so
+     after the wipe the device holds exactly what a first run at
+     the current version holds: nothing, at the current version. */
+  function emptyBiomDataSnapshot() {
+    var snap = {};
+    BIOM_DATA_STORES.forEach(function (s) { snap[s] = []; });
+    return snap;
+  }
+  function wipeBiomData(snapshot) {
+    var removed = {};
+    var removedTotal = 0;
+    BIOM_DATA_STORES.forEach(function (s) {
+      var n = snapshot && Array.isArray(snapshot[s]) ? snapshot[s].length : 0;
+      removed[s] = n;
+      removedTotal += n;
+    });
+    return { snapshot: emptyBiomDataSnapshot(), removed: removed, removedTotal: removedTotal };
   }
 
   var api = {
@@ -3800,6 +3848,8 @@
     walletResolveReceiver: walletResolveReceiver,
     walletApplySend: walletApplySend,
     migrateBiomData: migrateBiomData,
+    wipeBiomData: wipeBiomData,
+    emptyBiomDataSnapshot: emptyBiomDataSnapshot,
     BIOM_DATA_VERSIONS: BIOM_DATA_VERSIONS,
     BIOM_DATA_STORES: BIOM_DATA_STORES
   };

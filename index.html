@@ -175,6 +175,20 @@
       <label class="check"><input type="checkbox" id="fieldExhaustiveToggle2"> Exhaustive shift logging — evaluate all five shifts per comparison and log them in the scan record</label>
       <p class="sub" style="margin:8px 0 0">The full field-test panel, live metrics and the CSV export live under Transactions / Logs.</p>
     </div>
+    <div class="card" style="margin-top:16px"><h2>Delete all data</h2>
+      <p class="sub" style="margin:0 0 10px">Erase everything stored on this device — all registered people, palm templates, wallets, balances, statements, linked accounts, transactions and logs — and return the app to an empty first-run state. App updates never do this; this button is the only erase, and only when you choose it. <b>It cannot be undone</b> — there is no copy anywhere else.</p>
+      <button class="btn danger" id="wipeDataBtn">Delete All Data</button>
+      <div id="wipeConfirm" class="hidden" style="margin-top:12px">
+        <div class="error"><b>This will permanently delete all data on this device.</b><br><span id="wipeCounts"></span><br>It cannot be undone.</div>
+        <label style="margin-top:12px">To confirm, type DELETE in the box:</label>
+        <input id="wipeConfirmInput" placeholder="DELETE" autocomplete="off" autocapitalize="characters">
+        <div class="row" style="margin-top:10px">
+          <div><button class="btn danger solid" id="wipeConfirmBtn" disabled>Delete everything</button></div>
+          <div><button class="btn" id="wipeCancelBtn">Cancel</button></div>
+        </div>
+      </div>
+      <div id="wipeMsg" style="margin-top:10px"></div>
+    </div>
     <div class="card" style="margin-top:16px"><h2>How the real scanning works</h2>
       <p class="sub" style="margin:0">
         TSG Biom is palm-only. MediaPipe landmarks locate the palm, a 96&times;96 palm patch is cut out and aligned from the wrist and knuckle anchors, and an EDCC palmprint encoder reads the palm's own print pattern — the method family used by real palmprint systems.
