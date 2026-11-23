@@ -35,7 +35,7 @@
      is skipped, nothing is deleted, and the next launch retries —
      the app boots on the un-migrated data either way, because its
      readers fail closed per record. */
-  var APP_DATA_VERSION = 'v40';
+  var APP_DATA_VERSION = 'v41';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -800,6 +800,7 @@
         var codes = [];
         (liveRois || []).forEach(function (roi) {
           B.palmprintProbeCodes(roi).forEach(function (c) { codes.push(c); });
+          B.palmprintProbeCodesGeo(roi).forEach(function (c) { codes.push(c); });
         });
         return profiles.map(function (p) { return B.verifyPalmprintProfile(p, codes); });
       };
@@ -1142,7 +1143,7 @@
     function verifiedOut() {
       return impostorMaxFor(win.rois).then(function (impMax) {
         fieldRec(win.res.similarity, impMax, 'pass', 'verified', tracker.state().lightTag);
-        var measured = 'Palmprint similarity ' + win.res.similarity.toFixed(3) + ' (threshold ' + win.res.threshold + ', score-level max: best pair of the winning frame re-encoded at 25 image-level shifts against ' + person.palmProfile.codes.length + ' individual enrolled print codes), passive liveness passed (' + (win.fast ? 'natural micro-shift between the two matched frames; fast win honoured on the matched pair, both frames spoof-clean' : 'natural micro-shift across rapid frames') + '), Show & Pay streaming scan with two-frame early exit';
+        var measured = 'Palmprint similarity ' + win.res.similarity.toFixed(3) + ' (threshold ' + win.res.threshold + ', score-level max: best pair of the winning frame re-encoded at 25 image-level shifts plus the v41 geometric variants against ' + person.palmProfile.codes.length + ' individual enrolled print codes), passive liveness passed (' + (win.fast ? 'natural micro-shift between the two matched frames; fast win honoured on the matched pair, both frames spoof-clean' : 'natural micro-shift across rapid frames') + '), Show & Pay streaming scan with two-frame early exit';
         return finish({ r: win.res, measured: measured, latencyMs: Date.now() - t0 });
       });
     }
@@ -1163,7 +1164,7 @@
             out = { ok: true, verified: false, similarity: res.similarity, threshold: res.threshold, reason: 'Matched on a single frame only - Show & Pay requires two matching frames close together. Hold the palm steady a moment longer and scan again.' };
           }
           fieldRec(res ? res.similarity : null, impMax, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag);
-          var measured = 'Palmprint similarity ' + (res && typeof res.similarity === 'number' ? res.similarity.toFixed(3) : 'n/a') + ' (threshold ' + B.PALMPRINT_THRESHOLD + ', score-level max: ' + liveRois.length + ' live frames each re-encoded at 25 image-level shifts against ' + person.palmProfile.codes.length + ' individual enrolled print codes), passive liveness ' + lv.verdict + ', Show & Pay streaming scan. Diagnostics: ' + analysed + ' frames scanned, ' + coded + ' with a readable code, best single-frame score ' + (matchState.best !== null ? matchState.best.toFixed(3) : 'n/a') + '.';
+          var measured = 'Palmprint similarity ' + (res && typeof res.similarity === 'number' ? res.similarity.toFixed(3) : 'n/a') + ' (threshold ' + B.PALMPRINT_THRESHOLD + ', score-level max: ' + liveRois.length + ' live frames each re-encoded at 25 image-level shifts plus the v41 geometric variants against ' + person.palmProfile.codes.length + ' individual enrolled print codes), passive liveness ' + lv.verdict + ', Show & Pay streaming scan. Diagnostics: ' + analysed + ' frames scanned, ' + coded + ' with a readable code, best single-frame score ' + (matchState.best !== null ? matchState.best.toFixed(3) : 'n/a') + '.';
           return finish({ r: out, measured: measured, latencyMs: Date.now() - t0 });
         });
       });

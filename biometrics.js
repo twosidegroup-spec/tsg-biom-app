@@ -1098,6 +1098,32 @@
      a Uint8Array of 841 packed bytes (direction | side << 4), or null
      when the input is unusable. The code is only a template — sanity
      (palmprintCodeSane) decides whether it carries real print detail. */
+  /* Centre-anchored resample of a grayscale image by (zoomX, zoomY):
+     out(x, y) samples the source at centre + (p - centre) / zoom, with
+     bilinear interpolation and edge-clamped sampling. zoom > 1 zooms
+     IN (samples a smaller central area); zoom < 1 zooms out. Used for
+     the v41 geometric probe variants: a palm presented tilted away
+     from the camera plane is foreshortened along the hand's vertical
+     (wrist) axis — the landmark warp builds a SQUARE from the knuckle
+     span, so it cannot undo that foreshortening — and a vertical
+     stretch of the probe ROI (zoomY > 1 in the sampling sense below:
+     the source is stretched to fill the frame) restores the print's
+     proportions. See PALMPRINT_GEO_VARIANTS. */
+  function scaleGrayCentre(gray, w, h, zoomX, zoomY) {
+    if (!gray || !w || !h || gray.length < w * h || !isFinite(zoomX) || !isFinite(zoomY) || zoomX <= 0 || zoomY <= 0) return null;
+    var cx = (w - 1) / 2, cy = (h - 1) / 2;
+    var out = new Array(w * h);
+    for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) {
+      var sx = cx + (x - cx) / zoomX, sy = cy + (y - cy) / zoomY;
+      var x0 = Math.floor(sx), y0 = Math.floor(sy), fx = sx - x0, fy = sy - y0;
+      function v(xx, yy) {
+        xx = Math.max(0, Math.min(w - 1, xx)); yy = Math.max(0, Math.min(h - 1, yy));
+        return gray[yy * w + xx];
+      }
+      out[y * w + x] = v(x0, y0) * (1 - fx) * (1 - fy) + v(x0 + 1, y0) * fx * (1 - fy) + v(x0, y0 + 1) * (1 - fx) * fy + v(x0 + 1, y0 + 1) * fx * fy;
+    }
+    return out;
+  }
   /* Horizontal mirror of a grayscale image (row-wise reversal). Used to
      encode the mirror twin of a palm ROI: a front-camera capture and a
      back-camera capture of the same palm are mirror images of each
@@ -1414,6 +1440,76 @@
     return out;
   }
 
+  /* v41 GEOMETRIC probe variants — the fix for the 2026-11-23 phone
+     genuine reject (his own palm: similarity 0.207, best frame 0.242,
+     against the 0.32 bar, after a smooth enrolment).
+     DIAGNOSIS (rig, fixture palms through the real warp+encode path,
+     one factor varied at a time; full table in tests/v41-geovariants):
+       - probe distance/scale x0.6..x1.3: 0.559-0.589 — INNOCENT
+         (the landmark warp normalises scale);
+       - in-plane rotation +-25 deg: 0.573-0.594 — INNOCENT (the
+         warp aligns on the wrist axis at the source);
+       - ROI from the 480px analysis copy vs the 640px source: probe
+         still verifies at 0.517 — the v38 input cuts are INNOCENT;
+       - enrolment self-consistency: mutual sims of the 6 banked
+         codes 0.531-0.678 — healthy, NOT the failure;
+       - OUT-OF-PLANE TILT (palm plane angled to the camera, print
+         foreshortened along the wrist axis): av 0.90 -> 0.292,
+         0.85 -> 0.224, 0.80 -> 0.196, 0.75 -> 0.169 — THE dominant
+         factor, landing exactly on his measured 0.21-0.24. The
+         warp's ROI is a square built from the KNUCKLE SPAN (the
+         axis a tilt around the knuckle line barely shortens), so
+         the foreshortened print is encoded compressed and no
+         translation search can recover it;
+       - knuckle-span misread (fingers more/less spread than at
+         enrolment): span x1.10 -> 0.259, x1.15 -> 0.238,
+         x0.90 -> 0.314 — the second factor (the square's SIZE is
+         the span, so a span error is a zoom error);
+       - landmark jitter 8-12 px on the warp landmarks: 0.287 /
+         0.230 — contributes, partly covered by the same variants.
+     FIX: the probe side gains a bounded set of geometric re-encodes
+     — vertical stretches that undo foreshortening (zy 1.12-1.43),
+     vertical squeezes for the symmetric case (the ENROLMENT was
+     the tilted one: zy 0.85 / 0.75), and isotropic zooms that undo
+     a span misread (1.10 / 0.91). Each variant is encoded ONCE per
+     orientation at the centre shift only: the similarity's own
+     +-2 code-grid translation search absorbs the residual
+     translation (measured: centre-only scores identical to a
+     9-shift expansion on every fixture). Order is measured
+     likelihood: the tilt stretches that cover his failure band
+     first. The variants only ADD pairs to the v33 max rule — the
+     matcher, fusion and threshold are untouched — and they are
+     probe-side only, so every existing enrolment (including his
+     v40 one) benefits with no re-enrolment and no stored-data
+     change. Impostor cost, measured on the fixture family with
+     the full expanded set: max 0.150, identical to the base set's
+     0.150 — the expansion did not widen the impostor surface
+     there; the field test remains the real-world gate. */
+  var PALMPRINT_GEO_VARIANTS = [
+    { zx: 1, zy: 1.18 }, { zx: 1, zy: 1.33 }, { zx: 1, zy: 1.25 },
+    { zx: 1, zy: 1.12 }, { zx: 1, zy: 1.43 },
+    { zx: 1, zy: 0.85 }, { zx: 1, zy: 0.75 },
+    { zx: 1.10, zy: 1.10 }, { zx: 0.91, zy: 0.91 }
+  ];
+  /* The geometric probe codes for one ROI: for each variant, the
+     resampled ROI and its mirror twin, encoded at the centre shift.
+     Sane codes only, in PALMPRINT_GEO_VARIANTS order. */
+  function palmprintProbeCodesGeo(roi) {
+    if (!roi || roi.length !== PALMPRINT_ROI_SIZE * PALMPRINT_ROI_SIZE) return [];
+    var out = [];
+    var flipped = flipGrayHorizontal(roi, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
+    var imgs = flipped ? [roi, flipped] : [roi];
+    PALMPRINT_GEO_VARIANTS.forEach(function (gv) {
+      imgs.forEach(function (img) {
+        var scaled = scaleGrayCentre(img, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE, gv.zx, gv.zy);
+        if (!scaled) return;
+        var code = palmprintEncode(scaled, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
+        if (code && palmprintCodeSane(code)) out.push(code);
+      });
+    });
+    return out;
+  }
+
   /* --- Palm ROI extraction: landmarks locate, they do not identify ---
      Palm frame built in PIXEL space (landmark coords are per-axis
      normalised, so geometry must be computed after scaling). v20
@@ -1676,6 +1772,10 @@
     var codes = [];
     (liveRois || []).forEach(function (roi) {
       palmprintProbeCodes(roi).forEach(function (c) { codes.push(c); });
+      // v41: the geometric variants join the same max rule (see
+      // PALMPRINT_GEO_VARIANTS). The fast path enumerates exactly
+      // this pair set on a non-pass, keeping the two bit-identical.
+      palmprintProbeCodesGeo(roi).forEach(function (c) { codes.push(c); });
     });
     if (!codes.length) return fail('No real open palm with readable print detail was detected in this scan.', null);
     return verifyPalmprintProfile(stored, codes);
@@ -1696,7 +1796,13 @@
      similarity IS the full max, identical to verifyPalmprintRois.
      The pair set, the encoder, the fusion rule and the threshold
      are unchanged; fail-closed on the same conditions, in the
-     same order, with the same messages. */
+     same order, with the same messages.
+     v41: after each ROI's base expansion, the geometric variants
+     (PALMPRINT_GEO_VARIANTS) for that ROI are produced and scored
+     the same way — the exact path's pair set is base + geo, so a
+     non-pass still reports the identical full max, and a pass
+     still reports one true pair score. A scan the base set passes
+     never pays for the geo encodes. */
   function verifyPalmprintRoisFast(stored, liveRois) {
     var fail = function (reason, similarity) {
       return { ok: false, verified: false, similarity: similarity, threshold: PALMPRINT_THRESHOLD, reason: reason };
@@ -1706,6 +1812,22 @@
     var best = null;
     var anyCode = false;
     var rois = liveRois || [];
+    // One probe code, scored against the profile: updates the
+    // running max and reports whether the threshold is reached.
+    // Shared by the base shift expansion and the v41 geometric
+    // variants so both judge pairs identically.
+    function scoreProbe(code) {
+      var cb = palmprintCodeBytes(code);
+      if (!cb) return false;
+      anyCode = true;
+      for (var ci = 0; ci < profile.codes.length; ci++) {
+        var s = palmprintSimilaritySeeded(profile.codes[ci], cb, best);
+        if (s === null || !isFinite(s)) return null;
+        if (best === null || s > best) best = s;
+        if (best >= PALMPRINT_THRESHOLD) return true;
+      }
+      return false;
+    }
     for (var ri = 0; ri < rois.length; ri++) {
       var roi = rois[ri];
       if (!roi || roi.length !== PALMPRINT_ROI_SIZE * PALMPRINT_ROI_SIZE) continue;
@@ -1718,15 +1840,26 @@
           if (!src) continue;
           var code = palmprintEncode(src, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
           if (!code || !palmprintCodeSane(code)) continue;
-          var cb = palmprintCodeBytes(code);
-          if (!cb) continue;
-          anyCode = true;
-          for (var ci = 0; ci < profile.codes.length; ci++) {
-            var s = palmprintSimilaritySeeded(profile.codes[ci], cb, best);
-            if (s === null || !isFinite(s)) return fail('Palmprint comparison failed.', null);
-            if (best === null || s > best) best = s;
-            if (best >= PALMPRINT_THRESHOLD) return palmprintMatchResult(best);
-          }
+          var hit = scoreProbe(code);
+          if (hit === null) return fail('Palmprint comparison failed.', null);
+          if (hit) return palmprintMatchResult(best);
+        }
+      }
+      // v41: geometric variants for THIS roi, only after its base
+      // expansion — a scan the base set already passes pays nothing
+      // for them, and a scan nothing passes has enumerated exactly
+      // the exact path's pair set (base + geo), so a non-pass score
+      // stays the identical full max.
+      for (var gi = 0; gi < PALMPRINT_GEO_VARIANTS.length; gi++) {
+        var gv = PALMPRINT_GEO_VARIANTS[gi];
+        for (var go = 0; go < imgs.length; go++) {
+          var scaled = scaleGrayCentre(imgs[go], PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE, gv.zx, gv.zy);
+          if (!scaled) continue;
+          var gcode = palmprintEncode(scaled, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
+          if (!gcode || !palmprintCodeSane(gcode)) continue;
+          var ghit = scoreProbe(gcode);
+          if (ghit === null) return fail('Palmprint comparison failed.', null);
+          if (ghit) return palmprintMatchResult(best);
         }
       }
     }
@@ -2045,6 +2178,7 @@
       ';var PALMPRINT_THRESHOLD=' + PALMPRINT_THRESHOLD +
       ';var PALMPRINT_SHIFT_RANGE=' + PALMPRINT_SHIFT_RANGE +
       ';var PALMPRINT_SHIFT_ORDER=' + JSON.stringify(PALMPRINT_SHIFT_ORDER) +
+      ';var PALMPRINT_GEO_VARIANTS=' + JSON.stringify(PALMPRINT_GEO_VARIANTS) +
       ';var PALMPRINT_KERNELS=null;';
     // v33: the encoder chain joins the worker so the 25-shift probe
     // re-encodes (verifyPalmprintRois) run off the main thread too.
@@ -2055,11 +2189,11 @@
     // messages carrying profiles + liveRois verify the SAME probe
     // codes — encoded once — against every profile (the impostor-max
     // composition), answering with a results array.
-    var fns = [reflect101, resizeGrayBilinear, convolveSeparable, convolve2d, gaborKernelReal, palmprintKernels, palmprintEnhance, palmprintEncode, palmprintCodeFromBase64, palmprintCodeBytes, palmprintCodeSane, edccScoreAtShift, palmprintSimilaritySeeded, palmprintSimilarity, flipGrayHorizontal, shiftGrayClamped, palmprintProbeCodes, normalisePalmprintProfile, palmprintMatchResult, verifyPalmprintProfile, verifyPalmprintRois, verifyPalmprintRoisFast];
+    var fns = [reflect101, resizeGrayBilinear, convolveSeparable, convolve2d, gaborKernelReal, palmprintKernels, palmprintEnhance, palmprintEncode, palmprintCodeFromBase64, palmprintCodeBytes, palmprintCodeSane, edccScoreAtShift, palmprintSimilaritySeeded, palmprintSimilarity, flipGrayHorizontal, scaleGrayCentre, shiftGrayClamped, palmprintProbeCodes, palmprintProbeCodesGeo, normalisePalmprintProfile, palmprintMatchResult, verifyPalmprintProfile, verifyPalmprintRois, verifyPalmprintRoisFast];
     var body = fns.map(function (f) { return f.toString(); }).join('\n');
     var handler = 'onmessage=function(e){var d=e.data||{};var r=null;var rs=null;' +
       'try{' +
-      'if(d.profiles){var codes=[];(d.liveRois||[]).forEach(function(roi){palmprintProbeCodes(roi).forEach(function(c){codes.push(c);});});rs=d.profiles.map(function(p){return verifyPalmprintProfile(p,codes);});}' +
+      'if(d.profiles){var codes=[];(d.liveRois||[]).forEach(function(roi){palmprintProbeCodes(roi).forEach(function(c){codes.push(c);});palmprintProbeCodesGeo(roi).forEach(function(c){codes.push(c);});});rs=d.profiles.map(function(p){return verifyPalmprintProfile(p,codes);});}' +
       'else if(d.fast){r=verifyPalmprintRoisFast(d.profile,d.liveRois);}' +
       'else{r=(d.liveRois?verifyPalmprintRois(d.profile,d.liveRois):verifyPalmprintProfile(d.profile,d.liveCodes));}' +
       '}catch(err){r=null;rs=null;}' +
@@ -2331,12 +2465,20 @@
      requirement for grid-alone conviction) — no stored field
      changes shape, so its step is also the identity, and a v39
      enrolment opens under v40 with the person, palm codes and
-     points intact. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40'];
+     points intact.
+
+     v40 -> v41 is likewise an ADOPTION: v41 changes only the
+     PROBE side of palmprint verification (the geometric variant
+     re-encodes in PALMPRINT_GEO_VARIANTS) — enrolled codes are
+     read exactly as before and benefit from the fix unchanged,
+     so its step is also the identity, and a v40 enrolment opens
+     under v41 with the person, palm codes and points intact. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
-    'v40': function (snap) { return snap; }
+    'v40': function (snap) { return snap; },
+    'v41': function (snap) { return snap; }
   };
   var BIOM_DATA_STORES = ['people', 'logs', 'transactions', 'meta'];
   function migrateBiomData(snapshot, fromVersion, toVersion) {
@@ -2425,6 +2567,9 @@
     shiftGrayClamped: shiftGrayClamped,
     PALMPRINT_SHIFT_RANGE: PALMPRINT_SHIFT_RANGE,
     palmprintProbeCodes: palmprintProbeCodes,
+    scaleGrayCentre: scaleGrayCentre,
+    PALMPRINT_GEO_VARIANTS: PALMPRINT_GEO_VARIANTS,
+    palmprintProbeCodesGeo: palmprintProbeCodesGeo,
     verifyPalmprintRois: verifyPalmprintRois,
     verifyPalmprintRoisFast: verifyPalmprintRoisFast,
     palmprintUsableOpenFrames: palmprintUsableOpenFrames,

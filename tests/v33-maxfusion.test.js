@@ -103,12 +103,15 @@ check('VERIFY a different palm is denied', rOther.verified === false && rOther.s
 (function () {
   // The reported score must be exactly the max over (probe codes x
   // enrolled codes) of palmprintSimilarity — the v25 fusion rule.
+  // v41: the probe set is the base 50 PLUS the geometric variants
+  // (palmprintProbeCodesGeo) — the manual max enumerates the same
+  // expanded set the verify path scores.
   const enrolledCodes = enrolled.map(function (b64) { return new Uint8Array(Buffer.from(b64, 'base64')); });
   let best = -1;
-  B.palmprintProbeCodes(liveSame).forEach(function (pc) {
+  B.palmprintProbeCodes(liveSame).concat(B.palmprintProbeCodesGeo(liveSame)).forEach(function (pc) {
     enrolledCodes.forEach(function (ec) { const s = B.palmprintSimilarity(pc, ec); if (s !== null && s > best) best = s; });
   });
-  check('VERIFY score equals the manual score-level MAX over all pairs', Math.abs(rSame.similarity - best) < 1e-12, 'manual=' + best.toFixed(4) + ' reported=' + rSame.similarity.toFixed(4));
+  check('VERIFY score equals the manual score-level MAX over all pairs (v41: base + geometric probe set)', Math.abs(rSame.similarity - best) < 1e-12, 'manual=' + best.toFixed(4) + ' reported=' + rSame.similarity.toFixed(4));
 })();
 check('VERIFY fails closed on a missing profile', B.verifyPalmprintRois(null, [liveSame]).verified === false);
 check('VERIFY fails closed on no live ROI', B.verifyPalmprintRois(profileA, []).verified === false && B.verifyPalmprintRois(profileA, null).verified === false);

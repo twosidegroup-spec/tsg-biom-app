@@ -141,8 +141,8 @@ check('MIGRATE a store with a missing logs array keeps the people', Array.isArra
    its migration step is an adoption like v38's. A store written by
    v38 (and one written by v37, through both steps) must open under
    v39 with the person, codes and points intact and still verify. */
-check('CHAIN v40 is the newest link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v40' &&
-  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40', B.BIOM_DATA_VERSIONS.join(','));
+check('CHAIN v41 is the newest link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v41' &&
+  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40,v41', B.BIOM_DATA_VERSIONS.join(','));
 const mig39 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v38', 'v39');
 check('MIGRATE v38->v39 runs the v39 step', mig39.appliedSteps.indexOf('v39') !== -1, mig39.appliedSteps.join(','));
 check('MIGRATE v38->v39 is an adoption: no store rewritten', mig39.changed === false && mig39.changedStores.length === 0,
@@ -185,14 +185,39 @@ const migAgain40 = B.migrateBiomData(mig40.snapshot, 'v40', 'v40');
 check('MIGRATE is idempotent at v40', migAgain40.appliedSteps.length === 0 && migAgain40.changed === false &&
   migAgain40.snapshot.people.length === 1 && migAgain40.snapshot.people[0].loyaltyPoints === 137);
 
+/* ---------- v41: the chain grows again, the data still survives --
+   v41 changes only the probe side of palmprint verification (the
+   geometric variant re-encodes); enrolled codes are read exactly
+   as before, so its migration step is an adoption like v40's. A
+   store written by v40 (and one written by v37, through all four
+   steps) must open under v41 with the person, codes and points
+   intact and still verify. */
+const mig41 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v40', 'v41');
+check('MIGRATE v40->v41 runs the v41 step', mig41.appliedSteps.indexOf('v41') !== -1, mig41.appliedSteps.join(','));
+check('MIGRATE v40->v41 is an adoption: no store rewritten', mig41.changed === false && mig41.changedStores.length === 0,
+  'changedStores=' + JSON.stringify(mig41.changedStores));
+const mp41 = mig41.snapshot.people[0];
+check('SURVIVE v41 person, points and codes intact', !!mp41 && mp41.id === 'TSG-BIO-2841' && mp41.loyaltyPoints === 137 &&
+  JSON.stringify(mp41.palmProfile.codes) === JSON.stringify(enrolledCodes));
+const migChain41 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v37', 'v41');
+check('MIGRATE v37->v41 runs all four steps in order', migChain41.appliedSteps.join(',') === 'v38,v39,v40,v41', migChain41.appliedSteps.join(','));
+check('MIGRATE v37->v41 keeps the person and points', migChain41.snapshot.people.length === 1 && migChain41.snapshot.people[0].loyaltyPoints === 137);
+const rSame41 = B.verifyPalmprintProfile(mp41.palmProfile, probeSame);
+check('VERIFY the v41-migrated profile accepts the same palm', rSame41.verified === true, 'sim=' + (rSame41.similarity && rSame41.similarity.toFixed(3)));
+const rOther41 = B.verifyPalmprintProfile(mp41.palmProfile, probeOther);
+check('VERIFY the v41-migrated profile still rejects another palm', rOther41.verified === false, 'sim=' + (rOther41.similarity && rOther41.similarity.toFixed(3)));
+const migAgain41 = B.migrateBiomData(mig41.snapshot, 'v41', 'v41');
+check('MIGRATE is idempotent at v41', migAgain41.appliedSteps.length === 0 && migAgain41.changed === false &&
+  migAgain41.snapshot.people.length === 1 && migAgain41.snapshot.people[0].loyaltyPoints === 137);
+
 /* ---------- the shipped app source carries no wipe ----------------- */
 const appSrc = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
-check('APP declares the current data version (v40)', appSrc.indexOf("APP_DATA_VERSION = 'v40'") !== -1);
+check('APP declares the current data version (v41)', appSrc.indexOf("APP_DATA_VERSION = 'v41'") !== -1);
 check('APP startup runs the migration', appSrc.indexOf('migrateBiomData') !== -1 && appSrc.indexOf('migrateDbStores') !== -1);
 check('APP contains no database deletion (the retired wipe)', appSrc.indexOf('deleteDatabase') === -1);
 check('APP contains no store-key removal (the retired wipe)', !/removeItem\(\s*'tsgbiom_/.test(appSrc));
 const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
-check('APP shell is v40', swSrc.indexOf('tsg-biom-shell-v40') !== -1);
+check('APP shell is v41', swSrc.indexOf('tsg-biom-shell-v41') !== -1);
 
 console.log(fail === 0 ? 'ALL MIGRATION TESTS PASSED (' + pass + ')' : fail + ' FAILURES, ' + pass + ' passed');
 process.exit(fail === 0 ? 0 : 1);
