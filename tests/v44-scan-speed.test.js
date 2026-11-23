@@ -3,38 +3,21 @@
    Trigger: the Chairman's phone verdict on v43 (17:42 Dhaka):
    "now the verify and payment scan takes too timeeeee". On his
    device a full-window run measured 24 frames in 11,752 ms
-   (~490 ms per analysed frame), and every non-matching frame was
-   paying all 18 geometric-variant encodes plus their scoring
-   before the scan moved on. v44 cuts the DURATION four ways and
-   changes no verdict semantics for any judged frame:
+   (~490 ms per analysed frame). v44's four cuts were: phone-
+   readable per-stage diagnostics, geometric-variant band gating,
+   the 6-second wall-clock budget, and the 320 px analysis copy.
 
-   (1) PHONE-READABLE DIAGNOSTICS — the scan result objects carry
-       a per-stage timing sink (base/geo/match ms + encode counts)
-       and the app panels render it ("Scan timing: N frames
-       analysed in T ms (F frames/s); per frame — landmarks X ms,
-       palm code Y ms, matching Z ms ..."), so the next phone
-       screenshot reports the device's own stage costs.
-   (2) PROMISING-BAND GATING — a frame's geometric encodes run
-       only when its base-rule max reaches PALMPRINT_GEO_FLOOR.
-       MEASURED BASIS (this fixture family, 2026-11-23): rescuable
-       genuine frames (base < 0.32, full rule >= 0.32) scored base
-       0.158..0.314 (n=40); impostor frames base max 0.174 (n=80,
-       median 0.120). Skipping geo can only LOWER a frame's score
-       (a max over a subset), so the gate can never create an
-       accept; the floor 0.14 sits 0.018 under the lowest measured
-       rescuable frame, so no measured rescue is lost either. A
-       frame inside the band must receive the IDENTICAL full v43
-       judgement — the checks below pin bit-identical scores.
-   (3) WALL-CLOCK DEADLINE — B.SCAN_TIME_BUDGET_MS = 6000 bounds
-       the no-match grind; MAXF 24 stays as the backstop. Basis:
-       across 18 fixture genuine sequences every verdict landed at
-       analysed frame 3 (the evidence-rule minimum); the budget
-       allows 12 frames (4x) at the phone's measured ~490 ms.
-   (4) LANDMARK INPUT — ANALYSIS_MAX 480 -> 320, adopted on the
-       quantised-landmark fixture measurement: genuine band holds
-       (tilt av 0.90 minimum 0.345 at 320 vs 0.338 at 480;
-       impostor max 0.146 vs 0.142).
-
+   v45 port (2026-11-23): the spec replaces the matcher, so the
+   band gate and the geometric variants are RETIRED (their checks
+   are replaced by the pin that geoFloor is now ignored, and by
+   the packed pipeline's own stage timings). What survives of v44
+   and stays pinned here: the 6-second budget and MAXF backstop,
+   the 320 px analysis copy, the per-stage timing sink on scan
+   results, the fast/exact bit-identity on non-pass scores, the
+   multi-profile composition identity, and worker parity. The
+   tilt-band checks are NOT ported: under the 5-shift matcher the
+   band no longer holds, and the honest numbers live in
+   tests/v45-palmx.test.js.
    Rig timings printed here are rig timings; they do not predict
    the phone. The diagnostics exist so the phone reports itself. */
 'use strict';
@@ -108,7 +91,7 @@ function frameObj(tex, opt, sharp) {
   const r = render(tex, opt);
   const roi = B.palmRoiFromLandmarks(r.gray, r.w, r.h, r.lm);
   if (!roi) return null;
-  return { openness: 2.0, code: B.palmprintEncode(roi, 128, 128), roi: roi, sharpness: sharp || 100 };
+  return { openness: 2.0, code: B.palmprintEncode(roi, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE), roi: roi, sharpness: sharp || 100 };
 }
 function enrol(tex, baseOpt, seed0) {
   const frames = [];
@@ -116,94 +99,53 @@ function enrol(tex, baseOpt, seed0) {
     frames.push(frameObj(tex, Object.assign({}, baseOpt, { seed: seed0 + i, cx: 320 + ((i % 3) - 1) * 2, cy: 240 + (((i + 1) % 3) - 1) * 2, deg: (baseOpt.deg || 0) + (i % 3) - 1 }), 100 + i * 10));
   }
   const codes = B.selectPalmprintProfileCodes(frames.filter(Boolean));
-  return codes ? { v: 3, codes: codes } : null;
+  return codes ? { v: 4, format: B.PALMPRINT_FORMAT, codes: codes } : null;
 }
 function baseScore(profile, roi) {
-  return B.verifyPalmprintProfile(profile, B.palmprintProbeCodes(roi)).similarity;
+  return B.verifyPalmprintRois(profile, [roi]).similarity;
 }
 
 const profile = enrol(TEX_A, {}, 100);
-check('FIXTURE enrolment banks a profile', !!profile && profile.codes.length >= 2, profile && (profile.codes.length + ' codes'));
-const FLOOR = B.PALMPRINT_GEO_FLOOR;
+check('FIXTURE enrolment banks a profile', !!profile && profile.codes.length >= 2, profile && (profile.codes.length + ' templates'));
 
-/* ---------------- the measured constants -------------------------- */
-check('CONST geo floor is the measured 0.14', FLOOR === 0.14, 'floor=' + FLOOR);
+/* ---------------- the surviving constants ------------------------- */
 check('CONST scan budget is 6000 ms', B.SCAN_TIME_BUDGET_MS === 6000, 'budget=' + B.SCAN_TIME_BUDGET_MS);
 check('THRESHOLD stays the phone-calibrated 0.32', B.PALMPRINT_THRESHOLD === 0.32);
 
-/* Rescuable genuine frames from the v41 conditions: their base
-   scores must sit inside the band (>= floor, < 0.32) and the full
-   rule must rescue them — the floor's empirical footing. */
+/* Fixtures for the checks below: one genuine flat frame, one
+   genuine tilted frame (the band case), impostor frames. */
+const flatF = frameObj(TEX_A, { seed: 2000 });
 const tilt85 = frameObj(TEX_A, { seed: 1000, av: 0.85 });
-const tilt70 = frameObj(TEX_A, { seed: 1021, av: 0.70 });
-[[tilt85, 'tilt av=0.85'], [tilt70, 'tilt av=0.70']].forEach(function (pair) {
-  const f = pair[0], b = baseScore(profile, f.roi);
-  const full = B.verifyPalmprintRoisFast(profile, [f.roi]);
-  check('BAND ' + pair[1] + ' genuine frame is rescuable and in-band', b >= FLOOR && b < 0.32 && full.verified === true,
-    'base=' + b.toFixed(3) + ' full=' + full.similarity.toFixed(3));
-});
+const impF = frameObj(TEX_B, { seed: 5000 });
 
-/* Impostor frames: select, from a fixed deterministic list, one
-   below the floor and one inside the band — both must exist in
-   the measured distributions (median 0.120, max 0.174). */
-const impCandidates = [];
-[TEX_B, TEX_C].forEach(function (tex, ti) {
-  [{}, { av: 0.85 }, { av: 0.70 }, { spanFactor: 1.15 }, { S: 272 * 0.85, deg: 8, av: 0.85 }].forEach(function (extra, ci) {
-    for (let s = 0; s < 2; s++) {
-      const f = frameObj(tex, Object.assign({ seed: 5000 + ti * 1000 + ci * 100 + s * 7 }, extra));
-      if (f) impCandidates.push({ f: f, b: baseScore(profile, f.roi) });
-    }
-  });
-});
-const impBelow = impCandidates.filter(function (c) { return c.b < FLOOR; })[0];
-const impInBand = impCandidates.filter(function (c) { return c.b >= FLOOR && c.b < 0.32; })[0];
-info('impostor base scores sampled: ' + impCandidates.map(function (c) { return c.b.toFixed(3); }).join(', '));
-check('BAND impostor frames exist below the floor', !!impBelow, impBelow && ('base=' + impBelow.b.toFixed(3)));
-check('BAND impostor frames exist inside the band', !!impInBand, impInBand && ('base=' + impInBand.b.toFixed(3)));
-
-/* ---------------- (2) gating: the 1:1 fast path ------------------- */
+/* ---------------- diagnostics: the timing sink -------------------- */
 (function () {
-  // In-band rescuable genuine: IDENTICAL judgement to v43.
-  const sinkIn = {};
-  const gated = B.verifyPalmprintRoisFast(profile, [tilt85.roi], { geoFloor: FLOOR, timing: sinkIn });
-  const ungated = B.verifyPalmprintRoisFast(profile, [tilt85.roi]);
-  check('GATE in-band tilted genuine still verifies, bit-identical score', gated.verified === true && gated.similarity === ungated.similarity,
-    'gated=' + gated.similarity.toFixed(4) + ' ungated=' + ungated.similarity.toFixed(4));
-  check('GATE in-band frame pays geo encodes', sinkIn.geoEncodes > 0, 'geoEncodes=' + sinkIn.geoEncodes);
-  check('DIAG timing sink carries the stage fields', typeof sinkIn.baseMs === 'number' && typeof sinkIn.geoMs === 'number' &&
-    typeof sinkIn.baseEncodes === 'number' && typeof sinkIn.geoEncodes === 'number',
-    'baseMs=' + Math.round(sinkIn.baseMs) + ' geoMs=' + Math.round(sinkIn.geoMs));
-
-  // Out-of-band impostor: geo skipped entirely, verdict unchanged.
-  const sinkOut = {};
-  const gOut = B.verifyPalmprintRoisFast(profile, [impBelow.f.roi], { geoFloor: FLOOR, timing: sinkOut });
-  check('GATE out-of-band frame skips every geo encode', sinkOut.geoEncodes === 0 && sinkOut.geoMs === 0, 'geoEncodes=' + sinkOut.geoEncodes);
-  check('GATE out-of-band frame still pays the full base enumeration', sinkOut.baseEncodes === 50, 'baseEncodes=' + sinkOut.baseEncodes);
-  check('GATE out-of-band impostor refused at exactly its base score', gOut.verified === false && gOut.similarity === impBelow.b,
-    'score=' + gOut.similarity.toFixed(4) + ' base=' + impBelow.b.toFixed(4));
-
-  // In-band impostor: geo runs, still refused, identical score.
-  const sinkBand = {};
-  const gBand = B.verifyPalmprintRoisFast(profile, [impInBand.f.roi], { geoFloor: FLOOR, timing: sinkBand });
-  const uBand = B.verifyPalmprintRoisFast(profile, [impInBand.f.roi]);
-  check('GATE in-band impostor gets geo and is still refused, identical score', sinkBand.geoEncodes > 0 && gBand.verified === false && gBand.similarity === uBand.similarity,
-    'gated=' + gBand.similarity.toFixed(4) + ' ungated=' + uBand.similarity.toFixed(4));
-
-  // No opts at all: the v43 judgement, pair for pair. The fast /
-  // exact bit-identity the v35 suite pins holds for NON-pass
-  // scores (a passing fast call reports its deciding pair, the
-  // exact path the full max — both verify), so the identity is
-  // pinned on the in-band impostor, and the tilted genuine is
-  // pinned on the shared verdict.
-  const exactImp = B.verifyPalmprintRois(profile, [impInBand.f.roi]);
-  check('GATE no-opts fast path still equals the exact path on a non-pass frame', uBand.similarity === exactImp.similarity && uBand.verified === exactImp.verified,
-    'fast=' + uBand.similarity.toFixed(4) + ' exact=' + exactImp.similarity.toFixed(4));
-  const exactTilt = B.verifyPalmprintRois(profile, [tilt85.roi]);
-  check('GATE no-opts fast path verifies the tilted genuine like the exact path', ungated.verified === true && exactTilt.verified === true,
-    'fast=' + ungated.similarity.toFixed(4) + ' exact=' + exactTilt.similarity.toFixed(4));
+  const sink = {};
+  const r = B.verifyPalmprintRoisFast(profile, [impF.roi], { timing: sink });
+  check('DIAG timing sink carries the stage fields', typeof sink.baseMs === 'number' && typeof sink.matchMs === 'number' &&
+    typeof sink.baseEncodes === 'number' && typeof sink.geoEncodes === 'number',
+    'baseMs=' + Math.round(sink.baseMs) + ' matchMs=' + Math.round(sink.matchMs));
+  check('DIAG the packed probe is 2 encodes (plain + mirror), no variant encodes', sink.baseEncodes === 2 && sink.geoEncodes === 0 && sink.geoMs === 0,
+    'baseEncodes=' + sink.baseEncodes + ' geoEncodes=' + sink.geoEncodes);
+  check('DIAG the geo band gate is retired: geoFloor is accepted and ignored',
+    B.verifyPalmprintRoisFast(profile, [impF.roi], { geoFloor: 0.14 }).similarity === r.similarity);
 })();
 
-/* ---------------- (2) gating: multi-profile + worker -------------- */
+/* ---------------- fast / exact identity --------------------------- */
+(function () {
+  const exactImp = B.verifyPalmprintRois(profile, [impF.roi]);
+  const fastImp = B.verifyPalmprintRoisFast(profile, [impF.roi]);
+  check('FAST non-pass score is bit-identical to the exact path', fastImp.similarity === exactImp.similarity && fastImp.verified === false,
+    'fast=' + fastImp.similarity.toFixed(4) + ' exact=' + exactImp.similarity.toFixed(4));
+  const exactFlat = B.verifyPalmprintRois(profile, [flatF.roi]);
+  const fastFlat = B.verifyPalmprintRoisFast(profile, [flatF.roi]);
+  check('FAST genuine flat frame verifies like the exact path', fastFlat.verified === true && exactFlat.verified === true,
+    'fast=' + fastFlat.similarity.toFixed(4) + ' exact=' + exactFlat.similarity.toFixed(4));
+  info('tilted frame (av 0.85) under the packed matcher: fast=' + B.verifyPalmprintRoisFast(profile, [tilt85.roi]).similarity.toFixed(3) +
+    ' — below threshold; the tilt band is reported in tests/v45-palmx.test.js');
+})();
+
+/* ---------------- multi-profile + worker -------------------------- */
 function workerCall(msg) {
   let posted = null;
   const sandbox = { Buffer: Buffer, postMessage: function (m) { posted = m; } };
@@ -213,43 +155,27 @@ function workerCall(msg) {
   return posted;
 }
 (function () {
-  const profs = [profile];
-  // Ungated composition === per-profile verify over the shared
-  // codes === the exact 1:1 call (the v43 composition, unchanged).
-  const comp = B.verifyPalmprintProfilesRois(profs, [tilt85.roi]);
-  const exact = B.verifyPalmprintRois(profile, [tilt85.roi]);
-  check('MULTI ungated composition equals the exact call', comp[0].similarity === exact.similarity && comp[0].verified === exact.verified,
+  const comp = B.verifyPalmprintProfilesRois([profile], [flatF.roi]);
+  const exact = B.verifyPalmprintRois(profile, [flatF.roi]);
+  check('MULTI composition equals the exact call', comp[0].similarity === exact.similarity && comp[0].verified === exact.verified,
     'multi=' + comp[0].similarity.toFixed(4) + ' exact=' + exact.similarity.toFixed(4));
-
-  // Gated composition on the in-band genuine: identical results.
-  const sinkM = {};
-  const gComp = B.verifyPalmprintProfilesRois(profs, [tilt85.roi], { geoFloor: FLOOR, timing: sinkM });
-  check('MULTI gated in-band genuine: identical result, geo encoded', gComp[0].similarity === comp[0].similarity && gComp[0].verified === true && sinkM.geoEncodes > 0,
-    'geoEncodes=' + sinkM.geoEncodes);
-
-  // Gated composition on the out-of-band impostor: no geo codes.
-  const sinkMo = {};
-  const gCompOut = B.verifyPalmprintProfilesRois(profs, [impBelow.f.roi], { geoFloor: FLOOR, timing: sinkMo });
-  check('MULTI gated out-of-band impostor: geo skipped, refused at base score', sinkMo.geoEncodes === 0 &&
-    gCompOut[0].verified === false && gCompOut[0].similarity === impBelow.b,
-    'score=' + gCompOut[0].similarity.toFixed(4));
-
-  // Worker: gated fast call matches the main thread and reports
-  // its timing; gated multi matches too.
-  const wFast = workerCall({ id: 1, profile: profile, liveRois: [impBelow.f.roi], fast: true, geoFloor: FLOOR });
-  check('WORKER gated fast call: geo skipped, timing reported', !!wFast && !!wFast.result && wFast.result.verified === false &&
-    !!wFast.timing && wFast.timing.geoEncodes === 0 && typeof wFast.timing.baseMs === 'number',
-    wFast && wFast.timing ? 'geoEncodes=' + wFast.timing.geoEncodes : 'no timing');
-  const wMulti = workerCall({ id: 2, profiles: profs, liveRois: [tilt85.roi], geoFloor: FLOOR });
-  check('WORKER gated multi call equals the main-thread composition', !!wMulti && Array.isArray(wMulti.results) &&
-    wMulti.results[0].similarity === gComp[0].similarity && wMulti.results[0].verified === true && !!wMulti.timing && wMulti.timing.geoEncodes > 0,
+  const wFast = workerCall({ id: 1, profile: profile, liveRois: [impF.roi], fast: true });
+  check('WORKER fast call matches the main thread and reports its timing', !!wFast && !!wFast.result && wFast.result.verified === false &&
+    !!wFast.timing && typeof wFast.timing.baseMs === 'number' && wFast.timing.baseEncodes === 2,
+    wFast && wFast.timing ? 'baseEncodes=' + wFast.timing.baseEncodes : 'no timing');
+  const wMulti = workerCall({ id: 2, profiles: [profile], liveRois: [flatF.roi] });
+  check('WORKER multi call equals the main-thread composition', !!wMulti && Array.isArray(wMulti.results) &&
+    wMulti.results[0].similarity === comp[0].similarity && wMulti.results[0].verified === true,
     wMulti && wMulti.results ? 'sim=' + wMulti.results[0].similarity.toFixed(4) : 'no results');
-  const wMultiPlain = workerCall({ id: 3, profiles: profs, liveRois: [tilt85.roi] });
-  check('WORKER ungated multi call still equals the exact composition', !!wMultiPlain && wMultiPlain.results[0].similarity === comp[0].similarity,
-    wMultiPlain && wMultiPlain.results ? 'sim=' + wMultiPlain.results[0].similarity.toFixed(4) : 'no results');
+  const wExh = workerCall({ id: 3, profile: profile, liveRois: [impF.roi], exhaustive: true });
+  const mExh = B.verifyPalmprintRois(profile, [impF.roi], { exhaustive: true });
+  check('WORKER exhaustive call carries the per-shift log, identical to the main thread',
+    !!wExh && !!wExh.result && Array.isArray(wExh.result.shiftLog) && wExh.result.shiftLog.length === 30 &&
+    wExh.result.similarity === mExh.similarity && JSON.stringify(wExh.result.shiftLog) === JSON.stringify(mExh.shiftLog),
+    wExh && wExh.result ? 'shifts=' + wExh.result.shiftLog.length + ' (6 probe x enrolled pairs x 5 shifts)' : 'no result');
 })();
 
-/* ---------------- (3) deadline behaviour -------------------------- */
+/* ---------------- deadline behaviour ------------------------------ */
 (function () {
   // A synthetic no-match stream at the phone's measured per-frame
   // cost, stopped by the app's own two limits (MAXF frames or the
@@ -266,21 +192,21 @@ function workerCall(msg) {
   check('DEADLINE a no-match stream ends at the budget, not the frame cap', stopReason === 'budget' && frames < MAXF,
     'stopped after ' + frames + ' frames / ' + elapsed + ' ms (' + stopReason + ')');
 
-  // The genuine-pass basis: a tilted genuine sequence verdicts at
-  // frame 3 — far inside the 12 frames the budget allows.
+  // The genuine-pass basis under the 1-snap rule: a flat genuine
+  // sequence completes at the FIRST analysed frame.
   let st2 = { streak: 0, best: null }, verdictFrame = null;
   for (let i = 0; i < 12 && verdictFrame === null; i++) {
-    const f = frameObj(TEX_A, { seed: 7000 + i * 13, cx: 320 + ((i % 3) - 1) * 3, cy: 240 + (((i + 1) % 3) - 1) * 3, deg: (i % 3) - 1, av: 0.85 });
+    const f = frameObj(TEX_A, { seed: 7000 + i * 13, cx: 320 + ((i % 3) - 1) * 3, cy: 240 + (((i + 1) % 3) - 1) * 3, deg: (i % 3) - 1 });
     if (!f) { st2 = B.streamMatchUpdate(st2, null); continue; }
-    const r = B.verifyPalmprintRoisFast(profile, [f.roi], { geoFloor: FLOOR });
+    const r = B.verifyPalmprintRoisFast(profile, [f.roi]);
     st2 = B.streamMatchUpdate(st2, r.similarity);
-    if (st2.done) verdictFrame = Math.max(i + 1, 3);
+    if (st2.done) verdictFrame = i + 1;
   }
-  check('DEADLINE genuine tilted sequence verdicts at frame 3, inside the budget', verdictFrame === 3,
+  check('DEADLINE (v45 1-snap) a flat genuine sequence completes at frame 1, far inside the budget', verdictFrame === 1,
     'verdictFrame=' + verdictFrame + ' (budget allows ' + Math.floor(B.SCAN_TIME_BUDGET_MS / FRAME_MS) + ' frames at ' + FRAME_MS + ' ms)');
 })();
 
-/* ---------------- (4) landmark input size ------------------------- */
+/* ---------------- landmark input size ----------------------------- */
 function snapLm(lm, W, H) {
   return lm.map(function (p) { return { x: Math.round(p.x * W) / W, y: Math.round(p.y * H) / H, z: 0 }; });
 }
@@ -292,17 +218,12 @@ function scoreWithLm(tex, opt, W) {
   return B.verifyPalmprintRoisFast(profile, [roi]).similarity;
 }
 (function () {
-  const g85at320 = [0, 1].map(function (s) { return scoreWithLm(TEX_A, { seed: 11100 + s * 7, av: 0.85 }, 320); });
-  const g90at320 = [0, 1].map(function (s) { return scoreWithLm(TEX_A, { seed: 11200 + s * 7, av: 0.90 }, 320); });
-  const g90at480 = [0, 1].map(function (s) { return scoreWithLm(TEX_A, { seed: 11200 + s * 7, av: 0.90 }, 480); });
+  const g320 = scoreWithLm(TEX_A, { seed: 11100 }, 320);
+  const g480 = scoreWithLm(TEX_A, { seed: 11100 }, 480);
   const imp320 = scoreWithLm(TEX_B, { seed: 11300 }, 320);
-  const min320 = Math.min.apply(null, g85at320.concat(g90at320));
-  const min480 = Math.min.apply(null, g90at480);
-  info('landmark 320: tilt0.85=[' + g85at320.map(function (x) { return x.toFixed(3); }).join(',') + '] tilt0.90=[' +
-    g90at320.map(function (x) { return x.toFixed(3); }).join(',') + '] impostor=' + imp320.toFixed(3) +
-    ' | tilt0.90 at 480 min=' + min480.toFixed(3));
-  check('LANDMARK 320 px: the genuine tilt band holds above threshold', min320 >= 0.32, 'min320=' + min320.toFixed(3));
-  check('LANDMARK 320 px: no genuine loss vs 480 in the tilt band', min320 >= min480 - 0.02, 'min320=' + min320.toFixed(3) + ' min480=' + min480.toFixed(3));
+  info('landmark quantisation, flat genuine: 320px=' + g320.toFixed(3) + ' 480px=' + g480.toFixed(3) + '; impostor at 320=' + imp320.toFixed(3));
+  check('LANDMARK 320 px: flat genuine still verifies', g320 >= 0.32, 'sim=' + g320.toFixed(3));
+  check('LANDMARK 320 px: no genuine loss vs 480 on flat presentations', g320 >= g480 - 0.02, 'g320=' + g320.toFixed(3) + ' g480=' + g480.toFixed(3));
   check('LANDMARK 320 px: impostor still refused with margin', imp320 < 0.25, 'impostor=' + imp320.toFixed(3));
 })();
 
@@ -315,8 +236,8 @@ function scoreWithLm(tex, opt, W) {
     count('MAXF = 24') === 2, 'budget lines=' + count('deadline = t0 + B.SCAN_TIME_BUDGET_MS'));
   check('APP timeout is reported plainly in both streams', count('No match was found within the') >= 2,
     'wording lines=' + count('No match was found within the'));
-  check('APP per-frame calls in both streams carry the band gate', count('geoFloor: B.PALMPRINT_GEO_FLOOR') >= 2,
-    'gate lines=' + count('geoFloor: B.PALMPRINT_GEO_FLOOR'));
+  check('APP per-frame calls in both streams carry the Field Test exhaustive flag', count('fieldExhaustiveOn()') >= 2,
+    'flag lines=' + count('fieldExhaustiveOn()'));
   check('APP diagnostics line ships in both streams', count('Scan timing:') >= 2 && count('frames analysed in') >= 2,
     'diag lines=' + count('Scan timing:'));
   check('APP frame results carry the stage timings', appSrc.indexOf('lmMs: lmMs, encMs: encMs') !== -1 &&

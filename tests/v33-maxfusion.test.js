@@ -2,12 +2,20 @@
    - shiftGrayClamped implements the benchmark's exact shift rule
      (out(x,y) = src(x-dx, y-dy), edge-clamped sampling).
    - Enrolment banks INDIVIDUAL capture codes only (no consensus).
-   - Verification re-encodes each live ROI at the full 25 image-level
-     shifts (plus the mirror twin's 25) and fuses at SCORE level with
-     MAX against the individual enrolled codes.
+   - Verification fuses at SCORE level with MAX over the
+     (probe x enrolled) pairs.
    - The worker runs the identical ROI path.
    - The live threshold stays 0.32 (phone-calibrated; recalibration
      through the field test is a separate, later step).
+
+   v45 port (2026-11-23): the max rule survives; its operands are
+   the spec's. The probe set is the packed template of the ROI
+   plus its mirror twin (the 25 image-level re-encodings are
+   replaced by the 5-shift code-grid matcher inside each pair
+   score), enrolment banks the burst's 3 time-spaced packed
+   templates, and the manual MAX below enumerates exactly the
+   pairs the verify path scores. Changed expectations are named
+   inline where they occur.
    Run: node tests/v33-maxfusion.test.js */
 'use strict';
 const B = require('../biometrics.js');
@@ -23,7 +31,7 @@ function check(name, cond, detail) {
 function lcg(seed) { let s = seed; return function () { s = (s * 1103515245 + 12345) % 2147483648; return s / 2147483648; }; }
 function roiImage(creases, seed, opts) {
   opts = opts || {};
-  const size = 128, rnd = lcg(seed), noise = [];
+  const size = B.PALMPRINT_ROI_SIZE, rnd = lcg(seed), noise = [];
   for (let i = 0; i < size * size; i++) noise.push((rnd() - 0.5) * 12);
   const dx = opts.dx || 0, dy = opts.dy || 0;
   const g = new Array(size * size);
@@ -62,36 +70,37 @@ const PALM_B = [
   check('SHIFT rejects bad input', B.shiftGrayClamped(null, 4, 4, 1, 1) === null && B.shiftGrayClamped([1, 2], 4, 4, 1, 1) === null);
 })();
 
-/* ---------------- probe codes ------------------------------------ */
+/* ---------------- probe templates -------------------------------- */
 const roiA = roiImage(PALM_A, 51);
-const probes = B.palmprintProbeCodes(roiA);
-check('PROBE one ROI expands to 50 codes (25 shifts x plain + mirror)', probes.length === 50, 'n=' + probes.length);
-check('PROBE every code is a sane 4096-byte EDCC code', probes.every(function (c) { return B.palmprintCodeSane(c) && c.length === 4096; }));
-check('PROBE the unshifted code is among them', probes.some(function (c) {
-  const base = B.palmprintEncode(roiA, 128, 128);
-  if (!base || base.length !== c.length) return false;
-  for (let i = 0; i < c.length; i++) if (c[i] !== base[i]) return false;
+const probes = B.palmprintProbePacked(roiA);
+check('PROBE one ROI expands to 2 packed templates (plain + mirror)', probes.length === 2, 'n=' + probes.length);
+check('PROBE every template is a sane packed template', probes.every(function (c) { return B.palmprintPackedSane(c); }));
+check('PROBE the plain template unpacks to the ROI\'s own EDCC code', (function () {
+  const base = B.palmprintEncode(roiA, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE);
+  const unpacked = B.palmprintUnpackCode(probes[0]);
+  if (!base || !unpacked || base.length !== unpacked.length) return false;
+  for (let i = 0; i < base.length; i++) if (base[i] !== unpacked[i]) return false;
   return true;
-}));
-check('PROBE rejects a missing / wrong-size ROI', B.palmprintProbeCodes(null).length === 0 && B.palmprintProbeCodes([1, 2, 3]).length === 0);
+})());
+check('PROBE rejects a missing / wrong-size ROI', B.palmprintProbePacked(null).length === 0 && B.palmprintProbePacked([1, 2, 3]).length === 0);
 
-/* ---------------- enrolment: individual codes only --------------- */
+/* ---------------- enrolment: individual captures only ------------ */
 const framesA = [];
 for (let i = 0; i < 9; i++) {
   const roi = roiImage(PALM_A, 61 + i, { dx: (i % 3) - 1, dy: ((i + 1) % 3) - 1 });
-  framesA.push({ openness: 2.0, code: B.palmprintEncode(roi, 128, 128), roi: roi, sharpness: 100 + i * 10 });
+  framesA.push({ openness: 2.0, code: B.palmprintEncode(roi, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE), roi: roi, sharpness: 100 + i * 10 });
 }
 const enrolled = B.selectPalmprintProfileCodes(framesA);
-check('ENROL banks 6 individual capture codes', !!enrolled && enrolled.length === 6, 'n=' + (enrolled && enrolled.length));
+check('ENROL banks 3 individual burst templates (v45: burst banking replaces the 6-code clip banking)', !!enrolled && enrolled.length === 3, 'n=' + (enrolled && enrolled.length));
 (function () {
-  const frameB64 = new Set(framesA.map(function (f) { return Buffer.from(f.code).toString('base64'); }));
-  check('ENROL every stored code IS one of the real captures (no fused template)',
-    !!enrolled && enrolled.every(function (b64) { return frameB64.has(b64); }));
+  const framePacked = new Set(framesA.map(function (f) { return B.palmprintPackedToBase64(B.palmprintPackCode(f.code)); }));
+  check('ENROL every stored template IS one of the real captures, packed (no fused template)',
+    !!enrolled && enrolled.every(function (b64) { return framePacked.has(b64); }));
   const cons = B.palmprintConsensusCode(framesA.slice(0, 6).map(function (f) { return f.code; }));
-  const consB64 = cons && Buffer.from(cons).toString('base64');
-  check('ENROL the majority-fused consensus code is NOT stored', !!enrolled && (!consB64 || enrolled.indexOf(consB64) < 0));
+  const consPacked = cons && B.palmprintPackedToBase64(B.palmprintPackCode(cons));
+  check('ENROL the majority-fused consensus template is NOT stored', !!enrolled && (!consPacked || enrolled.indexOf(consPacked) < 0));
 })();
-const profileA = { v: 3, codes: enrolled };
+const profileA = { v: 4, format: B.PALMPRINT_FORMAT, codes: enrolled };
 
 /* ---------------- verification: the max rule ---------------------- */
 const liveSame = roiImage(PALM_A, 71, { dx: 1, dy: -1 });
@@ -101,21 +110,20 @@ check('VERIFY genuine palm (re-presented, shifted) verifies', rSame.verified ===
 const rOther = B.verifyPalmprintRois(profileA, [liveOther]);
 check('VERIFY a different palm is denied', rOther.verified === false && rOther.similarity < B.PALMPRINT_THRESHOLD, 'sim=' + (rOther.similarity || 0).toFixed(3));
 (function () {
-  // The reported score must be exactly the max over (probe codes x
-  // enrolled codes) of palmprintSimilarity — the v25 fusion rule.
-  // v41: the probe set is the base 50 PLUS the geometric variants
-  // (palmprintProbeCodesGeo) — the manual max enumerates the same
-  // expanded set the verify path scores.
-  const enrolledCodes = enrolled.map(function (b64) { return new Uint8Array(Buffer.from(b64, 'base64')); });
+  // The reported score must be exactly the max over (probe
+  // templates x enrolled templates) of the packed similarity —
+  // the v25 fusion rule, on the v45 pair set (plain + mirror
+  // probes, each scored by the exhaustive 5-shift matcher, which
+  // is what the exact verify path computes).
   let best = -1;
-  B.palmprintProbeCodes(liveSame).concat(B.palmprintProbeCodesGeo(liveSame)).forEach(function (pc) {
-    enrolledCodes.forEach(function (ec) { const s = B.palmprintSimilarity(pc, ec); if (s !== null && s > best) best = s; });
+  B.palmprintProbePacked(liveSame).forEach(function (pc) {
+    enrolled.forEach(function (ec) { const s = B.palmprintPackedSimilarity(pc, ec, { exhaustive: true }); if (s !== null && s > best) best = s; });
   });
-  check('VERIFY score equals the manual score-level MAX over all pairs (v41: base + geometric probe set)', Math.abs(rSame.similarity - best) < 1e-12, 'manual=' + best.toFixed(4) + ' reported=' + rSame.similarity.toFixed(4));
+  check('VERIFY score equals the manual score-level MAX over all pairs (v45 pair set)', Math.abs(rSame.similarity - best) < 1e-12, 'manual=' + best.toFixed(4) + ' reported=' + rSame.similarity.toFixed(4));
 })();
 check('VERIFY fails closed on a missing profile', B.verifyPalmprintRois(null, [liveSame]).verified === false);
 check('VERIFY fails closed on no live ROI', B.verifyPalmprintRois(profileA, []).verified === false && B.verifyPalmprintRois(profileA, null).verified === false);
-check('VERIFY fails closed on a blank ROI (no readable print)', B.verifyPalmprintRois(profileA, [new Array(128 * 128).fill(200)]).verified === false);
+check('VERIFY fails closed on a blank ROI (no readable print)', B.verifyPalmprintRois(profileA, [new Array(B.PALMPRINT_ROI_SIZE * B.PALMPRINT_ROI_SIZE).fill(200)]).verified === false);
 check('THRESHOLD stays the phone-calibrated 0.32', B.PALMPRINT_THRESHOLD === 0.32);
 
 /* ---------------- live ROI selection ------------------------------ */

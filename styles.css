@@ -71,6 +71,8 @@ input:focus,select:focus{outline:2px solid rgba(11,122,110,.35);border-color:var
 .camwrap{position:relative;background:#000;border-radius:24px;overflow:hidden;border:1px solid var(--line);box-shadow:var(--shadow)}
 .camwrap video{width:100%;display:block;min-height:260px;object-fit:cover;background:#000}
 .camwrap video.mirror{transform:scaleX(-1)}
+.burstring{position:absolute;top:14px;right:14px;width:64px;height:64px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:conic-gradient(var(--accent) 0deg,var(--line) 0deg)}
+.burstring span{width:48px;height:48px;border-radius:50%;background:#fff;color:var(--text);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700}
 .camtoggle{display:inline-flex;gap:4px;margin:12px 0 4px;border:1px solid var(--line);border-radius:999px;padding:4px;background:#eef3f3}
 .camtoggle button{background:transparent;border:none;color:var(--muted);font-weight:700;padding:7px 14px;border-radius:999px;cursor:pointer;font-size:13px}
 .camtoggle button.on{background:var(--teal);color:#fff;box-shadow:0 4px 10px rgba(7,94,85,.25)}

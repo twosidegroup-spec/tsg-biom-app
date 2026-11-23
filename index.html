@@ -172,12 +172,13 @@
     </div>
     <div class="card" style="margin-top:16px"><h2>Field Test Mode</h2>
       <label class="check"><input type="checkbox" id="fieldModeToggle2"> Field Test Mode — record GAR / FAR / spoof metrics for the 20-person, 200-scan validation</label>
+      <label class="check"><input type="checkbox" id="fieldExhaustiveToggle2"> Exhaustive shift logging — evaluate all five shifts per comparison and log them in the scan record</label>
       <p class="sub" style="margin:8px 0 0">The full field-test panel, live metrics and the CSV export live under Transactions / Logs.</p>
     </div>
     <div class="card" style="margin-top:16px"><h2>How the real scanning works</h2>
       <p class="sub" style="margin:0">
-        TSG Biom is palm-only. MediaPipe landmarks locate the palm, a square palm image is cut out and aligned, and an EDCC palmprint encoder reads the palm's own print pattern — the method family used by real palmprint systems.
-        Enrolment banks the individual print codes from the best fully-open frames. At verification the live palm image is re-encoded at 25 small shifts and the best match against the enrolled codes decides — the score-level max rule.
+        TSG Biom is palm-only. MediaPipe landmarks locate the palm, a 96&times;96 palm patch is cut out and aligned from the wrist and knuckle anchors, and an EDCC palmprint encoder reads the palm's own print pattern — the method family used by real palmprint systems.
+        Enrolment runs one 900&nbsp;ms burst and banks the three sharpest time-spaced templates, bit-packed. At verification the live patch is packed the same way and a five-shift popcount matcher scores it against the enrolled templates — the best match decides.
         Nothing here is simulated — if no hand or no clear print is seen, the scan fails openly.
         Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.
       </p>
@@ -221,7 +222,7 @@
 
     <div id="enroll-palm" class="card hidden">
       <h2>Step 2 — Palm scan (real palmprint)</h2>
-      <p class="sub">The camera and the guided capture start by themselves when this step opens — no tap needed. Follow the movement prompts as they appear — the sequence is picked at random each time, and a photo cannot perform it, so a single photo is never accepted. After the movement, the prompts walk the palm through a few angles — flat, tilted away slightly, tilted toward slightly, angled left, angled right, and a different distance — and the app banks the best fully-open print code of each angle, so the palm still verifies when it is held at a natural tilt at payment time. Just show your open hand to the camera, anywhere in the frame, at a natural distance — there is nothing to line up: the app finds the hand by itself. A palm pressed right against the lens cannot be read, so keep a natural distance. The app watches live: the movement is checked, the palm square is cut out and aligned from the hand landmarks, and an <b>EDCC palmprint encoder</b> reads the palm's own print pattern from the best fully-open frames — the individual print codes are stored. Labelled honestly: this is <b>Palm — Palmprint</b>, the print-pattern method real palmprint systems use. Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.</p>
+      <p class="sub">The camera starts by itself when this step opens — no tap needed. Just show your open hand to the camera, anywhere in the frame, at a natural distance — there is nothing to line up: the app finds the hand by itself. The moment a sharp open palm is seen, a single 900&nbsp;ms capture burst runs by itself, and the app banks the three sharpest time-spaced templates from it. Liveness is checked across the burst: a real hand drifts naturally by a tiny amount and its landmarks carry real depth variance — a photo or a screen cannot, so a single photo is never accepted. A palm pressed right against the lens cannot be read, so keep a natural distance. The palm square is cut out and aligned from the hand landmarks, and an <b>EDCC palmprint encoder</b> reads the palm's own print pattern — the templates are stored bit-packed on this device. Labelled honestly: this is <b>Palm — Palmprint</b>, the print-pattern method real palmprint systems use. Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.</p>
       <div class="camtoggle" data-cam-toggle="enrollPalm" role="group" aria-label="Palm camera choice">
         <button type="button" data-facing="user" class="on">Front camera</button>
         <button type="button" data-facing="environment">Back camera</button>
@@ -233,7 +234,8 @@
       </div>
       <p class="camnote flashnote" data-flash-note="enrollPalm"></p>
       <div class="camwrap"><video id="palmVideo" autoplay playsinline muted></video>
-        <div class="camstatus" id="palmStatus">Camera not started.</div></div>
+        <div class="camstatus" id="palmStatus">Camera not started.</div>
+        <div id="palmBurstRing" class="burstring hidden"><span>0%</span></div></div>
       <div class="row" style="margin-top:12px">
         <div><button class="btn" id="palmStart">Start Camera</button></div>
         <div><button class="btn primary" id="palmCapture" disabled>Auto-Capture Palm</button></div>
@@ -272,7 +274,8 @@
       <div class="row hidden" id="fieldRow">
         <div><label>Field test — attempt type for this scan</label>
           <select id="fieldAttemptTag"><option value="real_hand">Genuine — real hand</option><option value="photo_spoof">Photo spoof attempt</option><option value="video_replay">Video replay attempt</option></select>
-          <p class="camnote">Field Test Mode is ON: this scan will be recorded in the field-test metrics and CSV.</p></div>
+          <p class="camnote">Field Test Mode is ON: this scan will be recorded in the field-test metrics and CSV.</p>
+          <label class="check"><input type="checkbox" id="fieldExhaustiveToggle"> Exhaustive shift logging — evaluate all five shifts per comparison and log them in the scan record</label></div>
       </div>
       <div class="camtoggle" data-cam-toggle="terminal" role="group" aria-label="Terminal camera choice">
         <button type="button" data-facing="user" class="on">Front camera</button>
@@ -329,7 +332,7 @@
   <!-- ADD ANGLES (v43) -->
   <section class="page" id="page-topup">
     <h1>Add Angles — widen a palm profile</h1>
-    <p class="sub">Runs the same guided capture as enrolment and adds the missing palm angles to this person's stored profile. Their Biom ID, wallet, balance, statement, linked accounts and loyalty points do not change — only the palm profile gains codes.</p>
+    <p class="sub">Runs the same burst capture as enrolment and adds diverse sharp templates to this person's stored profile — or re-banks the palm in the current format when it was enrolled in the previous one. Their Biom ID, wallet, balance, statement, linked accounts and loyalty points do not change — only the palm profile gains templates.</p>
     <div class="card">
       <div id="topWho" class="kv"></div>
       <div class="camtoggle" data-cam-toggle="topup" role="group" aria-label="Add-angles camera choice">

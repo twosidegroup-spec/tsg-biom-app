@@ -954,7 +954,9 @@
   var PALMPRINT_DIRECTIONS = 10;    // EDCC gabor_directions
   var PALMPRINT_KERNEL_SIZE = 5;    // EDCC gabor_kernel_size
   var PALMPRINT_CODE_LEN = PALMPRINT_SIZE * PALMPRINT_SIZE; // 4096 at size 64
-  var PALMPRINT_ROI_SIZE = 128;     // canonical warped ROI side (px)
+  var PALMPRINT_ROI_SIZE = 96;      // v45: canonical warped ROI side (px) — the Palm-X
+                                    // spec's 96x96 affine palm-line square (was 128
+                                    // under the pre-v45 homography warp)
   var PALMPRINT_THRESHOLD = 0.32;   // RECALIBRATED 2026-11-20 (v27) for the STREAMING
                                     // pipeline: on the verified rig (own server, served
                                     // code checked), genuine scores for the same palm
@@ -1229,7 +1231,18 @@
   function palmprintEncode(gray, w, h, size) {
     size = size || PALMPRINT_SIZE;
     if (!gray || !w || !h || gray.length < w * h) return null;
-    var img = resizeGrayBilinear(gray, w, h, size);
+    // v45 (Palm-X spec section 1.3): local contrast normalisation —
+    // illumination flattening + CLAHE (palmprintNormaliseRoi) — is
+    // applied to the square palm patch BEFORE encoding, so indoor
+    // shop shadows and bright lights do not drop match scores. The
+    // 2026-11-20 experiment that rejected this recipe measured it
+    // against the OLD pipeline's stored codes; under the v45 format
+    // change every template is written by this same encoder, so
+    // enrolment and verification stay self-consistent. Square
+    // inputs only — the non-square fingerprint path never calls
+    // this encoder.
+    var src = (w === h) ? palmprintNormaliseRoi(gray, w, h) : gray;
+    var img = resizeGrayBilinear(src, w, h, size);
     var enhanced = palmprintEnhance(img, size);
     var kernels = palmprintKernels();
     var responses = [];
@@ -1391,6 +1404,395 @@
     // v35: the search itself is palmprintSimilaritySeeded with a null
     // seed — the identical max over the identical 25 translations.
     return palmprintSimilaritySeeded(ba, bb, null, size);
+  }
+
+  /* ================= v45: bit-packed templates + 5-shift matcher ==
+     The Palm-X spec's storage and matching layer, adopted by the
+     Chairman's explicit override 2026-11-23 18:21 Dhaka ("do
+     whatever in the prompt says") after the trade-offs were put to
+     him twice. What changes, exactly:
+
+     - A template is the EDCC code's per-pixel VALUE v = d + 10*s
+       (direction 0..9 plus the side bit — 20 legal values, 5 bits)
+       stored as five bit-planes in a Uint32Array: plane j holds
+       bit j of every pixel's value, row-major, pixel x of a row at
+       bit (x mod 32) of word (x div 32). 5 planes x 64 rows x 2
+       words = 640 words = 2,560 bytes serialised — against 4,096
+       bytes for the unpacked code.
+     - Similarity at a code-grid shift is computed EXACTLY as the
+       unpacked comparer computes it — the fraction of overlapping
+       pixels whose packed byte is identical — but counted with
+       32-bit popcount: XOR the two codes' planes, OR the five
+       difference planes together (a pixel differs iff any of its
+       five bits differs), mask to the overlap, popcount. Integer
+       arithmetic throughout, so a packed score is bit-identical to
+       the unpacked score at the same shift (proven in the v45
+       suite), and the 0.32 threshold keeps its meaning.
+     - The matcher is the spec's centre-outward 5-shift early-exit:
+       (0,0), (0,-2), (0,2), (-2,0), (2,0) in code-grid units. The
+       centre is tested first; the moment a shift reaches the
+       threshold the pair is VERIFIED and no later shift is
+       evaluated. A pair no shift passes has all five evaluated, so
+       its reported score is the true 5-shift max. This REPLACES
+       the 25-shift search and the v41 geometric-variant set in
+       every judgement path (opts.exhaustive disables the early
+       exit and records every shift's score — the Field Test Mode
+       benchmarking toggle).
+     - Profiles are format version 4: { v: 4, format: 'packed96',
+       codes: [base64 packed, ...] }. A v3 (byte-code) profile is
+       'legacy': its codes cannot be read by this pipeline and
+       cannot be converted (different patch, different packing) —
+       the v45 migration archives them in the record and flags the
+       profile for a one-time palm re-scan (see the migration
+       section). Verification against a legacy profile fails closed
+       with that reason stated, never silently. */
+  var PALMPRINT_FORMAT = 'packed96';
+  var PALMPRINT_PACK_PLANES = 5; // bits of v = d + 10*s (20 legal values)
+  var PALMPRINT_PACK_WORDS_PER_ROW = PALMPRINT_SIZE / 32; // 2 at size 64
+  var PALMPRINT_PACK_WORDS = PALMPRINT_PACK_PLANES * PALMPRINT_SIZE * PALMPRINT_PACK_WORDS_PER_ROW; // 640
+  var PALMPRINT_PACK_LEN = PALMPRINT_PACK_WORDS * 4; // 2560 serialised bytes
+  var PALMPRINT_SHIFTS5 = [[0, 0], [0, -2], [0, 2], [-2, 0], [2, 0]];
+  /* Spec section 1.3 quality-gate numbers, verbatim: reject a
+     patch whose mean brightness is under 45, or with more than
+     15% of pixels blown past 245. The blur bar is the app's own
+     measured one (the v43 guidance bar): fixture palms read
+     laplacian variance 320-530 sharp, 62-93 after one 3x3 box
+     blur, ~31 after two — 100 sits under every sharp capture and
+     over every blurred one. */
+  var PALMPRINT_QUALITY_MIN_BRIGHTNESS = 45;
+  var PALMPRINT_QUALITY_MAX_GLARE_FRAC = 0.15;
+  var PALMPRINT_QUALITY_BLUR_MIN = 100;
+  /* Spec section 1.1: the palm bounding box must span 20%-60% of
+     the frame width (whole hand, localisation only). */
+  var PALMPRINT_BBOX_MIN_FRAC = 0.20;
+  var PALMPRINT_BBOX_MAX_FRAC = 0.60;
+  /* Spec section 4: the registration burst. */
+  var PALMPRINT_BURST_MS = 900;
+  var PALMPRINT_BURST_MIN_FRAMES = 12;
+  var PALMPRINT_BURST_MAX_FRAMES = 18;
+  var PALMPRINT_BURST_TEMPLATES = 3;
+  var PALMPRINT_BURST_MICRO_MIN = 0.012; // >= 1.2% natural scale/angle micro-shift
+  var PALMPRINT_BURST_Z_MIN = 0.001;     // any measurable Z-depth variance across the burst
+
+  /* 32-bit population count (SWAR) — the Hamming-weight primitive
+     the packed comparer is built on. */
+  function popcount32(x) {
+    x = x >>> 0;
+    x = x - ((x >>> 1) & 0x55555555);
+    x = (x & 0x33333333) + ((x >>> 2) & 0x33333333);
+    x = (x + (x >>> 4)) & 0x0F0F0F0F;
+    return (x * 0x01010101) >>> 24;
+  }
+
+  /* Pack one EDCC byte code (or its base64) into the five-plane
+     Uint32Array template. Returns null on any unusable input. */
+  function palmprintPackCode(code) {
+    var bytes = palmprintCodeBytes(code);
+    if (!bytes || bytes.length !== PALMPRINT_CODE_LEN) return null;
+    var words = new Uint32Array(PALMPRINT_PACK_WORDS);
+    var WPR = PALMPRINT_PACK_WORDS_PER_ROW, SIZE = PALMPRINT_SIZE;
+    for (var y = 0; y < SIZE; y++) for (var x = 0; x < SIZE; x++) {
+      var b = bytes[y * SIZE + x];
+      var v = (b & 0x0F) + ((b & 0xF0) ? PALMPRINT_DIRECTIONS : 0);
+      var wi = (x >> 5), bit = 1 << (x & 31);
+      for (var pl = 0; pl < PALMPRINT_PACK_PLANES; pl++) {
+        if ((v >> pl) & 1) words[pl * SIZE * WPR + y * WPR + wi] |= bit;
+      }
+    }
+    return words;
+  }
+  /* Serialise a packed template to its little-endian byte form. */
+  function palmprintPackedBytes(packed) {
+    var words = palmprintPackedWords(packed);
+    if (!words) return null;
+    var out = new Uint8Array(PALMPRINT_PACK_LEN);
+    for (var i = 0; i < PALMPRINT_PACK_WORDS; i++) {
+      var w = words[i] >>> 0;
+      out[i * 4] = w & 0xFF; out[i * 4 + 1] = (w >>> 8) & 0xFF;
+      out[i * 4 + 2] = (w >>> 16) & 0xFF; out[i * 4 + 3] = (w >>> 24) & 0xFF;
+    }
+    return out;
+  }
+  /* Normalise any packed-template representation (Uint32Array of
+     words, Uint8Array of serialised bytes, a plain array of either
+     length, or the base64 string) to a Uint32Array of words.
+     Returns null when the shape is wrong. */
+  function palmprintPackedWords(packed) {
+    if (!packed) return null;
+    if (typeof packed === 'string') return palmprintPackedFromBase64(packed);
+    var n = packed.length;
+    if (n === PALMPRINT_PACK_WORDS) {
+      var words = new Uint32Array(PALMPRINT_PACK_WORDS);
+      for (var i = 0; i < n; i++) { var w = Number(packed[i]); if (!isFinite(w)) return null; words[i] = w >>> 0; }
+      return words;
+    }
+    if (n === PALMPRINT_PACK_LEN) {
+      var out = new Uint32Array(PALMPRINT_PACK_WORDS);
+      for (var j = 0; j < PALMPRINT_PACK_WORDS; j++) {
+        out[j] = (Number(packed[j * 4]) | (Number(packed[j * 4 + 1]) << 8) | (Number(packed[j * 4 + 2]) << 16) | (Number(packed[j * 4 + 3]) << 24)) >>> 0;
+      }
+      return out;
+    }
+    return null;
+  }
+  function palmprintPackedToBase64(packed) {
+    var bytes = palmprintPackedBytes(packed);
+    if (!bytes) return null;
+    if (typeof Buffer !== 'undefined') return Buffer.from(bytes).toString('base64');
+    var s = '';
+    for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return typeof btoa === 'function' ? btoa(s) : null;
+  }
+  function palmprintPackedFromBase64(str) {
+    if (typeof str !== 'string' || !str.length) return null;
+    try {
+      var bytes;
+      if (typeof Buffer !== 'undefined') bytes = new Uint8Array(Buffer.from(str, 'base64'));
+      else if (typeof atob === 'function') {
+        var bin = atob(str);
+        bytes = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      } else return null;
+      if (bytes.length !== PALMPRINT_PACK_LEN) return null;
+      return palmprintPackedWords(bytes);
+    } catch (e) { return null; }
+  }
+  /* Unpack a template back to the EDCC byte code — the identity
+     bridge the v45 suite proves the packed scores against, and a
+     diagnostic aid. The packed form is the storage/matching form;
+     nothing in the shipping judgement path needs this. */
+  function palmprintUnpackCode(packed) {
+    var words = palmprintPackedWords(packed);
+    if (!words) return null;
+    var WPR = PALMPRINT_PACK_WORDS_PER_ROW, SIZE = PALMPRINT_SIZE;
+    var out = new Uint8Array(PALMPRINT_CODE_LEN);
+    for (var y = 0; y < SIZE; y++) for (var x = 0; x < SIZE; x++) {
+      var v = 0, wi = (x >> 5), bit = x & 31;
+      for (var pl = 0; pl < PALMPRINT_PACK_PLANES; pl++) {
+        if ((words[pl * SIZE * WPR + y * WPR + wi] >>> bit) & 1) v |= (1 << pl);
+      }
+      if (v >= PALMPRINT_DIRECTIONS) out[y * SIZE + x] = (v - PALMPRINT_DIRECTIONS) | 0x10;
+      else out[y * SIZE + x] = v;
+    }
+    return out;
+  }
+  /* A usable packed template: right shape, and the code it carries
+     passes the same sanity the byte codes pass (real directional
+     variety — a flat capture collapses and is rejected). */
+  function palmprintPackedSane(packed) {
+    var words = palmprintPackedWords(packed);
+    if (!words) return false;
+    var bytes = palmprintUnpackCode(words);
+    return !!bytes && palmprintCodeSane(bytes);
+  }
+
+  /* Packed score at one code-grid shift: the fraction of
+     overlapping pixels whose value is identical, counted by
+     popcount over the OR of the five XORed planes. Bit-identical
+     to edccScoreAtShift on the unpacked codes — same overlap
+     region, same pairing (a's pixel (x, y) against b's
+     (x + dx, y + dy)), integer counts, one division. */
+  function edccPackedScoreAtShift(pa, pb, dx, dy) {
+    var SIZE = PALMPRINT_SIZE, WPR = PALMPRINT_PACK_WORDS_PER_ROW;
+    var x0 = Math.max(0, -dx), x1 = Math.min(SIZE, SIZE - dx);
+    var y0 = Math.max(0, -dy), y1 = Math.min(SIZE, SIZE - dy);
+    var count = (x1 - x0) * (y1 - y0);
+    if (count <= 0) return null;
+    var masks = [];
+    for (var wI = 0; wI < WPR; wI++) {
+      var lo = Math.max(x0, wI * 32), hi = Math.min(x1, wI * 32 + 32);
+      if (hi <= lo) { masks.push(0); continue; }
+      var bits = hi - lo;
+      masks.push(bits >= 32 ? 0xFFFFFFFF : (((1 << bits) - 1) << (lo - wI * 32)) >>> 0);
+    }
+    var diffs = 0;
+    for (var y = y0; y < y1; y++) {
+      var brow = y + dy;
+      for (var wi = 0; wi < WPR; wi++) {
+        if (!masks[wi]) continue;
+        var or = 0;
+        for (var pl = 0; pl < PALMPRINT_PACK_PLANES; pl++) {
+          var base = pl * SIZE * WPR;
+          var aw = pa[base + y * WPR + wi];
+          var b0 = pb[base + brow * WPR], b1 = pb[base + brow * WPR + 1];
+          var bw;
+          if (dx === 0) bw = wi === 0 ? b0 : b1;
+          else if (dx > 0) bw = wi === 0 ? ((b0 >>> dx) | (b1 << (32 - dx))) : (b1 >>> dx);
+          else { var s = -dx; bw = wi === 0 ? (b0 << s) : ((b1 << s) | (b0 >>> (32 - s))); }
+          or |= (aw ^ bw) >>> 0;
+        }
+        diffs += popcount32((or & masks[wi]) >>> 0);
+      }
+    }
+    return (count - diffs) / count;
+  }
+  /* The 5-shift matcher over two already-validated packed
+     templates. Centre first; early exit the moment a shift
+     reaches the threshold (unless opts.exhaustive). Returns
+     { score, evaluated: [[dx, dy]...], perShift } — perShift is
+     filled only in exhaustive mode (the Field Test toggle). */
+  function palmprintPackedMatchWords(pa, pb, opts) {
+    var exhaustive = !!(opts && opts.exhaustive);
+    var best = null, evaluated = [], perShift = exhaustive ? [] : null;
+    for (var i = 0; i < PALMPRINT_SHIFTS5.length; i++) {
+      var dx = PALMPRINT_SHIFTS5[i][0], dy = PALMPRINT_SHIFTS5[i][1];
+      var s = edccPackedScoreAtShift(pa, pb, dx, dy);
+      evaluated.push([dx, dy]);
+      if (perShift) perShift.push({ dx: dx, dy: dy, score: s });
+      if (s !== null && (best === null || s > best)) best = s;
+      if (!exhaustive && best !== null && best >= PALMPRINT_THRESHOLD) break;
+    }
+    return { score: best, evaluated: evaluated, perShift: perShift };
+  }
+  /* Public packed match: validates both sides, then the matcher
+     above. Returns null when either side is unusable. */
+  function palmprintPackedMatch(a, b, opts) {
+    var pa = palmprintPackedWords(a), pb = palmprintPackedWords(b);
+    if (!pa || !pb || !palmprintPackedSane(pa) || !palmprintPackedSane(pb)) return null;
+    return palmprintPackedMatchWords(pa, pb, opts);
+  }
+  /* Packed similarity (score only) — the drop-in counterpart of
+     palmprintSimilarity for the packed store. */
+  function palmprintPackedSimilarity(a, b, opts) {
+    var m = palmprintPackedMatch(a, b, opts);
+    return m ? m.score : null;
+  }
+
+  /* Spec section 1.1: palm bounding-box width as a fraction of
+     the frame width, from the landmarks' x-extent (the whole hand
+     — localisation only). Null on unusable landmarks. */
+  function palmBboxWidthFrac(landmarks) {
+    if (!landmarks || landmarks.length !== 21) return null;
+    var minX = Infinity, maxX = -Infinity;
+    for (var i = 0; i < 21; i++) {
+      var p = landmarks[i];
+      if (!p || !isFinite(Number(p.x))) return null;
+      if (Number(p.x) < minX) minX = Number(p.x);
+      if (Number(p.x) > maxX) maxX = Number(p.x);
+    }
+    return maxX - minX;
+  }
+  /* Spec section 1.3 quality gate over one warped palm patch:
+     Laplacian-variance blur, mean brightness, blown-pixel glare —
+     with the spec's numbers and its hint strings. `framing` is
+     optional caller context: { hasHand, bboxWidthFrac } — no hand
+     reads "Show open palm", a palm under 20% of the frame width
+     reads "Move slightly closer". Returns { pass, mean, glareFrac,
+     blur, reasons, hint } — hint is null on a clean pass. */
+  function palmprintQualityGate(gray, w, h, framing) {
+    var out = { pass: false, mean: null, glareFrac: null, blur: 0, reasons: [], hint: 'Show open palm' };
+    if (framing && framing.hasHand === false) return out;
+    if (framing && typeof framing.bboxWidthFrac === 'number' && isFinite(framing.bboxWidthFrac) && framing.bboxWidthFrac < PALMPRINT_BBOX_MIN_FRAC) {
+      out.hint = 'Move slightly closer';
+      out.reasons.push('Palm is too far from the camera.');
+      return out;
+    }
+    if (!gray || !w || !h || gray.length < w * h) { out.reasons.push('No palm patch to judge.'); return out; }
+    var n = w * h, sum = 0, blown = 0, i;
+    for (i = 0; i < n; i++) { var v = gray[i]; sum += v; if (v > 245) blown++; }
+    out.mean = sum / n;
+    out.glareFrac = blown / n;
+    out.blur = laplacianVariance(gray, w, h);
+    if (out.mean < PALMPRINT_QUALITY_MIN_BRIGHTNESS) out.reasons.push('Too dark: mean brightness ' + out.mean.toFixed(1) + ' is under ' + PALMPRINT_QUALITY_MIN_BRIGHTNESS + '.');
+    if (out.glareFrac > PALMPRINT_QUALITY_MAX_GLARE_FRAC) out.reasons.push('Washed out: ' + Math.round(out.glareFrac * 100) + '% of pixels are blown past 245 (bar ' + Math.round(PALMPRINT_QUALITY_MAX_GLARE_FRAC * 100) + '%).');
+    if (out.blur < PALMPRINT_QUALITY_BLUR_MIN) out.reasons.push('Blurry: sharpness ' + out.blur.toFixed(0) + ' is under the bar of ' + PALMPRINT_QUALITY_BLUR_MIN + '.');
+    out.pass = out.reasons.length === 0;
+    out.hint = !out.pass
+      ? (out.mean !== null && out.mean < PALMPRINT_QUALITY_MIN_BRIGHTNESS ? 'Too dark — turn on Flash' : 'Hold steady...')
+      : null;
+    return out;
+  }
+  /* Spec section 4 passive liveness over the registration burst:
+     natural 3D hand micro-motion read from the burst's landmark
+     sets — Z-depth variance across the palm anchors (0, 5, 9, 13,
+     17) and the largest consecutive-frame scale/angle micro-shift
+     (knuckle-span change as a fraction of span, or knuckle-line
+     angle change in radians — a radian of rotation is the angle
+     axis's own unit). Pass: micro-shift >= 1.2% AND measurable Z
+     variance. A flat photo or a frozen replay holds both at zero
+     and fails; the screen-glare / edge-replay defences stay in
+     screenSpoofCheck, sampled over the burst by the caller. */
+  function palmprintBurstLiveness(landmarkSets) {
+    var sets = (landmarkSets || []).filter(function (lm) { return lm && lm.length === 21; });
+    if (sets.length < 2) return { pass: false, microShift: 0, zRange: 0, frames: sets.length, reason: 'Too few frames with a detected hand to judge liveness.' };
+    var anchors = [0, 5, 9, 13, 17];
+    var zRangeSum = 0;
+    anchors.forEach(function (idx) {
+      var mn = Infinity, mx = -Infinity, seen = false;
+      sets.forEach(function (lm) {
+        var z = lm[idx] && isFinite(Number(lm[idx].z)) ? Number(lm[idx].z) : null;
+        if (z === null) return;
+        seen = true;
+        if (z < mn) mn = z;
+        if (z > mx) mx = z;
+      });
+      if (seen) zRangeSum += (mx - mn);
+    });
+    var zRange = zRangeSum / anchors.length;
+    function spanAng(lm) {
+      var a = lm[5], b = lm[17];
+      if (!a || !b || !isFinite(Number(a.x)) || !isFinite(Number(a.y)) || !isFinite(Number(b.x)) || !isFinite(Number(b.y))) return null;
+      return { span: Math.hypot(Number(b.x) - Number(a.x), Number(b.y) - Number(a.y)), ang: Math.atan2(Number(b.y) - Number(a.y), Number(b.x) - Number(a.x)) };
+    }
+    var microShift = 0;
+    for (var i = 1; i < sets.length; i++) {
+      var p0 = spanAng(sets[i - 1]), p1 = spanAng(sets[i]);
+      if (!p0 || !p1 || !(p0.span > 0)) continue;
+      var dSpan = Math.abs(p1.span - p0.span) / p0.span;
+      var dAng = Math.abs(p1.ang - p0.ang);
+      if (dAng > Math.PI) dAng = 2 * Math.PI - dAng;
+      var m = Math.max(dSpan, dAng);
+      if (m > microShift) microShift = m;
+    }
+    var pass = microShift >= PALMPRINT_BURST_MICRO_MIN && zRange >= PALMPRINT_BURST_Z_MIN;
+    return {
+      pass: pass, microShift: microShift, zRange: zRange, frames: sets.length,
+      reason: pass ? 'Natural micro-motion across the burst.'
+        : (microShift < PALMPRINT_BURST_MICRO_MIN
+          ? 'The hand did not move naturally at all across the burst (micro-shift ' + (microShift * 100).toFixed(2) + '% — a still photo or a frozen image cannot enrol).'
+          : 'No measurable depth variation across the burst — a flat presentation cannot enrol.')
+    };
+  }
+  /* Spec section 4 banking: from the burst's usable fully-open
+     frames (the palmprintUsableOpenFrames gate), the sharpest
+     frame in each third of the burst — time-spaced, so the three
+     banked templates carry the burst's natural micro-angle
+     variation instead of three copies of one instant. Each pick's
+     ROI is encoded and packed here. Returns { codes: [packed
+     base64 x3], picks: [frame indices] } or null when fewer than
+     three usable frames with ROIs exist. */
+  function selectPalmprintBurstCodes(frames) {
+    var usableAll = palmprintUsableOpenFrames(frames).filter(function (u) { return !!u.roi; });
+    if (usableAll.length < PALMPRINT_BURST_TEMPLATES) return null;
+    /* Fully-open preference (the v15/v24 measured rule, kept):
+       codes banked from mid-movement transition frames match
+       nothing later (a real enrolled palm scored 0.240 at
+       verification on 2026-11-20), so when at least three frames
+       sit within 0.30 openness of the burst's most-open frame,
+       the banking set is those frames; otherwise all usable
+       frames compete. The picks themselves stay the spec's:
+       sharpest per time-third. */
+    var maxOpen = Math.max.apply(null, usableAll.map(function (u) { return u.openness; }));
+    var full = usableAll.filter(function (u) { return u.openness >= maxOpen - 0.30; });
+    var usable = full.length >= PALMPRINT_BURST_TEMPLATES ? full : usableAll;
+    usable.sort(function (a, b) { return a.index - b.index; });
+    var picks = [];
+    for (var t = 0; t < PALMPRINT_BURST_TEMPLATES; t++) {
+      var bucket = usable.slice(Math.floor(t * usable.length / PALMPRINT_BURST_TEMPLATES), Math.floor((t + 1) * usable.length / PALMPRINT_BURST_TEMPLATES));
+      if (!bucket.length) return null;
+      bucket.sort(function (a, b) { return b.sharpness - a.sharpness; });
+      picks.push(bucket[0]);
+    }
+    var codes = [];
+    for (var i = 0; i < picks.length; i++) {
+      var code = palmprintEncode(picks[i].roi, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
+      if (!code || !palmprintCodeSane(code)) return null;
+      var packed = palmprintPackCode(code);
+      var b64 = packed && palmprintPackedToBase64(packed);
+      if (!b64) return null;
+      codes.push(b64);
+    }
+    return { codes: codes, picks: picks.map(function (u) { return u.index; }) };
   }
 
   /* v33: shift a grayscale image by (dx, dy) with edge-clamped
@@ -1700,21 +2102,52 @@
       g: g, h: hh
     };
   }
-  /* Warp the palm square out of a grayscale frame. Returns a
-     PALMPRINT_ROI_SIZE square (plain Array of gray values) or null. */
-  function palmRoiFromLandmarks(gray, w, h, landmarks, outSize) {
-    if (!gray || gray.length < w * h) return null;
+  /* v45 (the Chairman's Palm-X spec, adopted 2026-11-23 over his
+     earlier reconciled build): the canonical ROI is an AFFINE
+     square built from exactly three anchors — Wrist (0), Index
+     MCP (5), Pinky MCP (17). The destination triangle is fixed in
+     patch units: Index MCP -> (0.10, 0.06), Pinky MCP -> (0.90,
+     0.06), Wrist -> (0.50, 1.10) — the wrist anchor sits just past
+     the patch's lower edge, so the square covers the inner palm
+     between the knuckle line and the wrist, where the primary
+     palmar creases live. Every destination pixel solves for its
+     barycentric coordinates in that triangle and samples the
+     source at A + s*(B - A) + t*(W - A), bilinear with
+     edge-clamped sampling — the same sampling discipline the
+     retired homography warp used. Because the three anchors fix
+     rotation AND scale, the print lands in the same orientation
+     and size on every capture — the premise the spec's 5-shift
+     matcher relies on. The whole hand is used for localisation
+     only; fingers are never matched. The too-small bar is the
+     same one the old warp used (knuckle span >= 10% of the
+     frame's smaller side). */
+  var PALMPRINT_AFFINE_DEST = { ax: 0.10, ay: 0.06, bx: 0.90, by: 0.06, wx: 0.50, wy: 1.10 };
+  function palmRoiAffineFromLandmarks(gray, w, h, landmarks, outSize) {
+    if (!gray || !w || !h || gray.length < w * h) return null;
+    if (!landmarks || landmarks.length !== 21) return null;
     var size = outSize || PALMPRINT_ROI_SIZE;
-    var corners = palmRoiCornersPx(w, h, landmarks);
-    if (!corners) return null;
-    var H = homographyFromQuad(corners);
-    if (!H) return null;
+    var A = null, Bp = null, W = null, p, i;
+    var want = [0, 5, 17];
+    for (i = 0; i < 3; i++) {
+      p = landmarks[want[i]];
+      if (!p || !isFinite(Number(p.x)) || !isFinite(Number(p.y))) return null;
+      var pt = { x: Number(p.x) * w, y: Number(p.y) * h };
+      if (want[i] === 0) W = pt; else if (want[i] === 5) A = pt; else Bp = pt;
+    }
+    var span = Math.hypot(Bp.x - A.x, Bp.y - A.y);
+    if (!(span >= 0.10 * Math.min(w, h))) return null; // hand too small / partial
+    var D = PALMPRINT_AFFINE_DEST;
+    var e1x = D.bx - D.ax, e1y = D.by - D.ay, e2x = D.wx - D.ax, e2y = D.wy - D.ay;
+    var det = e1x * e2y - e2x * e1y;
+    if (!det || !isFinite(det)) return null;
+    var ux = Bp.x - A.x, uy = Bp.y - A.y;
+    var vx = W.x - A.x, vy = W.y - A.y;
     var out = new Array(size * size);
     for (var y = 0; y < size; y++) for (var x = 0; x < size; x++) {
-      var u = x / (size - 1), v = y / (size - 1);
-      var den = H.g * u + H.h * v + 1;
-      var sx = (H.a * u + H.b * v + H.c) / den;
-      var sy = (H.d * u + H.e * v + H.f) / den;
+      var du = (x + 0.5) / size - D.ax, dv = (y + 0.5) / size - D.ay;
+      var s = (du * e2y - e2x * dv) / det;
+      var t = (e1x * dv - du * e1y) / det;
+      var sx = A.x + s * ux + t * vx, sy = A.y + s * uy + t * vy;
       sx = Math.max(0, Math.min(w - 1, sx)); sy = Math.max(0, Math.min(h - 1, sy));
       var x0 = Math.floor(sx), y0 = Math.floor(sy);
       var x1 = Math.min(w - 1, x0 + 1), y1 = Math.min(h - 1, y0 + 1);
@@ -1725,20 +2158,51 @@
     }
     return out;
   }
+  /* Warp the palm square out of a grayscale frame. Returns a
+     PALMPRINT_ROI_SIZE square (plain Array of gray values) or null.
+     v45: the warp IS the affine (0, 5, 17) construction above; the
+     pre-v45 homography warp (palmRoiCornersPx + homographyFromQuad)
+     is retired — its helpers remain for the spoof region and the
+     historical suites. */
+  function palmRoiFromLandmarks(gray, w, h, landmarks, outSize) {
+    return palmRoiAffineFromLandmarks(gray, w, h, landmarks, outSize);
+  }
 
-  /* --- Palmprint profile (v3) + clip selection --- */
+  /* --- Palmprint profile (v45 format v4, packed) + clip selection ---
+     A scannable profile is { v: 4, format: 'packed96', codes:
+     [packed base64, ...] } with at least two sane packed templates.
+     A v3 byte-code profile reports format 'legacy' (see
+     palmprintProfileFormat): the v45 migration archives its codes
+     in the record and flags it, and this pipeline fails closed on
+     it with the re-scan reason — it is never silently unreadable
+     and never silently dropped. */
+  function palmprintProfileFormat(stored) {
+    if (!stored || typeof stored !== 'object' || !Array.isArray(stored.codes)) return null;
+    if (stored.v === 4 && stored.format === PALMPRINT_FORMAT) return PALMPRINT_FORMAT;
+    if (stored.v === 3) return 'legacy';
+    return null;
+  }
   function normalisePalmprintProfile(stored) {
-    if (!stored || typeof stored !== 'object' || stored.v !== 3 || !Array.isArray(stored.codes)) return null;
+    if (palmprintProfileFormat(stored) !== PALMPRINT_FORMAT) return null;
     var codes = [];
     for (var i = 0; i < stored.codes.length; i++) {
-      var bytes = palmprintCodeBytes(stored.codes[i]);
-      if (!bytes || !palmprintCodeSane(bytes)) return null;
-      codes.push(bytes);
+      var words = palmprintPackedWords(stored.codes[i]);
+      if (!words || !palmprintPackedSane(words)) return null;
+      codes.push(words);
     }
-    if (codes.length < 2) return null; // enrolment keeps 3; fewer than 2 sane codes is not a profile
+    if (codes.length < 2) return null; // enrolment banks 3; fewer than 2 sane templates is not a profile
     return { codes: codes };
   }
   function palmprintProfileSane(stored) { return normalisePalmprintProfile(stored) !== null; }
+  /* The fail reason for a profile this pipeline cannot judge:
+     a legacy profile gets the honest re-scan reason, anything
+     else the long-standing missing/invalid one. */
+  function palmprintProfileFailReason(stored) {
+    if (palmprintProfileFormat(stored) === 'legacy') {
+      return 'This palm was enrolled under the previous template format, which the current scanner cannot read — a one-time palm re-scan is needed (Registry → Add Angles re-banks it). Nothing else about this person has changed.';
+    }
+    return 'No usable palmprint enrolled for this person - the stored palmprint data is missing or invalid.';
+  }
 
   /* The verify result for a completed comparison (shared by every
      palmprint verify path so the object shape never drifts). */
@@ -1750,233 +2214,151 @@
     };
   }
 
-  /* Verify a live palmprint against a v3 profile: the best EDCC
-     similarity over every (enrolled code x live code) pair must clear
-     the threshold. Fail closed on any missing or degenerate data. */
-  function verifyPalmprintProfile(stored, liveCodes) {
-    var fail = function (reason, similarity) {
-      return { ok: false, verified: false, similarity: similarity, threshold: PALMPRINT_THRESHOLD, reason: reason };
-    };
-    var profile = normalisePalmprintProfile(stored);
-    if (!profile) return fail('No usable palmprint enrolled for this person - the stored palmprint data is missing or invalid.', null);
-    var live = [];
-    (liveCodes || []).forEach(function (c) { var b = palmprintCodeBytes(c); if (b && palmprintCodeSane(b)) live.push(b); });
-    if (!live.length) return fail('No real open palm with readable print detail was detected in this scan.', null);
+  /* The packed judgement core (v45): score every packed probe
+     against every packed enrolled template with the 5-shift
+     early-exit matcher; the person's score is the best pair —
+     score-level MAX fusion over individual templates, as since
+     v33, but over the spec's matcher instead of the retired
+     25-shift + geometric-variant expansion. opts.exhaustive
+     disables the early exit and attaches the per-shift log
+     (Field Test Mode's benchmarking toggle). Assumes `profile`
+     came from normalisePalmprintProfile and `probes` are sane
+     packed words. */
+  function palmprintMatchPackedProfile(profile, probes, opts) {
     var best = null;
-    // v35: the pair loop runs on the already-validated bytes through
-    // the seeded similarity (seed = best so far). The codes reaching
-    // this loop are all sane 4096-byte codes (normalise + the live
-    // filter above), so the seeded search never returns null here;
-    // the guard stays so any surprise still fails closed, exactly as
-    // the v34 loop did. The final best is the identical full max.
-    for (var i = 0; i < profile.codes.length; i++) for (var j = 0; j < live.length; j++) {
-      var s = palmprintSimilaritySeeded(profile.codes[i], live[j], best);
-      if (s === null || !isFinite(s)) return fail('Palmprint comparison failed.', null);
-      if (best === null || s > best) best = s;
+    var shiftLog = (opts && opts.exhaustive) ? [] : null;
+    for (var i = 0; i < profile.codes.length; i++) for (var j = 0; j < probes.length; j++) {
+      var m = palmprintPackedMatchWords(profile.codes[i], probes[j], opts);
+      if (!m || m.score === null || !isFinite(m.score)) return null;
+      if (shiftLog && m.perShift) {
+        for (var k = 0; k < m.perShift.length; k++) {
+          shiftLog.push({ enrolled: i, probe: j, dx: m.perShift[k].dx, dy: m.perShift[k].dy, score: m.perShift[k].score });
+        }
+      }
+      if (best === null || m.score > best) best = m.score;
     }
-    return palmprintMatchResult(best);
+    if (best === null) return null;
+    var r = palmprintMatchResult(best);
+    if (shiftLog) r.shiftLog = shiftLog;
+    return r;
   }
-
-  /* v33 verification — the PalmCode-Bench v25 max rule, exactly:
-     each live ROI is re-encoded at the full 25 image-level shifts
-     (plus its mirror twin's 25, for front/back camera presentations),
-     every probe code is scored against every INDIVIDUAL enrolled
-     code with palmprintSimilarity, and the person's score is the
-     single best pair — score-level MAX fusion. No consensus template
-     on either side: enrolment banks individual capture codes only
-     (selectPalmprintProfileCodes), and the live side fuses nothing.
-     Fail closed on any missing or degenerate data, like the rule it
-     replaces. */
-  function verifyPalmprintRois(stored, liveRois) {
+  /* Verify packed probes against a stored profile — the shared
+     entry every v45 judgement path funnels through. Fail closed
+     on any missing or degenerate data, with the legacy reason
+     stated for pre-v45 profiles. */
+  function verifyPackedProbes(stored, probes, opts) {
     var fail = function (reason, similarity) {
       return { ok: false, verified: false, similarity: similarity, threshold: PALMPRINT_THRESHOLD, reason: reason };
     };
     var profile = normalisePalmprintProfile(stored);
-    if (!profile) return fail('No usable palmprint enrolled for this person - the stored palmprint data is missing or invalid.', null);
-    var codes = [];
-    (liveRois || []).forEach(function (roi) {
-      palmprintProbeCodes(roi).forEach(function (c) { codes.push(c); });
-      // v41: the geometric variants join the same max rule (see
-      // PALMPRINT_GEO_VARIANTS). The fast path enumerates exactly
-      // this pair set on a non-pass, keeping the two bit-identical.
-      palmprintProbeCodesGeo(roi).forEach(function (c) { codes.push(c); });
+    if (!profile) return fail(palmprintProfileFailReason(stored), null);
+    var sane = [];
+    (probes || []).forEach(function (w) { var words = palmprintPackedWords(w); if (words && palmprintPackedSane(words)) sane.push(words); });
+    if (!sane.length) return fail('No real open palm with readable print detail was detected in this scan.', null);
+    var r = palmprintMatchPackedProfile(profile, sane, opts);
+    if (!r) return fail('Palmprint comparison failed.', null);
+    return r;
+  }
+  /* Verify live EDCC codes against a stored profile: each live
+     byte code (or packed template) is packed once, then judged by
+     the packed core. Kept signature-compatible with the pre-v45
+     path; the worker's code-pair branch uses it. */
+  function verifyPalmprintProfile(stored, liveCodes, opts) {
+    var probes = [];
+    (liveCodes || []).forEach(function (c) {
+      var w = palmprintPackedWords(c);
+      if (w) { probes.push(w); return; }
+      var packed = palmprintPackCode(c);
+      if (packed) probes.push(packed);
     });
-    if (!codes.length) return fail('No real open palm with readable print detail was detected in this scan.', null);
-    return verifyPalmprintProfile(stored, codes);
+    return verifyPackedProbes(stored, probes, opts);
+  }
+  /* The live side of a v45 judgement: one warped 96x96 patch is
+     encoded ONCE (plus its mirror twin, for front/back camera
+     presentations — the spec is silent on mirroring, so the
+     long-standing twin is kept) and packed. No shift re-encodes,
+     no geometric variants: the affine warp is the alignment, the
+     5-shift matcher is the tolerance. */
+  function palmprintProbePacked(roi) {
+    if (!roi || roi.length !== PALMPRINT_ROI_SIZE * PALMPRINT_ROI_SIZE) return [];
+    var out = [];
+    var code = palmprintEncode(roi, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
+    if (code && palmprintCodeSane(code)) { var p = palmprintPackCode(code); if (p) out.push(p); }
+    var flipped = flipGrayHorizontal(roi, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
+    if (flipped) {
+      var codeM = palmprintEncode(flipped, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
+      if (codeM && palmprintCodeSane(codeM)) { var pm = palmprintPackCode(codeM); if (pm) out.push(pm); }
+    }
+    return out;
   }
 
-  /* v35 fast streaming verify — the SAME v25 max rule as
-     verifyPalmprintRois, organised for the per-frame Show & Pay
-     call: probe variants are produced lazily in priority order
-     (expanding image-shift rings; the plain orientation and its
-     mirror twin at each shift) and scored as they are produced,
-     instead of all 50 encodes up front. The search stops the
-     moment a pair reaches the threshold — a pure short-circuit on
-     an already-decided pass: the verified verdict is the one the
-     full computation would give, and the reported similarity is
-     that pair's true score (a lower bound of the full max, not
-     the full max itself). When no pair reaches the threshold,
-     every variant is produced and scored, so the reported
-     similarity IS the full max, identical to verifyPalmprintRois.
-     The pair set, the encoder, the fusion rule and the threshold
-     are unchanged; fail-closed on the same conditions, in the
-     same order, with the same messages.
-     v41: after each ROI's base expansion, the geometric variants
-     (PALMPRINT_GEO_VARIANTS) for that ROI are produced and scored
-     the same way — the exact path's pair set is base + geo, so a
-     non-pass still reports the identical full max, and a pass
-     still reports one true pair score. A scan the base set passes
-     never pays for the geo encodes. */
+  /* v45 verification — the spec's 1-snap judgement: each live
+     ROI is encoded once (plus its mirror twin) into packed
+     templates, and every probe is scored against every INDIVIDUAL
+     enrolled template with the 5-shift early-exit popcount
+     matcher; the person's score is the single best pair. This is
+     the exact path: every pair is judged (the early exit lives
+     inside each pair's shift search, exactly as the spec writes
+     it). Fail closed on any missing or degenerate data, with the
+     legacy re-scan reason for pre-v45 profiles. */
+  function verifyPalmprintRois(stored, liveRois, opts) {
+    var probes = [];
+    (liveRois || []).forEach(function (roi) {
+      palmprintProbePacked(roi).forEach(function (p) { probes.push(p); });
+    });
+    return verifyPackedProbes(stored, probes, opts);
+  }
+
+  /* v45 fast streaming verify — the SAME judgement as
+     verifyPalmprintRois (same probes, same matcher, same best
+     pair), organised for the per-frame Show & Pay call and
+     carrying the scan-diagnostics timing sink the app renders
+     (opts.timing: baseMs = probe encode+pack time, matchMs =
+     packed matching time, baseEncodes = probe encodes produced;
+     the geometric-variant fields stay zero — that expansion no
+     longer exists). opts.geoFloor is accepted and ignored: the
+     v44 band gate belonged to the retired geometric set. */
   function verifyPalmprintRoisFast(stored, liveRois, opts) {
-    var fail = function (reason, similarity) {
-      return { ok: false, verified: false, similarity: similarity, threshold: PALMPRINT_THRESHOLD, reason: reason };
-    };
-    var profile = normalisePalmprintProfile(stored);
-    if (!profile) return fail('No usable palmprint enrolled for this person - the stored palmprint data is missing or invalid.', null);
-    var best = null;
-    var anyCode = false;
-    var rois = liveRois || [];
-    /* v44 measured-work controls (opts is optional; absent opts
-       reproduce the v43 judgement exactly, pair for pair):
-       - opts.geoFloor (PALMPRINT_GEO_FLOOR): an ROI whose BASE-rule
-         max lands below the floor skips its geometric variants.
-         Skipping can only lower that ROI's score (a max over fewer
-         pairs), so it can never create an accept; the floor sits
-         below every measured geo-rescuable base score, so it does
-         not remove a rescue either (the measurement is recorded at
-         PALMPRINT_GEO_FLOOR). An ROI inside the band — and any ROI
-         whose base produced no score at all — receives the IDENTICAL
-         full v43 judgement: same variants, same max rule.
-       - opts.timing: a caller-owned sink filled with per-phase ms
-         and encode counts for the scan diagnostics (v44 item 1).
-         It never influences the verdict. */
-    var geoFloor = opts && typeof opts.geoFloor === 'number' ? opts.geoFloor : null;
-    var tm = opts && opts.timing ? opts.timing : null;
-    if (tm) { tm.baseMs = tm.baseMs || 0; tm.geoMs = tm.geoMs || 0; tm.baseEncodes = tm.baseEncodes || 0; tm.geoEncodes = tm.geoEncodes || 0; }
-    var nowMs = (typeof performance !== 'undefined' && performance && typeof performance.now === 'function')
-      ? function () { return performance.now(); } : function () { return Date.now(); };
-    // The current ROI's base-rule max, tracked while its base
-    // expansion runs (the band gate reads it; nothing else does).
-    var curRoiBase = null, inBase = false;
-    // One probe code, scored against the profile: updates the
-    // running max and reports whether the threshold is reached.
-    // Shared by the base shift expansion and the v41 geometric
-    // variants so both judge pairs identically.
-    function scoreProbe(code) {
-      var cb = palmprintCodeBytes(code);
-      if (!cb) return false;
-      anyCode = true;
-      for (var ci = 0; ci < profile.codes.length; ci++) {
-        var s = palmprintSimilaritySeeded(profile.codes[ci], cb, best);
-        if (s === null || !isFinite(s)) return null;
-        if (best === null || s > best) best = s;
-        if (inBase && (curRoiBase === null || s > curRoiBase)) curRoiBase = s;
-        if (best >= PALMPRINT_THRESHOLD) return true;
-      }
-      return false;
-    }
-    for (var ri = 0; ri < rois.length; ri++) {
-      var roi = rois[ri];
-      if (!roi || roi.length !== PALMPRINT_ROI_SIZE * PALMPRINT_ROI_SIZE) continue;
-      var flipped = flipGrayHorizontal(roi, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
-      var imgs = flipped ? [roi, flipped] : [roi];
-      curRoiBase = null; inBase = true;
-      var tBase = tm ? nowMs() : 0;
-      var passed = false;
-      for (var si = 0; si < PALMPRINT_SHIFT_ORDER.length && !passed; si++) {
-        var dx = PALMPRINT_SHIFT_ORDER[si][0], dy = PALMPRINT_SHIFT_ORDER[si][1];
-        for (var oi = 0; oi < imgs.length; oi++) {
-          var src = (dx === 0 && dy === 0) ? imgs[oi] : shiftGrayClamped(imgs[oi], PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE, dx, dy);
-          if (!src) continue;
-          var code = palmprintEncode(src, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
-          if (tm) tm.baseEncodes++;
-          if (!code || !palmprintCodeSane(code)) continue;
-          var hit = scoreProbe(code);
-          if (hit === null) { if (tm) tm.baseMs += nowMs() - tBase; return fail('Palmprint comparison failed.', null); }
-          if (hit) { passed = true; break; }
-        }
-      }
-      if (tm) tm.baseMs += nowMs() - tBase;
-      inBase = false;
-      if (passed) return palmprintMatchResult(best);
-      // v41: geometric variants for THIS roi, only after its base
-      // expansion — a scan the base set already passes pays nothing
-      // for them, and a scan nothing passes has enumerated exactly
-      // the exact path's pair set (base + geo), so a non-pass score
-      // stays the identical full max.
-      // v44: the band gate above may skip this loop for an ROI whose
-      // base max is measured below the rescue floor.
-      var geoAllowed = geoFloor === null || curRoiBase === null || curRoiBase >= geoFloor;
-      if (geoAllowed) {
-        var tGeo = tm ? nowMs() : 0;
-        var gpassed = false;
-        for (var gi = 0; gi < PALMPRINT_GEO_VARIANTS.length && !gpassed; gi++) {
-          var gv = PALMPRINT_GEO_VARIANTS[gi];
-          for (var go = 0; go < imgs.length; go++) {
-            var scaled = scaleGrayCentre(imgs[go], PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE, gv.zx, gv.zy);
-            if (!scaled) continue;
-            var gcode = palmprintEncode(scaled, PALMPRINT_ROI_SIZE, PALMPRINT_ROI_SIZE);
-            if (tm) tm.geoEncodes++;
-            if (!gcode || !palmprintCodeSane(gcode)) continue;
-            var ghit = scoreProbe(gcode);
-            if (ghit === null) { if (tm) tm.geoMs += nowMs() - tGeo; return fail('Palmprint comparison failed.', null); }
-            if (ghit) { gpassed = true; break; }
-          }
-        }
-        if (tm) tm.geoMs += nowMs() - tGeo;
-        if (gpassed) return palmprintMatchResult(best);
-      }
-    }
-    if (!anyCode || best === null) return fail('No real open palm with readable print detail was detected in this scan.', null);
-    return palmprintMatchResult(best);
-  }
-
-  /* v44: the multi-profile composition (wallet identification +
-     the impostor-max diagnostic), factored out of the worker
-     handler so the main thread, the worker and the tests run ONE
-     implementation. The probe codes are encoded once and scored
-     against every profile with verifyPalmprintProfile — each
-     result is exactly that profile's v33 result over the shared
-     code set. opts.geoFloor applies the same measured band gate
-     as verifyPalmprintRoisFast, per ROI: an ROI's geometric codes
-     are produced only when its base max over these profiles
-     reaches the floor (or its base produced no codes at all);
-     with no floor the composition is the v43 one, unchanged.
-     opts.timing fills the same diagnostics sink (here baseMs /
-     geoMs are the ENCODE times and matchMs the scoring time —
-     the composition encodes first and scores after). */
-  function verifyPalmprintProfilesRois(profiles, liveRois, opts) {
-    var geoFloor = opts && typeof opts.geoFloor === 'number' ? opts.geoFloor : null;
     var tm = opts && opts.timing ? opts.timing : null;
     if (tm) { tm.baseMs = tm.baseMs || 0; tm.geoMs = tm.geoMs || 0; tm.matchMs = tm.matchMs || 0; tm.baseEncodes = tm.baseEncodes || 0; tm.geoEncodes = tm.geoEncodes || 0; }
     var nowMs = (typeof performance !== 'undefined' && performance && typeof performance.now === 'function')
       ? function () { return performance.now(); } : function () { return Date.now(); };
-    var profs = profiles || [];
-    var codes = [];
+    var t0 = tm ? nowMs() : 0;
+    var probes = [];
     (liveRois || []).forEach(function (roi) {
-      var tB = tm ? nowMs() : 0;
-      var bc = palmprintProbeCodes(roi);
-      if (tm) { tm.baseMs += nowMs() - tB; tm.baseEncodes += bc.length; }
-      bc.forEach(function (c) { codes.push(c); });
-      var runGeo = true;
-      if (geoFloor !== null && bc.length) {
-        var fm = null;
-        profs.forEach(function (p) {
-          var r = verifyPalmprintProfile(p, bc);
-          if (r && typeof r.similarity === 'number' && (fm === null || r.similarity > fm)) fm = r.similarity;
-        });
-        runGeo = fm === null || fm >= geoFloor;
-      }
-      if (runGeo) {
-        var tG = tm ? nowMs() : 0;
-        var gc = palmprintProbeCodesGeo(roi);
-        if (tm) { tm.geoMs += nowMs() - tG; tm.geoEncodes += gc.length; }
-        gc.forEach(function (c) { codes.push(c); });
-      }
+      var ps = palmprintProbePacked(roi);
+      if (tm) tm.baseEncodes += ps.length;
+      ps.forEach(function (p) { probes.push(p); });
     });
-    var tM = tm ? nowMs() : 0;
-    var results = profs.map(function (p) { return verifyPalmprintProfile(p, codes); });
-    if (tm) tm.matchMs += nowMs() - tM;
+    if (tm) tm.baseMs += nowMs() - t0;
+    var t1 = tm ? nowMs() : 0;
+    var r = verifyPackedProbes(stored, probes, opts);
+    if (tm) tm.matchMs += nowMs() - t1;
+    return r;
+  }
+
+  /* v45 multi-profile composition (wallet identification + the
+     impostor-max diagnostic): the probe templates are encoded
+     once and scored against every profile — each result is
+     exactly that profile's verifyPalmprintRois result over the
+     shared probe set. opts.timing fills the same diagnostics
+     sink as the fast path. */
+  function verifyPalmprintProfilesRois(profiles, liveRois, opts) {
+    var tm = opts && opts.timing ? opts.timing : null;
+    if (tm) { tm.baseMs = tm.baseMs || 0; tm.geoMs = tm.geoMs || 0; tm.matchMs = tm.matchMs || 0; tm.baseEncodes = tm.baseEncodes || 0; tm.geoEncodes = tm.geoEncodes || 0; }
+    var nowMs = (typeof performance !== 'undefined' && performance && typeof performance.now === 'function')
+      ? function () { return performance.now(); } : function () { return Date.now(); };
+    var t0 = tm ? nowMs() : 0;
+    var probes = [];
+    (liveRois || []).forEach(function (roi) {
+      var ps = palmprintProbePacked(roi);
+      if (tm) tm.baseEncodes += ps.length;
+      ps.forEach(function (p) { probes.push(p); });
+    });
+    if (tm) tm.baseMs += nowMs() - t0;
+    var t1 = tm ? nowMs() : 0;
+    var results = (profiles || []).map(function (p) { return verifyPackedProbes(p, probes, opts); });
+    if (tm) tm.matchMs += nowMs() - t1;
     return results;
   }
 
@@ -2021,47 +2403,17 @@
     }
     return out;
   }
+  /* v45: profile banking IS the spec's burst banking — the
+     sharpest usable fully-open frame per time-third of the burst,
+     encoded and bit-packed (selectPalmprintBurstCodes). This
+     helper keeps its long-standing name/shape (frames in, stored
+     codes out, null when nothing bankable) so every caller banks
+     the current format; the v43 byte-code selection it replaces
+     survives only inside palmprintPackedCandidates' pose pick,
+     which selects FRAMES by pose and packs them there. */
   function selectPalmprintProfileCodes(frames) {
-    var usable = palmprintUsableOpenFrames(frames);
-    if (usable.length < 2) return null;
-    var picks = [];
-    // v15: enrol from the FULLY OPEN pose. Verification compares the
-    // sharpest fully-open live frames; codes enrolled from mid-movement
-    // transition frames (fingers half-spread, caught by the old per-third
-    // buckets around the fist phase) match nothing later — a real
-    // enrolled palm scored 0.240 at verification on 2026-11-20. Take the
-    // frames within 0.15 openness of the clip's most-open frame and keep
-    // the sharpest three; fall back to the bucket picks when the
-    // fully-open set is too small.
-    // v24: the band widened from 0.15 to 0.30 - still far above the
-    // fist-transition poses the v15 rule exists to exclude (a fist
-    // reads ~1.15-1.5; a 0.30 band under a ~2.0 max keeps picks at
-    // >= ~1.7), but wide enough to bank the natural variation of a
-    // real open palm, so the profile is not only the single most
-    // stretched pose the user happened to perform for the camera.
-    var maxOpen = Math.max.apply(null, usable.map(function (u) { return u.openness; }));
-    var full = usable.filter(function (u) { return u.openness >= maxOpen - 0.30; });
-    if (full.length >= 2) {
-      full.sort(function (a, b) { return b.sharpness - a.sharpness; });
-      picks = full.slice(0, 6); // v16: up to 6 codes — enrolment records two clips, and a wider enrolled pose set lifts genuine scores
-    } else if (usable.length <= 3) picks = usable.slice();
-    else {
-      for (var t = 0; t < 3; t++) {
-        var bucket = usable.slice(Math.floor(t * usable.length / 3), Math.floor((t + 1) * usable.length / 3));
-        bucket.sort(function (a, b) { return b.sharpness - a.sharpness; });
-        if (bucket.length) picks.push(bucket[0]);
-      }
-    }
-    if (picks.length < 2) return null;
-    var out = picks.map(function (u) { return palmprintCodeToBase64(u.code); });
-    if (out.indexOf(null) >= 0) return null;
-    // v33: ONLY the individual capture codes are banked. The v29/v30
-    // majority-fused consensus codes are gone: the PalmCode-Bench v25
-    // measurement showed score-level MAX fusion over the individual
-    // codes (EER 4.42%) clearly beating the consensus template
-    // (EER 11.47% in the same run), so the stored profile is exactly
-    // the set of real captures the max rule scores against.
-    return out;
+    var burst = selectPalmprintBurstCodes(frames);
+    return burst ? burst.codes : null;
   }
   /* ================= v43: multi-angle enrolment ===================
      The Chairman's choice (2026-11-23): "Rebuild enrolment to capture
@@ -2209,60 +2561,116 @@
     }
     return victim;
   }
-  /* Add-angles top-up (v43): merge a guided session's per-pose
-     codes into an EXISTING profile. The stored codes are carried
-     verbatim (the same base64 strings, never re-encoded); the
-     caller's person object is not touched — identity, Biom ID,
-     wallet and points live outside this function and outside its
-     result. A candidate is skipped when it adds no range: a
-     literal re-capture (similarity >= POSE_DUP_SIM against any
-     banked code) or a presentation a banked code's descriptor
-     already covers. Under the cap, diverse candidates append.
-     At the cap, a diverse candidate replaces only a redundant
-     code (palmprintRedundantVictim); when nothing is redundant
-     it is skipped and the profile stands. One floor always
-     holds: at least two of the codes stored BEFORE the merge
-     survive it — the stored enrolment is the identity anchor,
-     and a top-up widens it, it does not re-found it (a legacy
-     single-posture profile at the cap is six near-identical
-     presentations, so without the floor a full pose set would
-     displace the entire original enrolment in one run; with it,
-     a second top-up run converges the coverage). Returns
-     { codes, poses, added, replaced, skipped, changed, poseSet }
-     or null when the stored profile is not a sane v3 profile. */
+  /* v45 Add Angles candidates: the session's diverse sharp
+     templates, in the packed format. Diversity comes first from
+     the measured-pose selection (the sharpest fully-open frame
+     per presented pose, packed); when no pose set banked, the
+     burst selection (sharpest per time-third) is the candidate
+     set. Returns { list: [{ b64, words, desc }], poseSet }. */
+  function palmprintPackedCandidates(frames) {
+    var list = [];
+    var sel = selectPalmprintPoseCodes(frames);
+    if (sel) {
+      sel.codes.forEach(function (b64, i) {
+        var packed = palmprintPackCode(b64);
+        var packedB64 = packed && palmprintPackedToBase64(packed);
+        if (packed && packedB64) list.push({ b64: packedB64, words: packed, desc: sel.poses[i] || null });
+      });
+      return { list: list, poseSet: list.length > 0 };
+    }
+    var burst = selectPalmprintBurstCodes(frames);
+    if (burst) {
+      burst.codes.forEach(function (b64) {
+        var words = palmprintPackedWords(b64);
+        if (words) list.push({ b64: b64, words: words, desc: null });
+      });
+    }
+    return { list: list, poseSet: false };
+  }
+  /* The packed counterpart of palmprintRedundantVictim: same
+     rule (descriptor-covered pair first, else the most similar
+     pair at/above the redundancy bar), judged by the packed
+     matcher. */
+  function palmprintRedundantVictimPacked(wordsList, poses) {
+    var i, j, s;
+    for (i = 0; i < wordsList.length; i++) for (j = i + 1; j < wordsList.length; j++) {
+      if (poses[i] && poses[j] && palmPoseDescriptorsClose(poses[i], poses[j])) return j;
+    }
+    var bestSim = POSE_REDUNDANT_SIM, victim = -1;
+    for (i = 0; i < wordsList.length; i++) for (j = i + 1; j < wordsList.length; j++) {
+      s = palmprintPackedSimilarity(wordsList[i], wordsList[j], { exhaustive: true });
+      if (s !== null && isFinite(s) && s >= bestSim) { bestSim = s; victim = j; }
+    }
+    return victim;
+  }
+  /* Add-angles top-up (v43; v45 packed): merge a session's diverse
+     sharp templates into an EXISTING profile, in the packed store.
+     The stored templates are carried verbatim (the same base64
+     strings, never re-encoded); the caller's person object is not
+     touched — identity, Biom ID, wallet and points live outside
+     this function and outside its result. A candidate is skipped
+     when it adds no range: a literal re-capture (packed similarity
+     >= POSE_DUP_SIM against any banked template) or a presentation
+     a banked template's descriptor already covers. Under the cap,
+     diverse candidates append. At the cap, a diverse candidate
+     replaces only a redundant template; when nothing is redundant
+     it is skipped and the profile stands. One floor always holds:
+     at least two of the templates stored BEFORE the merge survive
+     it — the stored enrolment is the identity anchor, and a top-up
+     widens it, it does not re-found it.
+     LEGACY profiles (v3 byte codes, flagged by the v45 migration):
+     the merge IS the re-scan — the session's packed candidates
+     become the profile's templates and the legacy flag clears.
+     The old codes stay archived in the person record (the
+     migration's legacyCodes field); they are never read by this
+     pipeline. Returns { codes, poses, added, replaced, skipped,
+     changed, poseSet, format, legacy, rebanked } or null when the
+     stored profile is neither a sane packed profile nor a legacy
+     one. */
   function mergePalmprintProfileCodes(profile, frames) {
+    var format = palmprintProfileFormat(profile);
+    if (!format) return null;
+    var cand = palmprintPackedCandidates(frames);
+    if (format === 'legacy') {
+      if (!cand.list.length) {
+        return { codes: profile.codes.slice(), poses: [], added: 0, replaced: 0, skipped: 0, changed: false, poseSet: cand.poseSet, format: 'legacy', legacy: true, rebanked: false };
+      }
+      var kept = cand.list.slice(0, PALMPRINT_PROFILE_MAX_CODES);
+      return {
+        codes: kept.map(function (c) { return c.b64; }),
+        poses: kept.map(function (c) { return c.desc; }),
+        added: kept.length, replaced: 0, skipped: cand.list.length - kept.length,
+        changed: true, poseSet: cand.poseSet, format: PALMPRINT_FORMAT, legacy: true, rebanked: true
+      };
+    }
     var norm = normalisePalmprintProfile(profile);
     if (!norm) return null;
     var codes = profile.codes.slice();
-    var bytes = norm.codes.slice();
+    var wordsList = norm.codes.slice();
     var maxReplace = Math.max(0, codes.length - 2); // the retained-originals floor above
     var poses = [];
     for (var i = 0; i < codes.length; i++) {
       poses.push((Array.isArray(profile.poses) && profile.poses[i] && typeof profile.poses[i] === 'object') ? profile.poses[i] : null);
     }
-    var sel = selectPalmprintPoseCodes(frames);
-    var out = { codes: codes, poses: poses, added: 0, replaced: 0, skipped: 0, changed: false, poseSet: !!sel };
-    if (!sel) return out;
-    sel.codes.forEach(function (candB64, ci) {
-      var candBytes = palmprintCodeBytes(candB64);
-      var candDesc = sel.poses[ci] || null;
-      if (!candBytes) { out.skipped++; return; }
+    var out = { codes: codes, poses: poses, added: 0, replaced: 0, skipped: 0, changed: false, poseSet: cand.poseSet, format: PALMPRINT_FORMAT, legacy: false, rebanked: false };
+    if (!cand.list.length) return out;
+    cand.list.forEach(function (candItem) {
       var dup = false;
-      for (var k = 0; k < bytes.length; k++) {
-        var s = palmprintSimilarity(bytes[k], candBytes);
+      for (var k = 0; k < wordsList.length; k++) {
+        var s = palmprintPackedSimilarity(wordsList[k], candItem.words, { exhaustive: true });
         if (s !== null && isFinite(s) && s >= POSE_DUP_SIM) { dup = true; break; }
-        if (candDesc && poses[k] && palmPoseDescriptorsClose(candDesc, poses[k])) { dup = true; break; }
+        if (candItem.desc && poses[k] && palmPoseDescriptorsClose(candItem.desc, poses[k])) { dup = true; break; }
       }
       if (dup) { out.skipped++; return; }
-      if (bytes.length < PALMPRINT_PROFILE_MAX_CODES) {
-        codes.push(candB64); bytes.push(candBytes); poses.push(candDesc);
+      if (wordsList.length < PALMPRINT_PROFILE_MAX_CODES) {
+        codes.push(candItem.b64); wordsList.push(candItem.words); poses.push(candItem.desc);
         out.added++;
         return;
       }
       if (out.replaced >= maxReplace) { out.skipped++; return; }
-      var victim = palmprintRedundantVictim(bytes, poses);
+      var victim = palmprintRedundantVictimPacked(wordsList, poses);
       if (victim === -1) { out.skipped++; return; }
-      codes[victim] = candB64; bytes[victim] = candBytes; poses[victim] = candDesc;
+      codes[victim] = candItem.b64; wordsList[victim] = candItem.words; poses[victim] = candItem.desc;
       out.replaced++;
     });
     out.codes = codes; out.poses = poses;
@@ -2403,32 +2811,30 @@
   // the same palm). The v16 rotation twins are gone: alignment at the
   // source replaces tolerance by variant multiplication, cutting the
   // per-frame comparison count from 18 live codes to 2.
+  /* v45: live selection in the packed format. The two sharpest
+     usable frames (PALM_LIVE_OPEN_MIN gate) each contribute their
+     packed probe pair (plain + mirror twin, from the ROI via
+     palmprintProbePacked); a code-only frame contributes its
+     packed code. The v30 live-side consensus appends are gone —
+     score-level MAX over the individual templates is the rule
+     (the same removal v33 made on the enrolment side). Returns
+     packed base64 templates or null. */
   function selectPalmprintLiveCodes(frames) {
     var usable = palmprintUsableOpenFrames(frames, PALM_LIVE_OPEN_MIN);
     if (!usable.length) return null;
     usable.sort(function (a, b) { return b.sharpness - a.sharpness; });
-    var top = usable.slice(0, 3);
+    var top = usable.slice(0, 2);
     var out = [];
     top.forEach(function (u) {
-      out.push(u.code);
-      if (u.codeM) out.push(u.codeM);
-    });
-    // v30: live-side fusion, symmetric to the enrolled consensus -
-    // fuse the sharpest live frames into one consensus code (and the
-    // consensus of their mirror twins), so the final comparison can
-    // score the session's stable print rather than only single
-    // frames. The user's phone produced 24 readable live codes whose
-    // best single pair was 0.266-0.302 across two nights.
-    if (top.length >= 2) {
-      var consLive = palmprintConsensusCode(top.map(function (u) { return u.code; }));
-      if (consLive && palmprintCodeSane(consLive)) out.push(consLive);
-      var twins = top.map(function (u) { return u.codeM; }).filter(function (c) { return !!c; });
-      if (twins.length >= 2) {
-        var consTwin = palmprintConsensusCode(twins);
-        if (consTwin && palmprintCodeSane(consTwin)) out.push(consTwin);
+      if (u.roi) {
+        palmprintProbePacked(u.roi).forEach(function (p) { out.push(p); });
+      } else if (u.code) {
+        var packed = palmprintPackCode(u.code);
+        var b64 = packed && palmprintPackedToBase64(packed);
+        if (b64) out.push(b64);
       }
-    }
-    return out;
+    });
+    return out.length ? out : null;
   }
 
   /* v33: the live side of verification is ROIs, not pre-encoded
@@ -2577,16 +2983,20 @@
     var isNum = typeof score === 'number' && isFinite(score);
     var isMatch = isNum && score >= PALMPRINT_THRESHOLD;
     if (isNum && (best === null || score > best)) best = score;
-    // v32: the win rule is two matching frames within a rolling
-    // three-frame window (the current frame completing the pair),
-    // not two strictly consecutive frames. Measured need: the user's
-    // genuine palm scored 0.338 - above the line - on one frame while
-    // its neighbours jittered just below, and the consecutive rule
-    // rejected a verified palm (2026-11-20). A single isolated frame
-    // still cannot verify: two independent above-threshold reads of
-    // the same palm must land within three analysed frames.
-    var prev = hist.slice(-2);
-    var done = isMatch && prev.some(function (h) { return !!h; });
+    // History: the v32 rule required two matching frames within
+    // a rolling three-frame window (measured need, 2026-11-20:
+    // a genuine palm at 0.338 on one frame while its neighbours
+    // jittered just below). The v45 spec replaces it — see below.
+    // v45 (spec section 5): the win rule is the 1-snap rule — the
+    // FIRST frame whose packed match reaches the threshold
+    // completes the scan, and done latches. This replaces the v32
+    // two-in-three rolling window (the user's explicit spec
+    // override, 2026-11-23). The surrounding gates are unchanged
+    // and live in the callers: the win is honoured only once the
+    // spoof gate has examined at least three frames and passive
+    // liveness passes on the streamed poses. hist/streak are kept
+    // for the diagnostics record.
+    var done = isMatch || !!(state && state.done);
     hist.push(isMatch);
     var streak = 0;
     for (var i = hist.length - 1; i >= 0 && hist[i]; i--) streak++;
@@ -2639,31 +3049,30 @@
       ';var PALMPRINT_ROI_SIZE=' + PALMPRINT_ROI_SIZE +
       ';var PALMPRINT_MAX_DIR_SHARE=' + PALMPRINT_MAX_DIR_SHARE +
       ';var PALMPRINT_THRESHOLD=' + PALMPRINT_THRESHOLD +
-      ';var PALMPRINT_SHIFT_RANGE=' + PALMPRINT_SHIFT_RANGE +
-      ';var PALMPRINT_SHIFT_ORDER=' + JSON.stringify(PALMPRINT_SHIFT_ORDER) +
-      ';var PALMPRINT_GEO_VARIANTS=' + JSON.stringify(PALMPRINT_GEO_VARIANTS) +
+      ';var PALMPRINT_FORMAT=' + JSON.stringify(PALMPRINT_FORMAT) +
+      ';var PALMPRINT_PACK_PLANES=' + PALMPRINT_PACK_PLANES +
+      ';var PALMPRINT_PACK_WORDS_PER_ROW=' + PALMPRINT_PACK_WORDS_PER_ROW +
+      ';var PALMPRINT_PACK_WORDS=' + PALMPRINT_PACK_WORDS +
+      ';var PALMPRINT_PACK_LEN=' + PALMPRINT_PACK_LEN +
+      ';var PALMPRINT_SHIFTS5=' + JSON.stringify(PALMPRINT_SHIFTS5) +
       ';var PALMPRINT_KERNELS=null;';
-    // v33: the encoder chain joins the worker so the 25-shift probe
-    // re-encodes (verifyPalmprintRois) run off the main thread too.
-    // Messages carrying liveRois take the v33 path; messages carrying
-    // liveCodes keep the original code-pair path, byte-identical.
-    // v35: messages carrying fast take verifyPalmprintRoisFast (the
-    // same max rule, lazily ordered with a threshold short-circuit);
-    // messages carrying profiles + liveRois verify the SAME probe
-    // codes — encoded once — against every profile (the impostor-max
-    // composition), answering with a results array.
-    var fns = [reflect101, resizeGrayBilinear, convolveSeparable, convolve2d, gaborKernelReal, palmprintKernels, palmprintEnhance, palmprintEncode, palmprintCodeFromBase64, palmprintCodeBytes, palmprintCodeSane, edccScoreAtShift, palmprintSimilaritySeeded, palmprintSimilarity, flipGrayHorizontal, scaleGrayCentre, shiftGrayClamped, palmprintProbeCodes, palmprintProbeCodesGeo, normalisePalmprintProfile, palmprintMatchResult, verifyPalmprintProfile, verifyPalmprintRois, verifyPalmprintRoisFast, verifyPalmprintProfilesRois];
+    // v45: the worker runs the packed pipeline end to end — the
+    // EDCC encoder chain (with the CLAHE normalisation), the
+    // bit-packing, and every template comparison (the 5-shift
+    // popcount matcher) — so the camera preview thread never pays
+    // for matching. Messages carrying liveRois encode the probes
+    // inside the worker; messages carrying liveCodes keep the
+    // code-pair path. d.exhaustive carries the Field Test Mode
+    // toggle (no early exit; the answer carries the per-shift
+    // log). The fast and multi-profile branches answer with their
+    // stage-timing sink, as since v44.
+    var fns = [reflect101, resizeGrayBilinear, convolveSeparable, convolve2d, gaborKernelReal, palmprintKernels, palmprintEnhance, palmprintNormaliseRoi, palmprintEncode, palmprintCodeFromBase64, palmprintCodeBytes, palmprintCodeSane, popcount32, palmprintPackCode, palmprintPackedBytes, palmprintPackedWords, palmprintPackedFromBase64, palmprintUnpackCode, palmprintPackedSane, edccPackedScoreAtShift, palmprintPackedMatchWords, palmprintPackedMatch, palmprintPackedSimilarity, flipGrayHorizontal, palmprintProfileFormat, normalisePalmprintProfile, palmprintProfileFailReason, palmprintMatchResult, palmprintMatchPackedProfile, verifyPackedProbes, verifyPalmprintProfile, palmprintProbePacked, verifyPalmprintRois, verifyPalmprintRoisFast, verifyPalmprintProfilesRois];
     var body = fns.map(function (f) { return f.toString(); }).join('\n');
-    // v44: the fast and multi-profile branches accept the measured
-    // geo band gate (d.geoFloor, a number or absent) and always
-    // answer with their stage-timing sink (d.timing consumers in
-    // the app read it for the scan diagnostics; it never changes a
-    // verdict). The exact branches are byte-identical to before.
     var handler = 'onmessage=function(e){var d=e.data||{};var r=null;var rs=null;var tm=null;' +
       'try{' +
-      'if(d.profiles){tm={};rs=verifyPalmprintProfilesRois(d.profiles,d.liveRois,{geoFloor:(typeof d.geoFloor==="number"?d.geoFloor:null),timing:tm});}' +
-      'else if(d.fast){tm={};r=verifyPalmprintRoisFast(d.profile,d.liveRois,{geoFloor:(typeof d.geoFloor==="number"?d.geoFloor:null),timing:tm});}' +
-      'else{r=(d.liveRois?verifyPalmprintRois(d.profile,d.liveRois):verifyPalmprintProfile(d.profile,d.liveCodes));}' +
+      'if(d.profiles){tm={};rs=verifyPalmprintProfilesRois(d.profiles,d.liveRois,{exhaustive:!!d.exhaustive,timing:tm});}' +
+      'else if(d.fast){tm={};r=verifyPalmprintRoisFast(d.profile,d.liveRois,{exhaustive:!!d.exhaustive,timing:tm});}' +
+      'else{r=(d.liveRois?verifyPalmprintRois(d.profile,d.liveRois,{exhaustive:!!d.exhaustive}):verifyPalmprintProfile(d.profile,d.liveCodes,{exhaustive:!!d.exhaustive}));}' +
       '}catch(err){r=null;rs=null;tm=null;}' +
       'postMessage({id:d.id,result:r,results:rs,timing:tm});};';
     return consts + '\n' + body + '\n' + handler;
@@ -3155,8 +3564,26 @@
      enrolment and wallet shapes are all unchanged, and no stored
      field changes shape, so its step is the identity, and a v43
      store — enrolment codes, wallet balance, statement and linked
-     accounts included — opens under v44 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44'];
+     accounts included — opens under v44 byte-identical.
+
+     v44 -> v45 is a CONVERSION of the palm-profile FORMAT only,
+     ordered by the Chairman's Palm-X override (2026-11-23 18:21):
+     v45 reads bit-packed templates from the 96x96 affine patch;
+     a v3 byte-code profile cannot be read by that pipeline and
+     cannot be converted (different patch, different packing).
+     The step therefore does the honest minimum: every person
+     record, Biom ID, wallet, balance, statement, linked account,
+     points and every other field carries over BYTE-IDENTICAL,
+     and each legacy palm profile is MARKED, never deleted — its
+     codes move verbatim into the profile's legacyCodes archive
+     field, codes becomes empty, format becomes 'legacy' and
+     rescanNeeded is set, so the Registry shows "Palm re-scan
+     needed" and the person re-banks the palm once (Registry →
+     Add Angles) before scanning works again. Profiles already in
+     the v4 packed format, and people without a palm profile, are
+     returned by identity. The step is idempotent: a marked
+     profile is recognised by its format + archive and skipped. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -3164,6 +3591,29 @@
     'v41': function (snap) { return snap; },
     'v43': function (snap) { return snap; },
     'v44': function (snap) { return snap; },
+    'v45': function (snap) {
+      var changed = false;
+      var people = snap.people.map(function (p) {
+        if (!p || typeof p !== 'object') return p;
+        var prof = p.palmProfile;
+        if (!prof || typeof prof !== 'object') return p;
+        if (palmprintProfileFormat(prof) !== 'legacy') return p;
+        if (prof.format === 'legacy' && Array.isArray(prof.legacyCodes)) return p; // already marked
+        var np = {};
+        Object.keys(p).forEach(function (k) { np[k] = p[k]; });
+        var nprof = {};
+        Object.keys(prof).forEach(function (k) { nprof[k] = prof[k]; });
+        nprof.legacyCodes = Array.isArray(prof.codes) ? prof.codes.slice() : [];
+        nprof.codes = [];
+        nprof.format = 'legacy';
+        nprof.rescanNeeded = true;
+        np.palmProfile = nprof;
+        changed = true;
+        return np;
+      });
+      if (!changed) return snap;
+      return { people: people, logs: snap.logs, transactions: snap.transactions, meta: snap.meta };
+    },
     'v42': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
@@ -3256,9 +3706,43 @@
     PALM_TILT_MIN: PALM_TILT_MIN,
     palmprintCodeSane: palmprintCodeSane,
     palmprintSimilarity: palmprintSimilarity,
+    edccScoreAtShift: edccScoreAtShift,
     palmRoiFromLandmarks: palmRoiFromLandmarks,
+    palmRoiAffineFromLandmarks: palmRoiAffineFromLandmarks,
+    PALMPRINT_AFFINE_DEST: PALMPRINT_AFFINE_DEST,
+    PALMPRINT_FORMAT: PALMPRINT_FORMAT,
+    PALMPRINT_PACK_WORDS: PALMPRINT_PACK_WORDS,
+    PALMPRINT_PACK_LEN: PALMPRINT_PACK_LEN,
+    PALMPRINT_SHIFTS5: PALMPRINT_SHIFTS5,
+    popcount32: popcount32,
+    palmprintPackCode: palmprintPackCode,
+    palmprintPackedBytes: palmprintPackedBytes,
+    palmprintPackedWords: palmprintPackedWords,
+    palmprintPackedToBase64: palmprintPackedToBase64,
+    palmprintPackedFromBase64: palmprintPackedFromBase64,
+    palmprintUnpackCode: palmprintUnpackCode,
+    palmprintPackedSane: palmprintPackedSane,
+    edccPackedScoreAtShift: edccPackedScoreAtShift,
+    palmprintPackedMatch: palmprintPackedMatch,
+    palmprintPackedSimilarity: palmprintPackedSimilarity,
+    palmBboxWidthFrac: palmBboxWidthFrac,
+    palmprintQualityGate: palmprintQualityGate,
+    PALMPRINT_QUALITY_MIN_BRIGHTNESS: PALMPRINT_QUALITY_MIN_BRIGHTNESS,
+    PALMPRINT_QUALITY_MAX_GLARE_FRAC: PALMPRINT_QUALITY_MAX_GLARE_FRAC,
+    PALMPRINT_QUALITY_BLUR_MIN: PALMPRINT_QUALITY_BLUR_MIN,
+    PALMPRINT_BBOX_MIN_FRAC: PALMPRINT_BBOX_MIN_FRAC,
+    PALMPRINT_BBOX_MAX_FRAC: PALMPRINT_BBOX_MAX_FRAC,
+    PALMPRINT_BURST_MS: PALMPRINT_BURST_MS,
+    PALMPRINT_BURST_MIN_FRAMES: PALMPRINT_BURST_MIN_FRAMES,
+    PALMPRINT_BURST_MAX_FRAMES: PALMPRINT_BURST_MAX_FRAMES,
+    PALMPRINT_BURST_TEMPLATES: PALMPRINT_BURST_TEMPLATES,
+    palmprintBurstLiveness: palmprintBurstLiveness,
+    selectPalmprintBurstCodes: selectPalmprintBurstCodes,
+    palmprintProfileFormat: palmprintProfileFormat,
+    palmprintProfileFailReason: palmprintProfileFailReason,
     palmprintProfileSane: palmprintProfileSane,
     verifyPalmprintProfile: verifyPalmprintProfile,
+    palmprintProbePacked: palmprintProbePacked,
     shiftGrayClamped: shiftGrayClamped,
     PALMPRINT_SHIFT_RANGE: PALMPRINT_SHIFT_RANGE,
     palmprintProbeCodes: palmprintProbeCodes,

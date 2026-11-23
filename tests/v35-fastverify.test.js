@@ -1,18 +1,25 @@
 /* TSG BIOM v35 tests: the fast streaming verify.
    The verdict rule is unchanged from v33/v34 — same EDCC encoder,
-   same 25 image-level shifts x mirror twin probe set, same
-   score-level MAX over the same (probe x enrolled) pairs, same
+   same score-level MAX over the (probe x enrolled) pairs, same
    0.32 threshold. v35 changes only the ORDER and the amount of
    work:
-   - palmprintSimilaritySeeded: branch-and-bound over the same 25
-     code-grid translations; must return the identical max.
+   - palmprintSimilaritySeeded: branch-and-bound over the code-grid
+     translations; must return the identical max.
    - verifyPalmprintRoisFast: lazy probe encodes in priority order
      with a threshold short-circuit. On a pass, the reported score
      is the deciding pair's true score (a lower bound of the full
      max); on a non-pass it must be the full max, bit-identical to
      verifyPalmprintRois.
-   - the worker's multi-profile message encodes the probe codes
-     once; each result must equal the per-profile exact call.
+   - the worker's multi-profile message encodes the probe once;
+     each result must equal the per-profile exact call.
+
+   v45 port (2026-11-23): the pair set is the spec's — the probe
+   is the ROI's packed template plus its mirror twin, each pair
+   scored by the 5-shift popcount matcher; the fast path's
+   short-circuit is that matcher plus pair priority order. The
+   byte-level reference section below still pins
+   palmprintSimilarity against an independent 25-shift reference
+   (the byte comparer the packed identity proof stands on).
    Run: node tests/v35-fastverify.test.js */
 'use strict';
 const B = require('../biometrics.js');
@@ -28,7 +35,7 @@ function check(name, cond, detail) {
 function lcg(seed) { let s = seed; return function () { s = (s * 1103515245 + 12345) % 2147483648; return s / 2147483648; }; }
 function roiImage(creases, seed, opts) {
   opts = opts || {};
-  const size = 128, rnd = lcg(seed), noise = [];
+  const size = B.PALMPRINT_ROI_SIZE, rnd = lcg(seed), noise = [];
   for (let i = 0; i < size * size; i++) noise.push((rnd() - 0.5) * 12);
   const dx = opts.dx || 0, dy = opts.dy || 0;
   const g = new Array(size * size);
@@ -56,9 +63,9 @@ function enrolProfile(creases, seedBase) {
   const frames = [];
   for (let i = 0; i < 9; i++) {
     const roi = roiImage(creases, seedBase + i, { dx: (i % 3) - 1, dy: ((i + 1) % 3) - 1 });
-    frames.push({ openness: 2.0, code: B.palmprintEncode(roi, 128, 128), roi: roi, sharpness: 100 + i * 10 });
+    frames.push({ openness: 2.0, code: B.palmprintEncode(roi, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE), roi: roi, sharpness: 100 + i * 10 });
   }
-  return { v: 3, codes: B.selectPalmprintProfileCodes(frames) };
+  return { v: 4, format: B.PALMPRINT_FORMAT, codes: B.selectPalmprintProfileCodes(frames) };
 }
 const profileA = enrolProfile(PALM_A, 61);
 const profileB = enrolProfile(PALM_B, 161);
@@ -91,8 +98,17 @@ function refSimilarity(a, b) {
   return best;
 }
 (function () {
-  const probes = B.palmprintProbeCodes(liveSame);
-  const enrolled = profileA.codes.map(function (b64) { return new Uint8Array(Buffer.from(b64, 'base64')); });
+  // Byte-level probe set, enumerated by hand: the ROI re-encoded
+  // at the 25 image-level shifts, plain + mirror (the v33 probe
+  // expansion, rebuilt here because the shipping probe is packed
+  // now). Enrolled codes are the profile's templates unpacked.
+  const S = B.PALMPRINT_ROI_SIZE;
+  const probes = [];
+  for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+    probes.push(B.palmprintEncode(B.shiftGrayClamped(liveSame, S, S, dx, dy), S, S));
+    probes.push(B.palmprintEncode(B.flipGrayHorizontal(B.shiftGrayClamped(liveSame, S, S, dx, dy), S, S), S, S));
+  }
+  const enrolled = profileA.codes.map(function (b64) { return B.palmprintUnpackCode(b64); });
   let allSame = true, worst = 0;
   probes.forEach(function (pc) {
     enrolled.forEach(function (ec) {
@@ -100,7 +116,7 @@ function refSimilarity(a, b) {
       if (got !== want) { allSame = false; worst = Math.max(worst, Math.abs(got - want)); }
     });
   });
-  check('SIMILARITY palmprintSimilarity equals the independent reference on all 300 fixture pairs', allSame, 'worst diff ' + worst);
+  check('SIMILARITY palmprintSimilarity equals the independent reference on all fixture pairs', allSame, 'pairs=' + (probes.length * enrolled.length) + ' worst diff ' + worst);
 })();
 
 /* ---------------- fast verify: verdict + score contract -------- */
@@ -111,16 +127,26 @@ check('FAST pass score is at/above threshold and never above the exact full max'
   fastSame.similarity >= B.PALMPRINT_THRESHOLD && fastSame.similarity <= exactSame.similarity + 1e-12,
   'fast=' + fastSame.similarity.toFixed(4) + ' exact=' + exactSame.similarity.toFixed(4));
 (function () {
-  const probes = B.palmprintProbeCodes(liveSame);
-  const enrolled = profileA.codes.map(function (b64) { return new Uint8Array(Buffer.from(b64, 'base64')); });
+  const probes = B.palmprintProbePacked(liveSame);
   const isPairScore = probes.some(function (pc) {
-    return enrolled.some(function (ec) { return Math.abs(B.palmprintSimilarity(pc, ec) - fastSame.similarity) < 1e-12; });
+    return profileA.codes.some(function (ec) { return Math.abs(B.palmprintPackedSimilarity(pc, ec, { exhaustive: true }) - fastSame.similarity) < 1e-12; });
   });
-  check('FAST pass score IS one true pair score from the v34 pair set', isPairScore);
+  check('FAST pass score IS one true pair score from the v45 pair set', isPairScore);
 })();
 const fastFar = B.verifyPalmprintRoisFast(profileA, [liveSameFar]);
-check('FAST genuine palm at a far shift (2,2) still verifies (ring order reaches it)', fastFar.verified === true, 'sim=' + (fastFar.similarity || 0).toFixed(3));
-const fastMirror = B.verifyPalmprintRoisFast(profileA, [B.flipGrayHorizontal(liveSame, 128, 128)]);
+/* v45 changed expectation, stated plainly: a (2,2) CONTENT offset
+   inside a fixed ROI is a sub-cell shift (the matcher moves whole
+   code cells, ±2). The v44 pipeline rescued it by re-encoding the
+   ROI at 25 image-level shifts; the spec's matcher does not, and
+   this fixture measures 0.192 — below threshold. In the shipped
+   app the probe is never a fixed ROI: it is warped from the live
+   landmarks, so presentation movement is absorbed by the warp
+   (the palmprint suite's WARP section measures that path at
+   0.53+). This check pins the limitation where it belongs — on
+   the raw matcher — instead of hiding it. */
+check('FAST a sub-cell content offset inside a fixed ROI is NOT rescued by the 5-shift code matcher (measured, v45 limitation)',
+  fastFar.verified === false && fastFar.similarity < B.PALMPRINT_THRESHOLD, 'sim=' + (fastFar.similarity || 0).toFixed(3));
+const fastMirror = B.verifyPalmprintRoisFast(profileA, [B.flipGrayHorizontal(liveSame, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE)]);
 check('FAST mirror-twin presentation verifies', fastMirror.verified === true, 'sim=' + (fastMirror.similarity || 0).toFixed(3));
 
 const exactOther = B.verifyPalmprintRois(profileA, [liveOther]);
@@ -136,7 +162,7 @@ check('FAST non-pass score is the FULL max, bit-identical to the exact path (no 
 })();
 check('FAST fails closed on a missing profile', B.verifyPalmprintRoisFast(null, [liveSame]).verified === false);
 check('FAST fails closed on no live ROI', B.verifyPalmprintRoisFast(profileA, []).verified === false && B.verifyPalmprintRoisFast(profileA, null).verified === false);
-check('FAST fails closed on a blank ROI (no readable print)', B.verifyPalmprintRoisFast(profileA, [new Array(128 * 128).fill(200)]).verified === false);
+check('FAST fails closed on a blank ROI (no readable print)', B.verifyPalmprintRoisFast(profileA, [new Array(B.PALMPRINT_ROI_SIZE * B.PALMPRINT_ROI_SIZE).fill(200)]).verified === false);
 check('FAST result shape matches the exact path', fastSame.ok === exactSame.ok && fastSame.threshold === exactSame.threshold && fastSame.reason === exactSame.reason);
 
 /* ---------------- worker: fast + multi-profile ------------------ */

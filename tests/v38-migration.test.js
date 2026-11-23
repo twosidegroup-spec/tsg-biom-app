@@ -53,7 +53,23 @@
    copy); no stored field changes shape, so a v43 store — wallet
    balance, statement and linked accounts included — opens under
    v44 byte-identical. The v44 section below proves exactly that
-   on the same wallet-carrying store. */
+   on the same wallet-carrying store.
+
+   Extended for v45 (2026-11-23): the chain gains 'v45' — the
+   second CONVERSION step, and the only one that touches palm
+   profiles. v45 changes the template format itself (96x96
+   affine patch, bit-packed templates): old byte-format codes
+   cannot be read by the packed pipeline and cannot be converted,
+   so the step ARCHIVES them — codes move verbatim into the
+   profile's legacyCodes field, codes becomes [], format becomes
+   'legacy', rescanNeeded is set — and every other field of every
+   record stays byte-identical. The per-version VERIFY checks of
+   the v38-v44 sections are therefore replaced by FORMAT checks
+   (a byte profile at any older stamp is a legacy profile to the
+   current reader); preservation is still proven byte-for-byte at
+   every step, and the v45 section proves the conversion itself,
+   the wallet's survival through it, and the fail-closed verify
+   with the honest re-scan reason. */
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -103,7 +119,9 @@ function clipFrames(creases, baseSeed) {
 }
 
 /* ---------- a v37 store, in the exact shapes the v37 app wrote --- */
-const enrolledCodes = B.selectPalmprintProfileCodes(clipFrames(PALM_A, 51));
+const enrolledCodes = clipFrames(PALM_A, 51).slice()
+  .sort(function (a, b) { return b.sharpness - a.sharpness; }).slice(0, 6)
+  .map(function (f) { return Buffer.from(f.code).toString('base64'); });
 check('fixture: enrolment selects stored codes', Array.isArray(enrolledCodes) && enrolledCodes.length >= 2,
   enrolledCodes ? enrolledCodes.length + ' codes' : 'null');
 const v37Store = {
@@ -135,25 +153,31 @@ check('SURVIVE person row intact', !!mp && mp.id === 'TSG-BIO-2841' && mp.name =
 check('SURVIVE loyalty points intact', !!mp && mp.loyaltyPoints === 137, mp && String(mp.loyaltyPoints));
 check('SURVIVE palm codes byte-identical', !!mp && JSON.stringify(mp.palmProfile.codes) === JSON.stringify(enrolledCodes),
   mp && mp.palmProfile.codes.length + ' codes');
-check('SURVIVE profile still sane to the v38 reader', !!mp && B.palmprintProfileSane(mp.palmProfile));
+check('SURVIVE profile preserved; to the current reader it is the legacy format', !!mp && B.palmprintProfileFormat(mp.palmProfile) === 'legacy' && !B.palmprintProfileSane(mp.palmProfile));
 check('SURVIVE transaction intact', mig.snapshot.transactions.length === 1 && mig.snapshot.transactions[0].id === 'BIOM-PAY-1001' && mig.snapshot.transactions[0].amount === 250);
 check('SURVIVE log row intact', mig.snapshot.logs.length === 1 && mig.snapshot.logs[0].result === 'Verified');
 check('SURVIVE meta sequences intact', mig.snapshot.meta.length === 2 && mig.snapshot.meta[0].value === 2842 && mig.snapshot.meta[1].value === 1002);
 
-/* ---------- the migrated enrolment still verifies ------------------ */
+/* ---------- the migrated enrolment under the v45 reader ------------
+   A byte-format profile cannot be verified by the packed
+   pipeline: the verify fails CLOSED (never a false accept, never
+   a crash) and the fail reason states the re-scan honestly. The
+   probes below are real packed live templates of both palms. */
 const probeSame = B.selectPalmprintLiveCodes(clipFrames(PALM_A, 71));
 const rSame = B.verifyPalmprintProfile(mp.palmProfile, probeSame);
-check('VERIFY migrated profile accepts the same palm', rSame.verified === true, 'sim=' + (rSame.similarity && rSame.similarity.toFixed(3)));
+check('VERIFY a legacy profile fails closed against its own palm', rSame.verified === false && rSame.ok === false, rSame.reason);
+check('VERIFY the fail reason is the honest re-scan reason', /re-scan/.test(B.palmprintProfileFailReason(mp.palmProfile)));
 const probeOther = B.selectPalmprintLiveCodes(clipFrames(PALM_B, 81));
 const rOther = B.verifyPalmprintProfile(mp.palmProfile, probeOther);
-check('VERIFY migrated profile still rejects another palm', rOther.verified === false, 'sim=' + (rOther.similarity && rOther.similarity.toFixed(3)));
+check('VERIFY a legacy profile fails closed against another palm too', rOther.verified === false && rOther.ok === false);
 
 /* ---------- older / unknown writers, idempotence, damage ---------- */
 const migOld = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v36', 'v38');
 check('MIGRATE from an older version (v36) preserves the person', migOld.snapshot.people.length === 1 && migOld.snapshot.people[0].loyaltyPoints === 137);
 const migUnknown = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), null, 'v38');
 check('MIGRATE from an unknown version (null stamp, data present) preserves the person',
-  migUnknown.snapshot.people.length === 1 && B.palmprintProfileSane(migUnknown.snapshot.people[0].palmProfile));
+  migUnknown.snapshot.people.length === 1 && migUnknown.snapshot.people[0].loyaltyPoints === 137 &&
+  JSON.stringify(migUnknown.snapshot.people[0].palmProfile.codes) === JSON.stringify(enrolledCodes));
 const migAgain = B.migrateBiomData(mig.snapshot, 'v38', 'v38');
 check('MIGRATE is idempotent at the current version', migAgain.appliedSteps.length === 0 && migAgain.changed === false &&
   migAgain.snapshot.people.length === 1 && migAgain.snapshot.people[0].loyaltyPoints === 137);
@@ -167,8 +191,8 @@ check('MIGRATE a store with a missing logs array keeps the people', Array.isArra
    its migration step is an adoption like v38's. A store written by
    v38 (and one written by v37, through both steps) must open under
    v39 with the person, codes and points intact and still verify. */
-check('CHAIN v44 is the newest link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v44' &&
-  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40,v41,v42,v43,v44', B.BIOM_DATA_VERSIONS.join(','));
+check('CHAIN v45 is the newest link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v45' &&
+  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40,v41,v42,v43,v44,v45', B.BIOM_DATA_VERSIONS.join(','));
 const mig39 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v38', 'v39');
 check('MIGRATE v38->v39 runs the v39 step', mig39.appliedSteps.indexOf('v39') !== -1, mig39.appliedSteps.join(','));
 check('MIGRATE v38->v39 is an adoption: no store rewritten', mig39.changed === false && mig39.changedStores.length === 0,
@@ -179,10 +203,8 @@ check('SURVIVE v39 person, points and codes intact', !!mp39 && mp39.id === 'TSG-
 const migChain39 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v37', 'v39');
 check('MIGRATE v37->v39 runs both steps in order', migChain39.appliedSteps.join(',') === 'v38,v39', migChain39.appliedSteps.join(','));
 check('MIGRATE v37->v39 keeps the person and points', migChain39.snapshot.people.length === 1 && migChain39.snapshot.people[0].loyaltyPoints === 137);
-const rSame39 = B.verifyPalmprintProfile(mp39.palmProfile, probeSame);
-check('VERIFY the v39-migrated profile accepts the same palm', rSame39.verified === true, 'sim=' + (rSame39.similarity && rSame39.similarity.toFixed(3)));
-const rOther39 = B.verifyPalmprintProfile(mp39.palmProfile, probeOther);
-check('VERIFY the v39-migrated profile still rejects another palm', rOther39.verified === false, 'sim=' + (rOther39.similarity && rOther39.similarity.toFixed(3)));
+check('FORMAT the v39-migrated profile is a legacy-format profile to the current reader',
+  B.palmprintProfileFormat(mp39.palmProfile) === 'legacy');
 const migAgain39 = B.migrateBiomData(mig39.snapshot, 'v39', 'v39');
 check('MIGRATE is idempotent at v39', migAgain39.appliedSteps.length === 0 && migAgain39.changed === false &&
   migAgain39.snapshot.people.length === 1 && migAgain39.snapshot.people[0].loyaltyPoints === 137);
@@ -203,10 +225,8 @@ check('SURVIVE v40 person, points and codes intact', !!mp40 && mp40.id === 'TSG-
 const migChain40 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v37', 'v40');
 check('MIGRATE v37->v40 runs all three steps in order', migChain40.appliedSteps.join(',') === 'v38,v39,v40', migChain40.appliedSteps.join(','));
 check('MIGRATE v37->v40 keeps the person and points', migChain40.snapshot.people.length === 1 && migChain40.snapshot.people[0].loyaltyPoints === 137);
-const rSame40 = B.verifyPalmprintProfile(mp40.palmProfile, probeSame);
-check('VERIFY the v40-migrated profile accepts the same palm', rSame40.verified === true, 'sim=' + (rSame40.similarity && rSame40.similarity.toFixed(3)));
-const rOther40 = B.verifyPalmprintProfile(mp40.palmProfile, probeOther);
-check('VERIFY the v40-migrated profile still rejects another palm', rOther40.verified === false, 'sim=' + (rOther40.similarity && rOther40.similarity.toFixed(3)));
+check('FORMAT the v40-migrated profile is a legacy-format profile to the current reader',
+  B.palmprintProfileFormat(mp40.palmProfile) === 'legacy');
 const migAgain40 = B.migrateBiomData(mig40.snapshot, 'v40', 'v40');
 check('MIGRATE is idempotent at v40', migAgain40.appliedSteps.length === 0 && migAgain40.changed === false &&
   migAgain40.snapshot.people.length === 1 && migAgain40.snapshot.people[0].loyaltyPoints === 137);
@@ -228,10 +248,8 @@ check('SURVIVE v41 person, points and codes intact', !!mp41 && mp41.id === 'TSG-
 const migChain41 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v37', 'v41');
 check('MIGRATE v37->v41 runs all four steps in order', migChain41.appliedSteps.join(',') === 'v38,v39,v40,v41', migChain41.appliedSteps.join(','));
 check('MIGRATE v37->v41 keeps the person and points', migChain41.snapshot.people.length === 1 && migChain41.snapshot.people[0].loyaltyPoints === 137);
-const rSame41 = B.verifyPalmprintProfile(mp41.palmProfile, probeSame);
-check('VERIFY the v41-migrated profile accepts the same palm', rSame41.verified === true, 'sim=' + (rSame41.similarity && rSame41.similarity.toFixed(3)));
-const rOther41 = B.verifyPalmprintProfile(mp41.palmProfile, probeOther);
-check('VERIFY the v41-migrated profile still rejects another palm', rOther41.verified === false, 'sim=' + (rOther41.similarity && rOther41.similarity.toFixed(3)));
+check('FORMAT the v41-migrated profile is a legacy-format profile to the current reader',
+  B.palmprintProfileFormat(mp41.palmProfile) === 'legacy');
 const migAgain41 = B.migrateBiomData(mig41.snapshot, 'v41', 'v41');
 check('MIGRATE is idempotent at v41', migAgain41.appliedSteps.length === 0 && migAgain41.changed === false &&
   migAgain41.snapshot.people.length === 1 && migAgain41.snapshot.people[0].loyaltyPoints === 137);
@@ -260,10 +278,8 @@ const migChain42 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v37'
 check('MIGRATE v37->v42 runs all five steps in order', migChain42.appliedSteps.join(',') === 'v38,v39,v40,v41,v42', migChain42.appliedSteps.join(','));
 check('MIGRATE v37->v42 keeps the person and adds the wallet', migChain42.snapshot.people.length === 1 &&
   migChain42.snapshot.people[0].loyaltyPoints === 137 && migChain42.snapshot.people[0].wallet.balance === 0);
-const rSame42 = B.verifyPalmprintProfile(mp42.palmProfile, probeSame);
-check('VERIFY the v42-migrated profile accepts the same palm', rSame42.verified === true, 'sim=' + (rSame42.similarity && rSame42.similarity.toFixed(3)));
-const rOther42 = B.verifyPalmprintProfile(mp42.palmProfile, probeOther);
-check('VERIFY the v42-migrated profile still rejects another palm', rOther42.verified === false, 'sim=' + (rOther42.similarity && rOther42.similarity.toFixed(3)));
+check('FORMAT the v42-migrated profile is a legacy-format profile to the current reader',
+  B.palmprintProfileFormat(mp42.palmProfile) === 'legacy');
 const v42StoreLive = JSON.parse(JSON.stringify(mig42.snapshot));
 v42StoreLive.people[0].wallet.balance = 450;
 v42StoreLive.people[0].wallet.statement.push({ ref: 'DEMO-1', ts: 1795423600000, kind: 'add', amount: 450, balanceAfter: 450 });
@@ -300,10 +316,8 @@ const migChain43 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v37'
 check('MIGRATE v37->v43 runs all six steps in order', migChain43.appliedSteps.join(',') === 'v38,v39,v40,v41,v42,v43', migChain43.appliedSteps.join(','));
 check('MIGRATE v37->v43 keeps the person, points and gains the wallet', migChain43.snapshot.people.length === 1 &&
   migChain43.snapshot.people[0].loyaltyPoints === 137 && migChain43.snapshot.people[0].wallet.balance === 0);
-const rSame43 = B.verifyPalmprintProfile(mp43.palmProfile, probeSame);
-check('VERIFY the v43-migrated profile accepts the same palm', rSame43.verified === true, 'sim=' + (rSame43.similarity && rSame43.similarity.toFixed(3)));
-const rOther43 = B.verifyPalmprintProfile(mp43.palmProfile, probeOther);
-check('VERIFY the v43-migrated profile still rejects another palm', rOther43.verified === false, 'sim=' + (rOther43.similarity && rOther43.similarity.toFixed(3)));
+check('FORMAT the v43-migrated profile is a legacy-format profile to the current reader',
+  B.palmprintProfileFormat(mp43.palmProfile) === 'legacy');
 const migAgain43 = B.migrateBiomData(mig43.snapshot, 'v43', 'v43');
 check('MIGRATE is idempotent at v43', migAgain43.appliedSteps.length === 0 && migAgain43.changed === false &&
   migAgain43.snapshot.people[0].wallet.balance === 450 && migAgain43.snapshot.people[0].wallet.statement.length === 1);
@@ -326,22 +340,79 @@ const migChain44 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v37'
 check('MIGRATE v37->v44 runs all seven steps in order', migChain44.appliedSteps.join(',') === 'v38,v39,v40,v41,v42,v43,v44', migChain44.appliedSteps.join(','));
 check('MIGRATE v37->v44 keeps the person, points and gains the wallet', migChain44.snapshot.people.length === 1 &&
   migChain44.snapshot.people[0].loyaltyPoints === 137 && migChain44.snapshot.people[0].wallet.balance === 0);
-const rSame44 = B.verifyPalmprintProfile(mp44.palmProfile, probeSame);
-check('VERIFY the v44-migrated profile accepts the same palm', rSame44.verified === true, 'sim=' + (rSame44.similarity && rSame44.similarity.toFixed(3)));
-const rOther44 = B.verifyPalmprintProfile(mp44.palmProfile, probeOther);
-check('VERIFY the v44-migrated profile still rejects another palm', rOther44.verified === false, 'sim=' + (rOther44.similarity && rOther44.similarity.toFixed(3)));
+check('FORMAT the v44-migrated profile is a legacy-format profile to the current reader',
+  B.palmprintProfileFormat(mp44.palmProfile) === 'legacy');
 const migAgain44 = B.migrateBiomData(mig44.snapshot, 'v44', 'v44');
 check('MIGRATE is idempotent at v44', migAgain44.appliedSteps.length === 0 && migAgain44.changed === false &&
   migAgain44.snapshot.people[0].wallet.balance === 450 && migAgain44.snapshot.people[0].wallet.statement.length === 1);
 
+/* ---------- v45: the format conversion — codes archived, all else
+   byte-identical ------------------------------------------------
+   The store below is the wallet-carrying v44 store (balance 450,
+   one DEMO-1 statement entry, one linked account). The v45 step
+   must rewrite ONLY the people store, and within the person ONLY
+   the palm profile: codes archived verbatim as legacyCodes,
+   format 'legacy', rescanNeeded set. A profile already in the
+   packed format, and a person with no profile, pass by identity. */
+const mig45 = B.migrateBiomData(JSON.parse(JSON.stringify(v43WalletStore)), 'v44', 'v45');
+check('MIGRATE v44->v45 runs the v45 step', mig45.appliedSteps.indexOf('v45') !== -1, mig45.appliedSteps.join(','));
+check('MIGRATE v44->v45 rewrites ONLY the people store', mig45.changedStores.join(',') === 'people',
+  'changedStores=' + JSON.stringify(mig45.changedStores));
+const mp45 = mig45.snapshot.people[0];
+check('LEGACY the old codes are archived verbatim, none lost', !!mp45 && JSON.stringify(mp45.palmProfile.legacyCodes) === JSON.stringify(enrolledCodes),
+  mp45 && mp45.palmProfile.legacyCodes.length + ' codes archived');
+check('LEGACY the profile is flagged for re-scan', !!mp45 && mp45.palmProfile.format === 'legacy' && mp45.palmProfile.rescanNeeded === true &&
+  Array.isArray(mp45.palmProfile.codes) && mp45.palmProfile.codes.length === 0);
+check('LEGACY the reader agrees: legacy format, not sane, re-scan reason',
+  B.palmprintProfileFormat(mp45.palmProfile) === 'legacy' && !B.palmprintProfileSane(mp45.palmProfile) && /re-scan/.test(B.palmprintProfileFailReason(mp45.palmProfile)));
+const person45Rest = Object.assign({}, mp45); delete person45Rest.palmProfile;
+const person44Rest = JSON.parse(v43PersonBefore); delete person44Rest.palmProfile;
+check('SURVIVE v45 every non-profile field byte-identical (wallet 450, DEMO-1, linked account, points)',
+  JSON.stringify(person45Rest) === JSON.stringify(person44Rest),
+  'balance=' + mp45.wallet.balance + ' stmt=' + mp45.wallet.statement.length + ' accts=' + mp45.wallet.linkedAccounts.length);
+check('SURVIVE v45 transactions, logs and meta untouched', mig45.snapshot.transactions.length === 1 &&
+  mig45.snapshot.logs.length === 1 && mig45.snapshot.meta.length === 3);
+const migChain45 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v37', 'v45');
+check('MIGRATE v37->v45 runs all eight steps in order', migChain45.appliedSteps.join(',') === 'v38,v39,v40,v41,v42,v43,v44,v45', migChain45.appliedSteps.join(','));
+check('MIGRATE v37->v45 keeps the person, gains the wallet, flags the palm',
+  migChain45.snapshot.people.length === 1 && migChain45.snapshot.people[0].loyaltyPoints === 137 &&
+  migChain45.snapshot.people[0].wallet.balance === 0 && migChain45.snapshot.people[0].palmProfile.format === 'legacy' &&
+  JSON.stringify(migChain45.snapshot.people[0].palmProfile.legacyCodes) === JSON.stringify(enrolledCodes));
+const packedProfileFixture = (function () {
+  const S = B.PALMPRINT_ROI_SIZE;
+  const frames = [];
+  for (let i = 0; i < 9; i++) {
+    const roi = roiImage(PALM_A, 51 + i, {});
+    frames.push({ openness: 2.0, roi: roi, code: B.palmprintEncode(roi, S, S), sharpness: 100 + i * 10 });
+  }
+  return { v: 4, format: 'packed96', codes: B.selectPalmprintProfileCodes(frames) };
+})();
+const v45PackedStore = JSON.parse(JSON.stringify(v43WalletStore));
+v45PackedStore.people[0].palmProfile = packedProfileFixture;
+const packedBefore = JSON.stringify(v45PackedStore.people[0]);
+const mig45Packed = B.migrateBiomData(JSON.parse(JSON.stringify(v45PackedStore)), 'v44', 'v45');
+check('MIGRATE a packed-format profile passes v45 by identity (no rewrite at all)',
+  mig45Packed.changed === false && JSON.stringify(mig45Packed.snapshot.people[0]) === packedBefore);
+const v45BareStore = JSON.parse(JSON.stringify(v43WalletStore));
+delete v45BareStore.people[0].palmProfile;
+const mig45Bare = B.migrateBiomData(JSON.parse(JSON.stringify(v45BareStore)), 'v44', 'v45');
+check('MIGRATE a person with no palm profile is untouched by v45',
+  mig45Bare.changed === false && !('palmProfile' in mig45Bare.snapshot.people[0]));
+const migAgain45 = B.migrateBiomData(mig45.snapshot, 'v45', 'v45');
+check('MIGRATE is idempotent at v45', migAgain45.appliedSteps.length === 0 && migAgain45.changed === false &&
+  migAgain45.snapshot.people[0].wallet.balance === 450 && migAgain45.snapshot.people[0].palmProfile.format === 'legacy');
+const mig45Twice = B.migrateBiomData(JSON.parse(JSON.stringify(mig45.snapshot)), 'v44', 'v45');
+check('MIGRATE re-running the v45 step over a flagged profile changes nothing further',
+  mig45Twice.changed === false && JSON.stringify(mig45Twice.snapshot.people[0].palmProfile.legacyCodes) === JSON.stringify(enrolledCodes));
+
 /* ---------- the shipped app source carries no wipe ----------------- */
 const appSrc = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
-check('APP declares the current data version (v44)', appSrc.indexOf("APP_DATA_VERSION = 'v44'") !== -1);
+check('APP declares the current data version (v45)', appSrc.indexOf("APP_DATA_VERSION = 'v45'") !== -1);
 check('APP startup runs the migration', appSrc.indexOf('migrateBiomData') !== -1 && appSrc.indexOf('migrateDbStores') !== -1);
 check('APP contains no database deletion (the retired wipe)', appSrc.indexOf('deleteDatabase') === -1);
 check('APP contains no store-key removal (the retired wipe)', !/removeItem\(\s*'tsgbiom_/.test(appSrc));
 const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
-check('APP shell is v44', swSrc.indexOf('tsg-biom-shell-v44') !== -1);
+check('APP shell is v45', swSrc.indexOf('tsg-biom-shell-v45') !== -1);
 
 console.log(fail === 0 ? 'ALL MIGRATION TESTS PASSED (' + pass + ')' : fail + ' FAILURES, ' + pass + ' passed');
 process.exit(fail === 0 ? 0 : 1);

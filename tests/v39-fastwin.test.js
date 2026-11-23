@@ -20,7 +20,17 @@
    suites: a genuine palm still passes, an impostor still fails,
    a static pair (held photograph) still cannot win, and the
    standard 3-pose gate still requires three poses — the fast
-   path is an additional honour, not a loosened gate. */
+   path is an additional honour, not a loosened gate.
+
+   v45 note (2026-11-23): the spec's 1-snap rule replaces the
+   honouring flow this suite's FLOW section simulated — the win
+   is now the first verified frame, honoured once the spoof gate
+   has examined three frames and the standard 3-pose liveness
+   passes; app.js no longer calls streamFastWinCheck. The pure
+   pair-liveness and fast-win-decision checks below stay as the
+   record of that function's exact behaviour (it remains
+   exported), and the FLOW section is ported to pin the v45
+   completion rule instead. */
 'use strict';
 const B = require('../biometrics.js');
 
@@ -88,31 +98,19 @@ check('FASTWIN an erratic pair is not a fast win',
 check('FASTWIN an inconclusive pair is not a fast win',
   B.streamFastWinCheck(cleanNatA, { matched: true, pose: P(0.4012, 0.401, 0.251), spoof: false }).reason === 'liveness-inconclusive');
 
-/* ---------- composition: the app flow over the pure rules ---------
-   Mirrors streamVerifyPalm.applyMatch: scores apply in capture
-   order through streamMatchUpdate; when done first fires, the
-   partner is the most recent matched record within two back, and
-   streamFastWinCheck judges the pair. */
+/* ---------- composition: the v45 completion rule ----------------
+   Ported: the flow under test is now streamMatchUpdate's 1-snap
+   completion (the first passing frame completes, done latches),
+   plus the source pin that the shipped app no longer routes any
+   honouring through streamFastWinCheck. */
+const fs = require('fs');
+const path = require('path');
 function runFlow(frames) {
   let st = { streak: 0, best: null };
-  const applied = [];
-  let outcome = { doneAt: null, fastOk: false, reason: null };
+  let outcome = { doneAt: null };
   frames.forEach(function (f, i) {
     st = B.streamMatchUpdate(st, f.score);
-    const entry = {
-      matched: typeof f.score === 'number' && f.score >= B.PALMPRINT_THRESHOLD,
-      pose: f.pose, spoof: f.spoof
-    };
-    applied.push(entry);
-    if (st.done && outcome.doneAt === null) {
-      outcome.doneAt = i + 1;
-      let partner = null;
-      for (let k = applied.length - 2; k >= applied.length - 3 && k >= 0; k--) {
-        if (applied[k].matched) { partner = applied[k]; break; }
-      }
-      const fw = partner ? B.streamFastWinCheck(partner, entry) : { ok: false, reason: 'no-partner' };
-      outcome.fastOk = fw.ok; outcome.reason = fw.reason;
-    }
+    if (st.done && outcome.doneAt === null) outcome.doneAt = i + 1;
   });
   return outcome;
 }
@@ -120,33 +118,28 @@ const flowFast = runFlow([
   { score: 0.41, pose: P(0.40, 0.40, 0.25), spoof: false },
   { score: 0.38, pose: P(0.403, 0.401, 0.251), spoof: false }
 ]);
-check('FLOW genuine pair completes the match at frame 2 AND fast-wins there',
-  flowFast.doneAt === 2 && flowFast.fastOk === true, flowFast.reason);
+check('FLOW (v45) the first passing frame completes the match — frame 1, not frame 2',
+  flowFast.doneAt === 1, 'doneAt=' + flowFast.doneAt);
 const flowStatic = runFlow([
   { score: 0.41, pose: P(0.40, 0.40, 0.25), spoof: false },
   { score: 0.38, pose: P(0.40, 0.40, 0.25), spoof: false }
 ]);
-check('FLOW a static pair still completes the MATCH (standard path may honour it) but earns no fast win',
-  flowStatic.doneAt === 2 && flowStatic.fastOk === false && flowStatic.reason === 'liveness-static');
+check('FLOW (v45) a static pair completes the MATCH at frame 1 (honouring still waits for the 3-pose liveness gate in the app)',
+  flowStatic.doneAt === 1);
 const flowWindow = runFlow([
+  { score: 0.20, pose: P(0.401, 0.40, 0.25), spoof: false },
   { score: 0.41, pose: P(0.40, 0.40, 0.25), spoof: false },
-  { score: 0.20, pose: P(0.401, 0.40, 0.25), spoof: false },
   { score: 0.38, pose: P(0.403, 0.401, 0.251), spoof: false }
 ]);
-check('FLOW rolling-window pair (frames 1 and 3) fast-wins on those two frames evidence',
-  flowWindow.doneAt === 3 && flowWindow.fastOk === true, flowWindow.reason);
-const flowFlagged = runFlow([
-  { score: 0.41, pose: P(0.40, 0.40, 0.25), spoof: true },
-  { score: 0.20, pose: P(0.401, 0.40, 0.25), spoof: false },
-  { score: 0.38, pose: P(0.403, 0.401, 0.251), spoof: false }
-]);
-check('FLOW a flagged sample on the earlier matched frame blocks the fast win even in the window case',
-  flowFlagged.doneAt === 3 && flowFlagged.fastOk === false && flowFlagged.reason === 'spoof-not-clean');
+check('FLOW (v45) a below-threshold frame first does not complete; the next passing frame does',
+  flowWindow.doneAt === 2, 'doneAt=' + flowWindow.doneAt);
 const flowImpostor = runFlow([
   { score: 0.10, pose: P(0.40, 0.40, 0.25), spoof: false },
   { score: 0.12, pose: P(0.403, 0.401, 0.251), spoof: false }
 ]);
-check('FLOW an impostor pair never completes the match at all', flowImpostor.doneAt === null && flowImpostor.fastOk === false);
+check('FLOW an impostor pair never completes the match at all', flowImpostor.doneAt === null);
+check('PIN (v45) the shipped app never calls streamFastWinCheck',
+  fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8').indexOf('streamFastWinCheck') === -1);
 
 console.log(fail === 0 ? 'ALL FAST-WIN TESTS PASSED (' + pass + ')' : fail + ' FAILURES, ' + pass + ' passed');
 process.exit(fail === 0 ? 0 : 1);
