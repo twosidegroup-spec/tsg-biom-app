@@ -14,7 +14,7 @@
      matching code do not read reliably against a new one. Bump
      APP_DATA_VERSION together with the service-worker shell on any
      build that changes enrolment or matching. */
-  var APP_DATA_VERSION = 'v36';
+  var APP_DATA_VERSION = 'v37';
   /* DEVELOPMENT ONLY (his order, 2026-11-20): the wipe below runs
      only in development builds. A commercial build ships with
      BUILD_MODE set to 'commercial' and never wipes - real customer
@@ -468,6 +468,21 @@
     return canvas;
   }
 
+  /* Same grab into a caller-owned canvas (v37). Only safe when the
+     frame is fully analysed before the next grab — the Show & Pay
+     verify loop guarantees that (analysis is awaited per frame), so
+     it reuses one canvas instead of allocating a full-frame canvas
+     per snap. Enrolment keeps grabVideoFrame: its bursts STORE the
+     frames for later analysis, so each needs its own canvas. */
+  function grabVideoFrameInto(video, canvas) {
+    var w = video.videoWidth, h = video.videoHeight;
+    if (!w || !h) return null;
+    var scale = Math.min(1, 960 / Math.max(w, h));
+    canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
+    canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas;
+  }
+
   /* Palm texture + sharpness from any image source (a recorded frame
      here; the same maths the live captureTexture used), cropped around
      the detected hand so it is the palm's own texture. */
@@ -730,6 +745,32 @@
     }
   };
 
+  /* Pipeline pre-warm (v37): the first MediaPipe Hands call pays the
+     WASM + model load — measured at ~10 s on the slow test rig when
+     it landed inside the first scan, against ~0.7 s per frame once
+     warm. Both camera-start handlers call this so the load happens
+     while the camera is opening and the customer is still raising
+     their hand, not after SCAN is tapped. Fire-and-forget: a warmup
+     failure is silent (the scan path initialises everything itself),
+     and if a real scan starts first, PalmProc's orphan guard hands
+     the pending slot to the scan's call — the warmup can never block
+     or corrupt a scan. The match worker is constructed here too, so
+     its spin-up is also off the scan path. */
+  var palmPrewarmStarted = false;
+  function prewarmPalmPipeline() {
+    try { PalmProc.init(); } catch (e) {}
+    try { Match.init(); } catch (e) {}
+    if (palmPrewarmStarted) return;
+    palmPrewarmStarted = true;
+    try {
+      var c = document.createElement('canvas');
+      c.width = 96; c.height = 96;
+      var ctx = c.getContext('2d');
+      ctx.fillStyle = '#888888'; ctx.fillRect(0, 0, 96, 96);
+      PalmProc.landmarks(c).then(function () {}, function () {});
+    } catch (e) {}
+  }
+
   /* One streamed frame, analysed: landmarks, openness, EDCC codes
      (aligned + mirror), texture/sharpness, and the palm pose used by
      passive liveness. Same frame-result shape the clip pipeline used. */
@@ -931,13 +972,19 @@
     return cycle();
   }
 
-  /* Show & Pay checkout (v20): no movement sequence. Rapid bursts of
-     three frames; per-frame matching in the worker with the two-frame
-     early exit; passive liveness on the burst poses; the coherence
-     spoof gate sampled per burst. Fail-closed throughout.
+  /* Show & Pay checkout (v20): no movement sequence. Per-frame
+     matching in the worker with the two-frame early exit; passive
+     liveness on the streamed poses; the coherence spoof gate sampled
+     per frame. Fail-closed throughout.
      v34: free-form scanning - no guide overlay; the customer simply
      shows an open hand anywhere in the frame and the landmark ROI
-     follows the hand. */
+     follows the hand.
+     v37: the burst pacing is gone — frames stream continuously,
+     paced only by the camera clock; each frame's match overlaps the
+     next frame's analysis and results apply in capture order; the
+     win is honoured the moment the deciding score lands. Every gate
+     (two-frame rolling window, passive liveness, spoof aggregation,
+     MAXF, deadline) judges the same evidence as the burst design. */
   function streamVerifyPalm(video, statusEl, person, people, swapCamera, fieldRec) {
     var t0 = Date.now();
     var tracker = makeSpoofTracker();
@@ -945,9 +992,16 @@
     var poses = [];
     var matchState = { streak: 0, best: null };
     var win = null;
-    var bursts = 0, analysed = 0, swapped = false, locked = false;
+    var analysed = 0, swapped = false, locked = false;
     var lastHint = null, coded = 0;
     var MAXF = 24, deadline = t0 + 90000;
+    // v37 continuous pipeline state: one reused capture canvas (each
+    // frame is fully analysed before the next grab), the video-clock
+    // time of the last grab (pacing), and the previous frame's match
+    // still running in the worker while the next frame is analysed.
+    var frameCanvas = null;
+    var lastGrabT = -1;
+    var prevMatch = null;
 
     function finish(out) { return out; }
     function impostorMaxFor(rois) {
@@ -1011,52 +1065,74 @@
         });
       });
     }
-    function burst() {
-      bursts++;
-      var snaps = [];
-      function grab(i) {
-        var f = grabVideoFrame(video);
-        if (f) snaps.push(f);
-        if (i < 2) return waitMs(130).then(function () { return grab(i + 1); });
-        return Promise.resolve();
+    /* Apply one frame's match result to the rolling-window rule, in
+       capture order (v37: extracted so the pipelined loop applies
+       results in exactly the order the burst chain did). A code-less
+       or ROI-less frame applies a null score, as before. */
+    function applyMatch(res, roi) {
+      var score = res && typeof res.similarity === 'number' ? res.similarity : null;
+      matchState = B.streamMatchUpdate(matchState, score);
+      if (matchState.done && !win) win = { res: res, rois: [roi] };
+    }
+    /* Pace grabs to the camera clock (v37): at least ~100 ms of
+       stream time between analysed frames, so consecutive poses are
+       genuinely different instants — the passive-liveness micro-shift
+       signal is read across them — and no instant is analysed twice.
+       Analysis slower than the pace (the common case) never waits at
+       all. Bounded by the scan deadline so a stalled stream falls
+       through to the MAXF/deadline guards instead of hanging. */
+    function waitFreshFrame() {
+      if (lastGrabT < 0) return Promise.resolve();
+      var target = lastGrabT + 0.1;
+      function poll() {
+        if (video.currentTime >= target || Date.now() > deadline) return Promise.resolve();
+        return waitMs(8).then(poll);
       }
-      return grab(0).then(function () {
-        // Every snap feeds the spoof tracker (was: only the middle
-        // snap). The two-frame match win can complete inside a single
-        // burst, so the gate needs its evidence at burst speed. v36:
-        // each sample is added after its frame is analysed, carrying
-        // the landmarks so the grid gate reads the palm region only.
-        var chain = Promise.resolve();
-        snaps.forEach(function (frame) {
-          chain = chain.then(function () {
-            return analysePalmFrame(frame).then(function (r) {
-              analysed++;
-              tracker.add(frame, r.lm);
-              frames.push(r);
-              if (typeof r.openness === 'number') lastHint = r.framing || null;
-              if (r.pose) { poses.push(r.pose); if (poses.length > 6) poses.shift(); }
-              var sane = !!(r.code && B.palmprintCodeSane(r.code));
-              if (sane) coded++;
-              if (sane && !locked) { locked = true; Snd.tick(); }
-              if (win) return;
-              if (sane && r.roi) {
-                // v33: the frame's ROI is the probe — the matcher
-                // re-encodes it at the 25 image-level shifts and
-                // takes the best pair against the enrolled codes.
-                // v35: the fast path — same pairs, same max rule,
-                // lazily ordered with a threshold short-circuit, so
-                // a matching frame decides without all 50 encodes.
-                return Match.verifyRois(person.palmProfile, [r.roi], { fast: true }).then(function (res) {
-                  var score = res && typeof res.similarity === 'number' ? res.similarity : null;
-                  matchState = B.streamMatchUpdate(matchState, score);
-                  if (matchState.done) win = { res: res, rois: [r.roi] };
-                });
-              }
-              matchState = B.streamMatchUpdate(matchState, null);
-            });
+      return poll();
+    }
+    /* One continuous step (v37): grab one fresh frame, analyse it,
+       feed every gate in the same order the burst chain did, drain
+       the PREVIOUS frame's worker match (it ran while this frame was
+       being analysed) so scores apply in capture order, then start
+       this frame's match and return — the win is honoured by loop()
+       the moment the deciding score lands, not a burst later. */
+    function step() {
+      return waitFreshFrame().then(function () {
+        if (!frameCanvas) frameCanvas = document.createElement('canvas');
+        var frame = grabVideoFrameInto(video, frameCanvas);
+        if (!frame) return waitMs(60); // stream not producing frames yet
+        lastGrabT = video.currentTime;
+        return analysePalmFrame(frame).then(function (r) {
+          analysed++;
+          // Every analysed frame feeds the spoof tracker, carrying
+          // its landmarks so the v36 grid gate reads the palm region
+          // only — same evidence, same aggregation as the bursts.
+          tracker.add(frame, r.lm);
+          frames.push(r);
+          if (typeof r.openness === 'number') lastHint = r.framing || null;
+          if (r.pose) { poses.push(r.pose); if (poses.length > 6) poses.shift(); }
+          var sane = !!(r.code && B.palmprintCodeSane(r.code));
+          if (sane) coded++;
+          if (sane && !locked) { locked = true; Snd.tick(); }
+          var prev = prevMatch; prevMatch = null;
+          var drained = prev
+            ? prev.promise.then(function (res) { applyMatch(res, prev.roi); })
+            : Promise.resolve();
+          return drained.then(function () {
+            if (sane && r.roi) {
+              // v33: the frame's ROI is the probe — the matcher
+              // re-encodes it at the 25 image-level shifts and takes
+              // the best pair against the enrolled codes. v35: the
+              // fast path — same pairs, same max rule, lazily ordered
+              // with a threshold short-circuit. v37: the call now
+              // overlaps the NEXT frame's analysis instead of
+              // blocking this frame's step.
+              prevMatch = { roi: r.roi, promise: Match.verifyRois(person.palmProfile, [r.roi], { fast: true }) };
+            } else {
+              applyMatch(null, null);
+            }
           });
         });
-        return chain;
       });
     }
     function loop() {
@@ -1073,9 +1149,20 @@
       // right; the win simply outran the gate.
       if (win && lv.pass && sp.framesChecked >= 3) return verifiedOut();
       if (win && lv.pass && statusEl) statusEl.textContent = 'Palm matched — confirming this is a live hand, not a screen…';
-      if (lv.verdict === 'static' && bursts >= 2) return livenessFailOut(lv);
+      // v37: the burst-era "two bursts" static guard is the same
+      // evidence in continuous terms — six analysed frames.
+      if (lv.verdict === 'static' && analysed >= 6) return livenessFailOut(lv);
       if (lv.verdict === 'erratic') return livenessFailOut(lv);
       if (analysed >= MAXF || Date.now() > deadline) {
+        // A match from the last analysed frame may still be in the
+        // worker: its score belongs to the record (the rolling
+        // window, the best-score diagnostics, the finalOut set), so
+        // drain it before any cap outcome — the burst chain applied
+        // every match before loop() ever saw the caps.
+        if (prevMatch) {
+          var prev = prevMatch; prevMatch = null;
+          return prev.promise.then(function (res) { applyMatch(res, prev.roi); return loop(); });
+        }
         if (win) {
           fieldRec(win.res.similarity, null, 'fail', 'rejected', sp.lightTag);
           Snd.buzz();
@@ -1083,8 +1170,12 @@
         }
         return finalOut();
       }
-      if (!swapped && swapCamera && bursts >= 6 && frames.every(function (x) { return typeof x.openness !== 'number'; })) {
+      // v37: the burst-era fallback (six bursts without a single
+      // hand reading) is eighteen analysed frames in continuous
+      // terms — the same amount of evidence, the same single swap.
+      if (!swapped && swapCamera && analysed >= 18 && frames.every(function (x) { return typeof x.openness !== 'number'; })) {
         swapped = true;
+        lastGrabT = -1; // the new stream's clock restarts
         if (statusEl) statusEl.textContent = 'No hand was seen by this camera - switching to the other camera and trying once more.';
         return swapCamera().then(function () { return loop(); }, function () { return loop(); });
       }
@@ -1092,7 +1183,7 @@
         var seenHandNow = frames.some(function (x) { return typeof x.openness === 'number'; });
         statusEl.textContent = lastHint || (seenHandNow ? 'Hand detected — hold steady.' : 'Show & Pay scanning — show an open hand to the camera.');
       }
-      return burst().then(function () { return waitMs(300); }).then(loop);
+      return step().then(loop);
     }
     return loop();
   }
@@ -1242,6 +1333,7 @@
   function resetPalmEnroll() { /* clip enrolment keeps no partial state */ }
   function startPalmCamera() {
     Cam.start($('palmVideo'), camFacing.enrollPalm, 'enrollPalm').then(function () {
+      prewarmPalmPipeline();
       $('palmStatus').textContent = 'Camera on - tap Auto-Capture Palm, then show your open hand to the camera, anywhere in the frame. The app watches live and captures by itself: follow the movement prompts as they appear (the sequence is picked at random each time), and it finishes the moment the movement is complete.';
       $('palmCapture').disabled = false;
     }).catch(function (e) { $('palmMsg').innerHTML = cameraErrorHTML(e); $('palmStatus').textContent = 'Camera blocked.'; });
@@ -1354,6 +1446,7 @@
         return;
       }
       Cam.start($('termVideo'), camFacing[termFacingKey()], termFacingKey()).then(function () {
+        prewarmPalmPipeline();
         $('termScan').disabled = false;
         status.textContent = 'Camera on - tap SCAN and the customer shows an open hand to the camera, anywhere in the frame - like tapping a card. No movement routine at checkout: Show & Pay reads the palm as it streams.';
       }).catch(function (e) { $('termResult').innerHTML = cameraErrorHTML(e); status.textContent = 'Camera blocked.'; });
