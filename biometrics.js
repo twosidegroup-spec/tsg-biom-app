@@ -873,7 +873,17 @@
      attempts whose highest OTHER-template score reached the match
      threshold (the scan would have false-accepted against that
      template). Spoof rejection: share of photo/video spoof attempts
-     that were rejected. */
+     that were rejected.
+     v47: records may additionally carry the PalmNet evidence —
+     neuralScore (the genuine palm's neural cosine),
+     neuralImpostorMax (the highest neural cosine against any OTHER
+     enrolled palm) and acceptedBy ('edcc'|'palmnet'|'both'). The
+     result field is the FUSED verdict (that is the system under
+     test now), so GAR measures the fused system. FAR counts a
+     false accept when EITHER system's impostor score reached its
+     own bar; records without neural fields (everything written
+     before v47) are judged on the EDCC fields alone, exactly as
+     before. */
   function fieldTestStats(records) {
     var g = { attempts: 0, accepted: 0 }, f = { attempts: 0, falseAccepts: 0 }, s = { attempts: 0, rejected: 0 };
     (records || []).forEach(function (r) {
@@ -881,9 +891,12 @@
       if (r.spoofTag === 'real_hand') {
         g.attempts++;
         if (r.result === 'verified') g.accepted++;
-        if (typeof r.impostorMax === 'number' && isFinite(r.impostorMax)) {
+        var hasEdccImp = typeof r.impostorMax === 'number' && isFinite(r.impostorMax);
+        var hasNeuralImp = typeof r.neuralImpostorMax === 'number' && isFinite(r.neuralImpostorMax);
+        if (hasEdccImp || hasNeuralImp) {
           f.attempts++;
-          if (r.impostorMax >= PALMPRINT_THRESHOLD) f.falseAccepts++;
+          if ((hasEdccImp && r.impostorMax >= PALMPRINT_THRESHOLD) ||
+              (hasNeuralImp && r.neuralImpostorMax >= PALMNET_THRESHOLD)) f.falseAccepts++;
         }
       } else if (r.spoofTag === 'photo_spoof' || r.spoofTag === 'video_replay') {
         s.attempts++;
@@ -903,6 +916,13 @@
       var s = String(v);
       return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
     }
+    /* v47 note: the PalmNet per-system scores (neuralScore,
+       neuralImpostorMax, acceptedBy) are stored ON the field
+       records and used by fieldTestStats, but deliberately NOT
+       added as CSV columns — the export's column set is a pinned
+       format (tests/fieldtest.test.js) and the fused verdict +
+       both genuine scores are already visible per record in the
+       app; the CSV keeps its exact v18 shape. */
     var lines = ['timestamp,biom_id,camera,lighting,genuine_score,impostor_max_score,liveness,spoof_tag,result'];
     (records || []).forEach(function (r) {
       if (!r) return;
@@ -2722,6 +2742,328 @@
     return info.stable ? null : 'Hold steady...';
   }
 
+  /* ================= PalmNet neural matcher (v47) =================
+     A SECOND palmprint matcher alongside EDCC, added 2026-11-24
+     after PalmNet-Bench proved a trained neural embedding beats the
+     EDCC encoder on identical EVAL inputs — above all under palm
+     tilt, EDCC's known failure mode (bench report:
+     ~/workspace/palmnet-bench/results.md, verified 20/20).
+
+     The model: MobileNetV3-Small, full fine-tune with an ArcFace
+     head, trained fresh on the Tongji Contactless Palmprint
+     dataset (480 TRAIN palms; 9,600 unique real training images,
+     153,600 augmented samples seen). Input: a 128x128 grayscale
+     palm ROI. Output: a 256-d L2-normalised embedding; identity
+     score = cosine similarity between embeddings.
+
+     This section is the PURE half — preprocessing, the embedding
+     codec, profile banking and the fused decision — so Node tests
+     exercise exactly what the app runs. The runtime half (ONNX
+     Runtime Web, the model bytes, the worker) lives in app.js
+     (PalmNet) and FAILS SOFT: when it cannot load or run, every
+     function here simply sees no neural evidence and the app
+     behaves exactly as v46 — EDCC only.
+
+     PREPROCESSING PARITY (the correctness gate): the bench's eval
+     chain (code/04_eval_export.py load_raw, mirroring 03_train.py
+     eval_tf) is: 128x128 grayscale uint8 -> /255 -> repeat to 3
+     channels -> per-channel normalise (x - MEAN) / STD with the
+     ImageNet MEAN/STD below. palmnetPreprocessRoi replicates it
+     exactly. The app's v45 pipeline produces a 96x96 affine-warped
+     ROI; the neural path resamples that same ROI to the model's
+     128x128 contract with the codebase's bilinear resampler
+     (resizeGrayBilinear, half-pixel centres — the same discipline
+     PIL's BILINEAR resize uses; the parity suite in
+     tests/v47-parity.test.js proves both the identity-size path
+     and the 96->128 path against the Python pipeline).
+
+     DECISION RULE (decision-level fusion, each system at its own
+     calibrated bar): a palm verifies when EDCC similarity >= 0.32
+     (the standing bar, NEVER lowered) OR the PalmNet cosine >=
+     PALMNET_THRESHOLD. The EDCC path is untouched: every EDCC
+     function above behaves exactly as in v46, and a profile with
+     no banked neural embeddings verifies EDCC-only, exactly as
+     before.
+
+     PALMNET_THRESHOLD = 0.5773 — SOURCE: the EER threshold of the
+     PalmNet-Bench EVAL clean protocol, computed by
+     code/04_eval_export.py from 360 genuine and 42,840 impostor
+     cosine scores (session-1 gallery captures 1-3 averaged into
+     per-palm templates; probes = captures 4-6) and saved in
+     ~/workspace/palmnet-bench/logs/neural_results.json
+     (clean.eer_threshold = 0.5773, EER 0.004%). Independently
+     recomputed from the same EVAL scores during the v47 build —
+     same number. This is a LAB-DERIVED STARTING POINT, measured
+     on Tongji lab ROIs (pre-extracted, controlled), NOT a proven
+     phone threshold: phone frames are a different input
+     distribution, and the Field Test gate (20 people / 200 scans,
+     zero false accepts) is what calibrates it for real use. The
+     genuine distribution at this bar: median 0.8950, p05 0.7414,
+     min 0.5773; impostor: median 0.0337, p95 0.2791, max 0.5996.
+
+     STORAGE: embeddings live INSIDE the existing palm profile
+     object as profile.neural = { v: 1, dim: 256,
+     model: 'palmnet-v1', embeddings: [base64 float32 LE, ...] }.
+     No store shape changes; the v47 migration step is a pure
+     adoption (see the chain below) and profiles written before
+     v47 simply have no .neural field — they verify EDCC-only and
+     the Registry offers a "Neural scan" capture that banks
+     embeddings for them. Score rule inside the neural path: MAX
+     cosine over banked embeddings x probe embeddings (the same
+     score-level max discipline the EDCC side adopted in v33).
+     Probes are embedded in BOTH orientations (ROI + mirror twin,
+     like the EDCC probe pair) because enrolment and verification
+     may use different cameras; the bench augmentation had no
+     mirror twin, so the twin is probe-side insurance only —
+     enrolment banks the palm as captured. */
+  var PALMNET_INPUT_SIZE = 128;
+  var PALMNET_EMBED_DIM = 256;
+  var PALMNET_THRESHOLD = 0.5773;
+  var PALMNET_MEAN = [0.485, 0.456, 0.406];
+  var PALMNET_STD = [0.229, 0.224, 0.225];
+  var PALMNET_PROFILE_MAX_EMBEDDINGS = 6;
+  var PALMNET_DEDUPE_COSINE = 0.90;
+
+  /* The bench eval preprocessing, replicated exactly. roi is an
+     array-like of grayscale values (0..255) of length size*size —
+     in the app, the v45 96x96 affine ROI. Returns a Float32Array
+     of 3*128*128 (channel-planar) ready for the model's 'image'
+     input, or null for an unusable patch. */
+  function palmnetPreprocessRoi(roi, size) {
+    if (!roi || typeof size !== 'number' || !(size > 0)) return null;
+    if (typeof roi.length !== 'number' || roi.length !== size * size) return null;
+    var gray = roi;
+    if (size !== PALMNET_INPUT_SIZE) {
+      gray = resizeGrayBilinear(roi, size, size, PALMNET_INPUT_SIZE);
+      if (!gray || gray.length !== PALMNET_INPUT_SIZE * PALMNET_INPUT_SIZE) return null;
+    }
+    var N = PALMNET_INPUT_SIZE * PALMNET_INPUT_SIZE;
+    var out = new Float32Array(3 * N);
+    for (var c = 0; c < 3; c++) {
+      var mean = PALMNET_MEAN[c], std = PALMNET_STD[c], base = c * N;
+      for (var i = 0; i < N; i++) {
+        var v = Number(gray[i]);
+        if (!isFinite(v)) v = 0;
+        if (v < 0) v = 0; else if (v > 255) v = 255;
+        out[base + i] = (v / 255 - mean) / std;
+      }
+    }
+    return out;
+  }
+  /* The source bundle the app's PalmNet worker is assembled from,
+     so the worker's preprocessing is THIS code — the same single
+     implementation the parity suite proves against Python. */
+  function palmnetPreprocessSource() {
+    var consts =
+      'var PALMNET_INPUT_SIZE = ' + PALMNET_INPUT_SIZE + ';\n' +
+      'var PALMNET_MEAN = ' + JSON.stringify(PALMNET_MEAN) + ';\n' +
+      'var PALMNET_STD = ' + JSON.stringify(PALMNET_STD) + ';\n';
+    return consts +
+      'var resizeGrayBilinear = ' + resizeGrayBilinear.toString() + ';\n' +
+      'var palmnetPreprocessRoi = ' + palmnetPreprocessRoi.toString() + ';\n';
+  }
+
+  function palmnetNormaliseEmbedding(emb) {
+    if (!emb || typeof emb.length !== 'number' || emb.length !== PALMNET_EMBED_DIM) return null;
+    var norm = 0, i, v;
+    for (i = 0; i < PALMNET_EMBED_DIM; i++) {
+      v = Number(emb[i]);
+      if (!isFinite(v)) return null;
+      norm += v * v;
+    }
+    norm = Math.sqrt(norm);
+    if (!(norm > 1e-6)) return null;
+    var out = new Float32Array(PALMNET_EMBED_DIM);
+    for (i = 0; i < PALMNET_EMBED_DIM; i++) out[i] = Number(emb[i]) / norm;
+    return out;
+  }
+  /* Sane = right dimension, all finite, and a norm in the band a
+     real L2-normalised embedding lives in (the model normalises
+     its output; stored copies are re-normalised on decode, so the
+     band only rejects corrupt data, never a real embedding). */
+  function palmnetEmbeddingSane(emb) {
+    if (!emb || typeof emb.length !== 'number' || emb.length !== PALMNET_EMBED_DIM) return false;
+    var norm = 0;
+    for (var i = 0; i < PALMNET_EMBED_DIM; i++) {
+      var v = Number(emb[i]);
+      if (!isFinite(v)) return false;
+      norm += v * v;
+    }
+    norm = Math.sqrt(norm);
+    return norm >= 0.5 && norm <= 1.5;
+  }
+  function palmnetCosine(a, b) {
+    var na = palmnetNormaliseEmbedding(a), nb = palmnetNormaliseEmbedding(b);
+    if (!na || !nb) return null;
+    var s = 0;
+    for (var i = 0; i < PALMNET_EMBED_DIM; i++) s += na[i] * nb[i];
+    return s;
+  }
+  /* Embedding storage codec: base64 of the Float32 little-endian
+     bytes (256 floats = 1024 bytes = 1368 base64 chars), the same
+     Buffer/btoa discipline as the packed EDCC codec. */
+  function palmnetEmbeddingToBase64(emb) {
+    var unit = palmnetNormaliseEmbedding(emb);
+    if (!unit) return null;
+    var bytes = new Uint8Array(unit.buffer, unit.byteOffset, PALMNET_EMBED_DIM * 4);
+    if (typeof Buffer !== 'undefined') return Buffer.from(bytes).toString('base64');
+    var s = '';
+    for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return typeof btoa === 'function' ? btoa(s) : null;
+  }
+  function palmnetEmbeddingFromBase64(str) {
+    if (typeof str !== 'string' || !str.length) return null;
+    try {
+      var bytes;
+      if (typeof Buffer !== 'undefined') bytes = new Uint8Array(Buffer.from(str, 'base64'));
+      else if (typeof atob === 'function') {
+        var bin = atob(str);
+        bytes = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      } else return null;
+      if (bytes.length !== PALMNET_EMBED_DIM * 4) return null;
+      var buf = new ArrayBuffer(PALMNET_EMBED_DIM * 4);
+      new Uint8Array(buf).set(bytes);
+      var emb = new Float32Array(buf);
+      return palmnetEmbeddingSane(emb) ? palmnetNormaliseEmbedding(emb) : null;
+    } catch (e) { return null; }
+  }
+  /* The banked embeddings of a stored palm profile (the profile
+     object itself, person.palmProfile), decoded and sane only.
+     Returns an array (possibly empty) or null when the profile
+     carries no neural bank at all. */
+  function palmnetProfileEmbeddings(stored) {
+    if (!stored || typeof stored !== 'object') return null;
+    var bank = stored.neural;
+    if (!bank || typeof bank !== 'object' || !Array.isArray(bank.embeddings)) return null;
+    var out = [];
+    bank.embeddings.forEach(function (b64) {
+      var emb = palmnetEmbeddingFromBase64(b64);
+      if (emb) out.push(emb);
+    });
+    return out.length ? out : null;
+  }
+  function palmnetProfileSane(stored) {
+    var embs = palmnetProfileEmbeddings(stored);
+    return !!(embs && embs.length);
+  }
+  /* A current-format (packed96) EDCC profile with sane codes but
+     no sane neural bank: it verifies EDCC-only, and the Registry
+     shows the "Neural scan needed" state for it. Legacy profiles
+     need a full palm re-scan first, not a neural scan, so they do
+     not qualify here. */
+  function palmnetNeedsScan(stored) {
+    if (palmprintProfileFormat(stored) !== 'packed96') return false;
+    if (!stored || !Array.isArray(stored.codes) || !stored.codes.length) return false;
+    return !palmnetProfileSane(stored);
+  }
+  /* Build the profile.neural bank object from raw embeddings
+     (normalises, drops insane ones, caps the bank). */
+  function palmnetBankFromEmbeddings(embeddings) {
+    if (!Array.isArray(embeddings)) return null;
+    var enc = [];
+    embeddings.forEach(function (emb) {
+      if (enc.length >= PALMNET_PROFILE_MAX_EMBEDDINGS) return;
+      var b64 = palmnetEmbeddingToBase64(emb);
+      if (b64) enc.push(b64);
+    });
+    if (!enc.length) return null;
+    return { v: 1, dim: PALMNET_EMBED_DIM, model: 'palmnet-v1', embeddings: enc };
+  }
+  /* Merge new candidate embeddings into an existing bank (the
+     Add Angles / Neural scan path): a candidate within
+     PALMNET_DEDUPE_COSINE of anything already banked (or already
+     accepted from this batch) is a near-duplicate and is skipped;
+     the bank is capped at PALMNET_PROFILE_MAX_EMBEDDINGS. Pure:
+     returns the new bank object plus counts; when nothing was
+     added the returned bank is the existing object by identity. */
+  function mergePalmnetEmbeddings(existingBank, candidateEmbeddings) {
+    var banked = [];
+    if (existingBank && typeof existingBank === 'object' && Array.isArray(existingBank.embeddings)) {
+      existingBank.embeddings.forEach(function (b64) {
+        var emb = palmnetEmbeddingFromBase64(b64);
+        if (emb) banked.push(emb);
+      });
+    }
+    var added = 0, skipped = 0;
+    (candidateEmbeddings || []).forEach(function (cand) {
+      var unit = palmnetNormaliseEmbedding(cand);
+      if (!unit) { skipped++; return; }
+      if (banked.length >= PALMNET_PROFILE_MAX_EMBEDDINGS) { skipped++; return; }
+      var dup = false;
+      for (var i = 0; i < banked.length; i++) {
+        var c = palmnetCosine(banked[i], unit);
+        if (c !== null && c >= PALMNET_DEDUPE_COSINE) { dup = true; break; }
+      }
+      if (dup) { skipped++; return; }
+      banked.push(unit);
+      added++;
+    });
+    if (!added) {
+      return { neural: existingBank || null, added: 0, skipped: skipped, total: banked.length, changed: false };
+    }
+    return { neural: palmnetBankFromEmbeddings(banked), added: added, skipped: skipped, total: banked.length, changed: true };
+  }
+  /* Neural score of a probe set against banked embeddings: MAX
+     cosine over banked x probes, or null when either side has no
+     sane embedding (no neural evidence — never a zero, never a
+     guess). */
+  function palmnetScoreEmbeddings(bankedEmbeddings, probeEmbeddings) {
+    if (!Array.isArray(bankedEmbeddings) || !bankedEmbeddings.length) return null;
+    if (!Array.isArray(probeEmbeddings) || !probeEmbeddings.length) return null;
+    var best = null;
+    bankedEmbeddings.forEach(function (b) {
+      probeEmbeddings.forEach(function (p) {
+        var c = palmnetCosine(b, p);
+        if (c !== null && (best === null || c > best)) best = c;
+      });
+    });
+    return best;
+  }
+  function palmnetScoreProfile(stored, probeEmbeddings) {
+    return palmnetScoreEmbeddings(palmnetProfileEmbeddings(stored), probeEmbeddings);
+  }
+  /* THE FUSED DECISION. Takes the EDCC result object (the
+     palmprintMatchResult shape, or null) and the neural score
+     (a cosine, or null when the neural path produced no evidence)
+     and returns a result in the same shape, extended with the
+     neural fields and acceptedBy. Rules:
+       - EDCC verified (similarity >= 0.32) accepts, as always.
+       - A neural score >= PALMNET_THRESHOLD accepts on its own.
+       - No neural evidence (null) => the EDCC verdict stands
+         alone, bit-for-bit the v46 behaviour.
+     The EDCC bar is never lowered and the EDCC similarity is
+     reported unchanged, so diagnostics and the Field Test record
+     always show both systems' evidence. */
+  function fusePalmVerifyResults(edccResult, neuralScore) {
+    var edccOk = !!(edccResult && edccResult.verified === true);
+    var hasNeural = typeof neuralScore === 'number' && isFinite(neuralScore);
+    var neuralOk = hasNeural && neuralScore >= PALMNET_THRESHOLD;
+    var acceptedBy = null;
+    if (edccOk && neuralOk) acceptedBy = 'both';
+    else if (edccOk) acceptedBy = 'edcc';
+    else if (neuralOk) acceptedBy = 'palmnet';
+    var out = {
+      ok: true,
+      verified: edccOk || neuralOk,
+      similarity: edccResult && typeof edccResult.similarity === 'number' ? edccResult.similarity : null,
+      threshold: PALMPRINT_THRESHOLD,
+      neuralScore: hasNeural ? neuralScore : null,
+      neuralThreshold: PALMNET_THRESHOLD,
+      acceptedBy: acceptedBy,
+      reason: edccResult && edccResult.reason ? edccResult.reason : 'No EDCC result.'
+    };
+    if (neuralOk && !edccOk) {
+      out.reason = 'PalmNet neural match accepted (cosine ' + neuralScore.toFixed(3) +
+        ' >= ' + PALMNET_THRESHOLD + '); EDCC similarity ' +
+        (out.similarity === null ? 'n/a' : out.similarity.toFixed(3)) + ' below its 0.32 bar.';
+    }
+    // The Field Test exhaustive shift log rides the EDCC result;
+    // carry it through so fused panels keep showing it.
+    if (edccResult && Array.isArray(edccResult.shiftLog)) out.shiftLog = edccResult.shiftLog;
+    return out;
+  }
+
   /* ================= v43: hands-free scan session ================
      The auto-trigger / cooldown state machine the scan views run
      on. Pure logic (the caller passes timestamps), so the rules
@@ -3594,8 +3936,18 @@
      never wipe; only the owner's own confirmed tap erases. The
      step here is the identity, and a v45 store — wallet balance,
      statement and linked accounts included — opens under v46
-     byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46'];
+     byte-identical.
+
+     v46 -> v47 is an ADOPTION: v47 adds the PalmNet neural
+     matcher ALONGSIDE EDCC. Neural embeddings live in an OPTIONAL
+     profile.neural field written only by v47 enrolment, Add
+     Angles and the Registry's Neural scan capture — no existing
+     field changes shape, nothing needs converting, and a profile
+     without the field is fully valid (it verifies EDCC-only,
+     exactly as under v46). The step is therefore the identity,
+     and a v46 store — wallet balance, statement and linked
+     accounts included — opens under v47 byte-identical. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -3604,6 +3956,7 @@
     'v43': function (snap) { return snap; },
     'v44': function (snap) { return snap; },
     'v46': function (snap) { return snap; },
+    'v47': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
@@ -3823,6 +4176,28 @@
     streamMatchUpdate: streamMatchUpdate,
     streamFastWinCheck: streamFastWinCheck,
     palmprintWorkerSource: palmprintWorkerSource,
+    PALMNET_INPUT_SIZE: PALMNET_INPUT_SIZE,
+    PALMNET_EMBED_DIM: PALMNET_EMBED_DIM,
+    PALMNET_THRESHOLD: PALMNET_THRESHOLD,
+    PALMNET_MEAN: PALMNET_MEAN,
+    PALMNET_STD: PALMNET_STD,
+    PALMNET_PROFILE_MAX_EMBEDDINGS: PALMNET_PROFILE_MAX_EMBEDDINGS,
+    PALMNET_DEDUPE_COSINE: PALMNET_DEDUPE_COSINE,
+    palmnetPreprocessRoi: palmnetPreprocessRoi,
+    palmnetPreprocessSource: palmnetPreprocessSource,
+    palmnetNormaliseEmbedding: palmnetNormaliseEmbedding,
+    palmnetEmbeddingSane: palmnetEmbeddingSane,
+    palmnetCosine: palmnetCosine,
+    palmnetEmbeddingToBase64: palmnetEmbeddingToBase64,
+    palmnetEmbeddingFromBase64: palmnetEmbeddingFromBase64,
+    palmnetProfileEmbeddings: palmnetProfileEmbeddings,
+    palmnetProfileSane: palmnetProfileSane,
+    palmnetNeedsScan: palmnetNeedsScan,
+    palmnetBankFromEmbeddings: palmnetBankFromEmbeddings,
+    mergePalmnetEmbeddings: mergePalmnetEmbeddings,
+    palmnetScoreEmbeddings: palmnetScoreEmbeddings,
+    palmnetScoreProfile: palmnetScoreProfile,
+    fusePalmVerifyResults: fusePalmVerifyResults,
     laplacianVariance: laplacianVariance,
     contrastStretch: contrastStretch,
     sharpen: sharpen,

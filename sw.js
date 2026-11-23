@@ -1,7 +1,7 @@
 /* TSG Biom service worker - caches the app shell only.
    CDN libraries and biometric models are intentionally NOT cached here;
    they load from their CDNs so model files stay current. */
-const CACHE = 'tsg-biom-shell-v46';
+const CACHE = 'tsg-biom-shell-v47';
 const SHELL = [
   './',
   './index.html',

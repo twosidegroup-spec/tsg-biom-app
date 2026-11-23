@@ -77,6 +77,16 @@
    confirm; the wipe itself is proven in v46-wipe.test.js). That
    action is NOT a migration step: the v46 section below proves a
    wallet-carrying v45 store opens under v46 byte-identical, and
+   the full chain still preserves everything end to end.
+
+   Extended for v47 (2026-11-24): the chain gains 'v47' — an
+   ADOPTION step. v47 adds the PalmNet neural matcher alongside
+   EDCC; neural embeddings live in an OPTIONAL profile.neural
+   field written only by v47 enrolment / Add Angles / Neural
+   Scan saves, so no existing field changes shape and nothing
+   needs converting. The v47 section below proves a
+   wallet-carrying v46 store opens under v47 byte-identical —
+   including a profile that already carries a neural bank — and
    the full chain still preserves everything end to end. */
 'use strict';
 const fs = require('fs');
@@ -199,8 +209,8 @@ check('MIGRATE a store with a missing logs array keeps the people', Array.isArra
    its migration step is an adoption like v38's. A store written by
    v38 (and one written by v37, through both steps) must open under
    v39 with the person, codes and points intact and still verify. */
-check('CHAIN v46 is the newest link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v46' &&
-  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40,v41,v42,v43,v44,v45,v46', B.BIOM_DATA_VERSIONS.join(','));
+check('CHAIN v47 is the newest link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v47' &&
+  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40,v41,v42,v43,v44,v45,v46,v47', B.BIOM_DATA_VERSIONS.join(','));
 const mig39 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v38', 'v39');
 check('MIGRATE v38->v39 runs the v39 step', mig39.appliedSteps.indexOf('v39') !== -1, mig39.appliedSteps.join(','));
 check('MIGRATE v38->v39 is an adoption: no store rewritten', mig39.changed === false && mig39.changedStores.length === 0,
@@ -436,6 +446,39 @@ const migAgain46 = B.migrateBiomData(mig46.snapshot, 'v46', 'v46');
 check('MIGRATE is idempotent at v46', migAgain46.appliedSteps.length === 0 && migAgain46.changed === false &&
   migAgain46.snapshot.people[0].wallet.balance === 450);
 
+/* ---------- v47: adoption — a v46 store opens byte-identical -------
+   v47 adds the PalmNet neural matcher. Neural embeddings live in
+   an optional profile.neural field that only v47 saves write;
+   the step converts nothing, so the wallet-carrying v46 store
+   (balance 450, DEMO-1 statement, one linked account, legacy-
+   flagged palm) must pass through byte-identical — and so must a
+   store whose profile ALREADY carries a neural bank (the step
+   must not strip the new field either). */
+const v47Store = JSON.parse(JSON.stringify(mig46.snapshot));
+const v47Before = JSON.stringify(v47Store);
+const mig47 = B.migrateBiomData(v47Store, 'v46', 'v47');
+check('MIGRATE v46->v47 runs the v47 step', mig47.appliedSteps.indexOf('v47') !== -1, mig47.appliedSteps.join(','));
+check('MIGRATE v46->v47 rewrites NOTHING (pure adoption)', mig47.changed === false && JSON.stringify(mig47.snapshot) === v47Before,
+  'changedStores=' + JSON.stringify(mig47.changedStores));
+check('SURVIVE v47 wallet, statement, linked account and flagged palm intact',
+  mig47.snapshot.people[0].wallet.balance === 450 && mig47.snapshot.people[0].wallet.statement.length === 1 &&
+  mig47.snapshot.people[0].wallet.linkedAccounts.length === 1 && mig47.snapshot.people[0].palmProfile.format === 'legacy');
+const v47NeuralStore = JSON.parse(JSON.stringify(mig46.snapshot));
+v47NeuralStore.people[0].palmProfile = { v: 4, format: 'packed96', codes: ['R0hJ'], neural: { v: 1, dim: 256, model: 'palmnet-v1', embeddings: ['QUJD'] } };
+const v47NeuralBefore = JSON.stringify(v47NeuralStore);
+const mig47n = B.migrateBiomData(v47NeuralStore, 'v46', 'v47');
+check('MIGRATE v46->v47 keeps an existing neural bank byte-identical',
+  mig47n.changed === false && JSON.stringify(mig47n.snapshot) === v47NeuralBefore &&
+  mig47n.snapshot.people[0].palmProfile.neural.embeddings[0] === 'QUJD');
+const migChain47 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v37', 'v47');
+check('MIGRATE v37->v47 runs all ten steps in order', migChain47.appliedSteps.join(',') === 'v38,v39,v40,v41,v42,v43,v44,v45,v46,v47', migChain47.appliedSteps.join(','));
+check('MIGRATE v37->v47 keeps the person, gains the wallet, flags the palm',
+  migChain47.snapshot.people.length === 1 && migChain47.snapshot.people[0].loyaltyPoints === 137 &&
+  migChain47.snapshot.people[0].wallet.balance === 0 && migChain47.snapshot.people[0].palmProfile.format === 'legacy');
+const migAgain47 = B.migrateBiomData(mig47.snapshot, 'v47', 'v47');
+check('MIGRATE is idempotent at v47', migAgain47.appliedSteps.length === 0 && migAgain47.changed === false &&
+  migAgain47.snapshot.people[0].wallet.balance === 450);
+
 /* ---------- the shipped app source carries no AUTOMATIC wipe -------
    v46 note: the only erase in the app is the owner's confirmed
    Delete All Data action (DB.clearAll + B.wipeBiomData, wired in
@@ -443,12 +486,12 @@ check('MIGRATE is idempotent at v46', migAgain46.appliedSteps.length === 0 && mi
    and is still pinned here: deleting the whole database and
    removing store keys, the retired update-time wipe mechanics. */
 const appSrc = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
-check('APP declares the current data version (v46)', appSrc.indexOf("APP_DATA_VERSION = 'v46'") !== -1);
+check('APP declares the current data version (v47)', appSrc.indexOf("APP_DATA_VERSION = 'v47'") !== -1);
 check('APP startup runs the migration', appSrc.indexOf('migrateBiomData') !== -1 && appSrc.indexOf('migrateDbStores') !== -1);
 check('APP contains no database deletion (the retired wipe)', appSrc.indexOf('deleteDatabase') === -1);
 check('APP contains no store-key removal (the retired wipe)', !/removeItem\(\s*'tsgbiom_/.test(appSrc));
 const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
-check('APP shell is v46', swSrc.indexOf('tsg-biom-shell-v46') !== -1);
+check('APP shell is v47', swSrc.indexOf('tsg-biom-shell-v47') !== -1);
 
 console.log(fail === 0 ? 'ALL MIGRATION TESTS PASSED (' + pass + ')' : fail + ' FAILURES, ' + pass + ' passed');
 process.exit(fail === 0 ? 0 : 1);

@@ -41,7 +41,7 @@
      is skipped, nothing is deleted, and the next launch retries —
      the app boots on the un-migrated data either way, because its
      readers fail closed per record. */
-  var APP_DATA_VERSION = 'v46';
+  var APP_DATA_VERSION = 'v47';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -900,6 +900,310 @@
     }
   };
 
+  /* PalmNet neural runtime (v47): ONNX Runtime Web running the
+     PalmNet model (see the PalmNet section in biometrics.js for
+     what the model is and where its threshold came from). The
+     runtime loads the way this app loads every third-party
+     runtime — a pinned jsDelivr CDN build, the pattern MediaPipe
+     Hands already uses — and the model itself lives IN THIS REPO
+     under models/palmnet/ (base64 text parts + a manifest with
+     the byte count and SHA-256; the snapshot-push channel that
+     ships this app carries UTF-8 text only, so the binary model
+     travels as text and is reassembled and verified in memory).
+
+     Inference runs in a dedicated worker so it can never block
+     the scan loop; the worker's preprocessing is assembled from
+     B.palmnetPreprocessSource() — the very functions the parity
+     suite proves against the Python training pipeline. If the
+     worker cannot be built or dies, the same runtime is loaded
+     on the main thread as a fallback (a batch-1 inference is a
+     few milliseconds; it is a fallback, not the plan).
+
+     FAIL-SOFT BY CONSTRUCTION: every failure — no Worker, no
+     WASM, CDN unreachable, model fetch/size/hash failure, session
+     error, a hung call — resolves to "no neural evidence" and
+     flips state to 'failed' with a plain reason. The scan paths
+     treat that exactly like a profile with no neural bank: the
+     app behaves as v46, EDCC only, and diagnostics carry the
+     honest status note (PalmNet.statusNote). Nothing here ever
+     throws into a scan, an enrolment or a wallet flow. */
+  function palmnetWorkerMain() {
+    // Runs INSIDE the PalmNet worker. In scope there: ort (via
+    // importScripts) and palmnetPreprocessRoi / PALMNET_INPUT_SIZE
+    // (via B.palmnetPreprocessSource) — nothing from app.js.
+    var session = null;
+    function b64ToBytes(b64) {
+      var bin = atob(b64);
+      var bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return bytes;
+    }
+    function loadModel(manifestUrl) {
+      return fetch(manifestUrl).then(function (r) {
+        if (!r.ok) throw new Error('model manifest HTTP ' + r.status);
+        return r.json();
+      }).then(function (man) {
+        var base = manifestUrl.replace(/[^/]*$/, '');
+        return Promise.all(man.parts.map(function (p) {
+          return fetch(base + p).then(function (r) {
+            if (!r.ok) throw new Error('model part HTTP ' + r.status);
+            return r.text();
+          });
+        })).then(function (texts) {
+          var bytes = b64ToBytes(texts.join(''));
+          if (bytes.length !== man.bytes) throw new Error('model size mismatch (' + bytes.length + ' != ' + man.bytes + ')');
+          var hashP = Promise.resolve();
+          if (typeof crypto !== 'undefined' && crypto.subtle && crypto.subtle.digest) {
+            hashP = crypto.subtle.digest('SHA-256', bytes).then(function (h) {
+              var hex = '';
+              var hv = new Uint8Array(h);
+              for (var i = 0; i < hv.length; i++) hex += ('0' + hv[i].toString(16)).slice(-2);
+              if (hex !== man.sha256) throw new Error('model hash mismatch');
+            });
+          }
+          return hashP.then(function () { return ort.InferenceSession.create(bytes); });
+        });
+      });
+    }
+    function runOne(roi, size) {
+      var input = palmnetPreprocessRoi(roi, size);
+      if (!input) return Promise.resolve(null);
+      var tensor = new ort.Tensor('float32', input, [1, 3, PALMNET_INPUT_SIZE, PALMNET_INPUT_SIZE]);
+      return session.run({ image: tensor }).then(function (out) {
+        return Array.prototype.slice.call(out.embedding.data);
+      }, function () { return null; });
+    }
+    onmessage = function (e) {
+      var d = e.data || {};
+      if (d.type === 'init') {
+        loadModel(d.manifestUrl).then(function (s) {
+          session = s;
+          postMessage({ type: 'ready' });
+        }, function (err) {
+          postMessage({ type: 'error', message: String(err && err.message ? err.message : err) });
+        });
+      } else if (d.type === 'embed') {
+        if (!session) { postMessage({ type: 'emb', id: d.id, emb: null, embM: null }); return; }
+        runOne(d.roi, d.size).then(function (emb) {
+          if (d.roiM) {
+            return runOne(d.roiM, d.size).then(function (embM) {
+              postMessage({ type: 'emb', id: d.id, emb: emb, embM: embM });
+            });
+          }
+          postMessage({ type: 'emb', id: d.id, emb: emb, embM: null });
+        }).catch(function () { postMessage({ type: 'emb', id: d.id, emb: null, embM: null }); });
+      }
+    };
+  }
+  var PalmNet = {
+    state: 'idle', // idle | loading | ready | failed
+    failReason: '',
+    ortUrl: 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.wasm.min.js',
+    wasmPath: 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/',
+    modelManifest: 'models/palmnet/manifest.json',
+    w: null, seq: 0, pending: {},
+    session: null, // main-thread fallback session (window.ort)
+    readyPromise: null,
+    cache: (typeof WeakMap !== 'undefined') ? new WeakMap() : null, // roi array -> Promise<pair|null>
+    init: function () {
+      if (this.readyPromise) return this.readyPromise;
+      this.state = 'loading';
+      var self = this;
+      this.readyPromise = this.initWorker()
+        .catch(function () { return self.initMainThread(); })
+        .then(function () { self.state = 'ready'; return true; })
+        .catch(function (e) {
+          self.state = 'failed';
+          self.failReason = e && e.message ? e.message : String(e);
+          return false;
+        });
+      return this.readyPromise;
+    },
+    initWorker: function () {
+      var self = this;
+      return new Promise(function (resolve, reject) {
+        if (typeof Worker === 'undefined') { reject(new Error('Web Workers unavailable')); return; }
+        var settled = false;
+        var to = setTimeout(function () {
+          if (settled) return;
+          settled = true;
+          try { if (self.w) self.w.terminate(); } catch (e) {}
+          self.w = null;
+          reject(new Error('neural worker start timed out'));
+        }, 45000);
+        try {
+          var src = 'importScripts(' + JSON.stringify(self.ortUrl) + ');\n' +
+            'ort.env.wasm.wasmPaths = ' + JSON.stringify(self.wasmPath) + ';\n' +
+            'ort.env.wasm.numThreads = 1;\n' +
+            B.palmnetPreprocessSource() +
+            'var palmnetWorkerMain = ' + palmnetWorkerMain.toString() + ';\npalmnetWorkerMain();\n';
+          var url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+          self.w = new Worker(url);
+          self.w.onmessage = function (e) {
+            var d = e.data || {};
+            if (d.type === 'ready') {
+              if (settled) return;
+              settled = true;
+              clearTimeout(to);
+              resolve();
+            } else if (d.type === 'error') {
+              if (settled) return;
+              settled = true;
+              clearTimeout(to);
+              try { self.w.terminate(); } catch (err) {}
+              self.w = null;
+              reject(new Error(d.message || 'neural worker failed to load the model'));
+            } else if (d.type === 'emb') {
+              var p = self.pending[d.id];
+              if (p) { delete self.pending[d.id]; p(d); }
+            }
+          };
+          self.w.onerror = function () {
+            if (!settled) {
+              settled = true;
+              clearTimeout(to);
+              self.w = null;
+              reject(new Error('neural worker error'));
+            } else {
+              // A live worker died mid-flight: pending embeds
+              // resolve null through their own timeouts; future
+              // embeds fail soft.
+              self.w = null;
+              if (self.state === 'ready') { self.state = 'failed'; self.failReason = 'neural worker error'; }
+            }
+          };
+          self.w.postMessage({ type: 'init', manifestUrl: new URL(self.modelManifest, window.location.href).href });
+        } catch (e) {
+          if (!settled) { settled = true; clearTimeout(to); reject(e); }
+        }
+      });
+    },
+    loadOrtScript: function () {
+      return new Promise(function (resolve, reject) {
+        if (typeof window !== 'undefined' && window.ort) { resolve(); return; }
+        var s = document.createElement('script');
+        s.src = PalmNet.ortUrl;
+        s.onload = function () { resolve(); };
+        s.onerror = function () { reject(new Error('ONNX Runtime Web failed to load from the CDN')); };
+        document.head.appendChild(s);
+      });
+    },
+    fetchModelBytes: function () {
+      var self = this;
+      return fetch(self.modelManifest).then(function (r) {
+        if (!r.ok) throw new Error('model manifest HTTP ' + r.status);
+        return r.json();
+      }).then(function (man) {
+        var base = self.modelManifest.replace(/[^/]*$/, '');
+        return Promise.all(man.parts.map(function (p) {
+          return fetch(base + p).then(function (r) {
+            if (!r.ok) throw new Error('model part HTTP ' + r.status);
+            return r.text();
+          });
+        })).then(function (texts) {
+          var bin = atob(texts.join(''));
+          var bytes = new Uint8Array(bin.length);
+          for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          if (bytes.length !== man.bytes) throw new Error('model size mismatch (' + bytes.length + ' != ' + man.bytes + ')');
+          return bytes;
+        });
+      });
+    },
+    initMainThread: function () {
+      var self = this;
+      return this.loadOrtScript().then(function () {
+        window.ort.env.wasm.numThreads = 1;
+        return self.fetchModelBytes();
+      }).then(function (bytes) {
+        return window.ort.InferenceSession.create(bytes);
+      }).then(function (session) {
+        self.session = session;
+      });
+    },
+    embedViaWorker: function (roi, roiM) {
+      var self = this;
+      var id = ++this.seq;
+      return new Promise(function (resolve) {
+        var done = false;
+        var finishWith = function (pair) { if (!done) { done = true; resolve(pair); } };
+        var to = setTimeout(function () { delete self.pending[id]; finishWith(null); }, 4000);
+        self.pending[id] = function (msg) {
+          clearTimeout(to);
+          finishWith(self.pairFromRaw(msg && msg.emb, msg && msg.embM));
+        };
+        try {
+          self.w.postMessage({ id: id, type: 'embed', roi: Array.prototype.slice.call(roi), roiM: roiM ? Array.prototype.slice.call(roiM) : null, size: B.PALMPRINT_ROI_SIZE });
+        } catch (e) { clearTimeout(to); delete self.pending[id]; finishWith(null); }
+      });
+    },
+    pairFromRaw: function (rawA, rawB) {
+      var a = rawA ? B.palmnetNormaliseEmbedding(rawA) : null;
+      var b = rawB ? B.palmnetNormaliseEmbedding(rawB) : null;
+      if (!a && !b) return null;
+      return [a, b];
+    },
+    embedOnMain: function (roi, roiM) {
+      var self = this;
+      function runOne(r) {
+        var input = B.palmnetPreprocessRoi(r, B.PALMPRINT_ROI_SIZE);
+        if (!input || !self.session) return Promise.resolve(null);
+        var tensor = new window.ort.Tensor('float32', input, [1, 3, B.PALMNET_INPUT_SIZE, B.PALMNET_INPUT_SIZE]);
+        return self.session.run({ image: tensor }).then(function (out) {
+          return B.palmnetNormaliseEmbedding(Array.prototype.slice.call(out.embedding.data));
+        }, function () { return null; });
+      }
+      return runOne(roi).then(function (a) {
+        if (!roiM) return self.pairFromRaw(a, null);
+        return runOne(roiM).then(function (b) { return self.pairFromRaw(a, b); });
+      }).catch(function () { return null; });
+    },
+    /* Embed one ROI and its mirror twin (the probe pair). Resolves
+       [embedding, mirrorEmbedding] (either may be null) or null
+       when the neural path produced nothing. NEVER rejects, and
+       the wait is bounded — a hung runtime cannot stall a scan. */
+    embedPair: function (roi) {
+      if (!roi || typeof roi.length !== 'number' || roi.length !== B.PALMPRINT_ROI_SIZE * B.PALMPRINT_ROI_SIZE) return Promise.resolve(null);
+      if (this.cache) {
+        var hit = this.cache.get(roi);
+        if (hit) return hit;
+      }
+      var self = this;
+      var p = this.init().then(function (ok) {
+        if (!ok) return null;
+        var flipped = B.flipGrayHorizontal(roi, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE);
+        if (self.w) return self.embedViaWorker(roi, flipped);
+        if (self.session) return self.embedOnMain(roi, flipped);
+        return null;
+      }).catch(function () { return null; });
+      var bounded = Promise.race([p, waitMs(6000).then(function () { return null; })]);
+      if (this.cache) this.cache.set(roi, bounded);
+      return bounded;
+    },
+    /* Embed a list of ROIs (enrolment / top-up banking): resolves
+       an aligned array of embeddings-or-null. Never rejects. */
+    embedRois: function (rois) {
+      var self = this;
+      return Promise.all((rois || []).map(function (roi) {
+        return self.embedPair(roi).then(function (pair) { return pair ? pair[0] : null; });
+      })).catch(function () { return (rois || []).map(function () { return null; }); });
+    },
+    /* The honest one-liner diagnostics carry when the neural path
+       is not producing scores. Empty when PalmNet is live. */
+    statusNote: function () {
+      if (this.state === 'ready') return '';
+      if (this.state === 'failed') return 'PalmNet neural matcher unavailable (' + (this.failReason || 'failed to load') + ') — EDCC only.';
+      return 'PalmNet neural matcher still loading — EDCC only for now.';
+    }
+  };
+  /* The sharpest usable fully-open frames' ROIs of a capture —
+     the neural banking candidates for Add Angles / Neural scan
+     (the same usability gate the EDCC live selection uses). */
+  function neuralCandidateRois(frames) {
+    var usable = B.palmprintUsableOpenFrames(frames, B.PALM_LIVE_OPEN_MIN).filter(function (u) { return !!u.roi; });
+    usable.sort(function (a, b) { return b.sharpness - a.sharpness; });
+    return usable.slice(0, 6).map(function (u) { return u.roi; });
+  }
+
   /* Pipeline pre-warm (v37): the first MediaPipe Hands call pays the
      WASM + model load — measured at ~10 s on the slow test rig when
      it landed inside the first scan, against ~0.7 s per frame once
@@ -937,6 +1241,11 @@
   function prewarmPalmPipeline() {
     try { PalmProc.init(); } catch (e) {}
     try { Match.init(); } catch (e) {}
+    // v47: the PalmNet runtime + model load in the background too,
+    // so the first neural score is not paying the download. Fully
+    // fire-and-forget — a failure is recorded on PalmNet.state and
+    // surfaces only as the diagnostics status note.
+    try { PalmNet.init(); } catch (e) {}
     if (palmPrewarmStarted) return;
     palmPrewarmStarted = true;
     try {
@@ -1223,7 +1532,7 @@
       var n = Math.max(1, analysed);
       var s = 'Scan timing: ' + analysed + ' frames analysed in ' + wall + ' ms (' + (analysed / Math.max(1, wall) * 1000).toFixed(1) + ' frames/s); per frame — landmarks ' + Math.round(stLm / n) + ' ms, palm code ' + Math.round(stEnc / n) + ' ms, matching ' + Math.round(stMatch / n) + ' ms';
       if (geoFrames) s += ' (extra variant encodes ' + Math.round(stGeo) + ' ms in total, on ' + geoFrames + ' of ' + analysed + ' frames)';
-      return s + '.';
+      return s + '.' + neuralDiagSuffix();
     }
     // v37 continuous pipeline state: one reused capture canvas (each
     // frame is fully analysed before the next grab), the video-clock
@@ -1232,6 +1541,79 @@
     var frameCanvas = null;
     var lastGrabT = -1;
     var prevMatch = null;
+
+    /* v47 PalmNet fusion state. The neural path runs ALONGSIDE
+       the EDCC pipeline, never inside its critical path: each
+       analysed frame's ROI is embedded off-thread (PalmNet) and
+       the score lands in frameNeural whenever it lands; the fused
+       decision (B.fusePalmVerifyResults — EDCC at its 0.32 bar OR
+       PalmNet at its 0.5773 bar) is taken per frame from whichever
+       evidence has arrived, in tryWin. A profile with no banked
+       embeddings (neuralBanked null) or a failed neural runtime
+       leaves every frame's neural slot null, and the scan is then
+       exactly the v46 scan. */
+    var neuralBanked = B.palmnetProfileEmbeddings(person.palmProfile);
+    var frameEdcc = {};   // frameIdx -> EDCC result object (or null once applied)
+    var frameNeural = {}; // frameIdx -> neural cosine | null (absent = still pending)
+    var frameRoiByIdx = {}; // frameIdx -> the frame's ROI array
+    var bestNeural = null;
+    function tryWin(frameIdx) {
+      if (frameEdcc[frameIdx] === undefined) return;
+      var ns = frameNeural[frameIdx] === undefined ? null : frameNeural[frameIdx];
+      var fused = B.fusePalmVerifyResults(frameEdcc[frameIdx], ns);
+      if (win) {
+        // The win already stands; if it came from THIS frame
+        // before the neural score landed, refresh its evidence so
+        // the panels and the field record show both systems.
+        if (win.frameIdx === frameIdx) win.res = fused;
+        return;
+      }
+      if (fused.verified) {
+        win = { res: fused, rois: [frameRoiByIdx[frameIdx]], fast: false, frameIdx: frameIdx };
+      }
+    }
+    function neuralScoreForRois(rois) {
+      if (!neuralBanked || !rois || !rois.length) return Promise.resolve(null);
+      return Promise.all(rois.map(function (roi) { return PalmNet.embedPair(roi); })).then(function (pairs) {
+        var probes = [];
+        pairs.forEach(function (pr) { if (pr) pr.forEach(function (e) { if (e) probes.push(e); }); });
+        return probes.length ? B.palmnetScoreEmbeddings(neuralBanked, probes) : null;
+      }).catch(function () { return null; });
+    }
+    function neuralImpostorMaxFor(rois) {
+      var others = (people || []).filter(function (p) {
+        return p.id !== person.id && B.palmnetProfileSane(p.palmProfile);
+      });
+      if (!others.length || !rois || !rois.length) return Promise.resolve(null);
+      return Promise.all(rois.map(function (roi) { return PalmNet.embedPair(roi); })).then(function (pairs) {
+        var probes = [];
+        pairs.forEach(function (pr) { if (pr) pr.forEach(function (e) { if (e) probes.push(e); }); });
+        if (!probes.length) return null;
+        var cur = null;
+        others.forEach(function (p) {
+          var s = B.palmnetScoreProfile(p.palmProfile, probes);
+          if (s !== null && (cur === null || s > cur)) cur = s;
+        });
+        return cur;
+      }).catch(function () { return null; });
+    }
+    /* The PalmNet sentence for measured/diagnostics text: both
+       scores and the accepting path when a score exists, the
+       honest reason when it does not. */
+    function neuralMeasuredStr(res) {
+      if (res && typeof res.neuralScore === 'number') {
+        var by = res.acceptedBy === 'both' ? 'EDCC and PalmNet' : (res.acceptedBy === 'palmnet' ? 'PalmNet' : 'EDCC');
+        return ' PalmNet cosine ' + res.neuralScore.toFixed(3) + ' (threshold ' + B.PALMNET_THRESHOLD + '); accepted by ' + by + '.';
+      }
+      if (!neuralBanked) return ' PalmNet: no neural embeddings banked for this palm — EDCC only' + (B.palmnetNeedsScan(person.palmProfile) ? ' (Registry → Neural Scan banks them)' : '') + '.';
+      var note = PalmNet.statusNote();
+      return ' PalmNet: no neural score this scan' + (note ? ' — ' + note : '') + '.';
+    }
+    function neuralDiagSuffix() {
+      if (!neuralBanked) return '';
+      if (PalmNet.state === 'ready') return ' PalmNet neural matching active (threshold ' + B.PALMNET_THRESHOLD + '); best neural cosine this scan ' + (bestNeural !== null ? bestNeural.toFixed(3) : 'n/a') + '.';
+      return ' ' + PalmNet.statusNote();
+    }
 
     function finish(out) { return out; }
     function impostorMaxFor(rois) {
@@ -1268,9 +1650,11 @@
     }
     function verifiedOut() {
       return impostorMaxFor(win.rois).then(function (impMax) {
-        fieldRec(win.res.similarity, impMax, 'pass', 'verified', tracker.state().lightTag);
-        var measured = 'Palmprint similarity ' + win.res.similarity.toFixed(3) + ' (threshold ' + win.res.threshold + ', 1-snap packed match: the winning frame\'s bit-packed template scored by the 5-shift popcount matcher against ' + person.palmProfile.codes.length + ' enrolled packed templates), passive liveness passed (natural micro-shift across rapid frames), Show & Pay streaming scan. Scan latency: ' + (Date.now() - t0) + ' ms.' + shiftLogStr(win.res) + ' ' + diagStr();
-        return finish({ r: win.res, measured: measured, latencyMs: Date.now() - t0 });
+        return neuralImpostorMaxFor(win.rois).then(function (nImpMax) {
+          fieldRec(win.res.similarity, impMax, 'pass', 'verified', tracker.state().lightTag, { neuralScore: typeof win.res.neuralScore === 'number' ? win.res.neuralScore : null, neuralImpostorMax: nImpMax, acceptedBy: win.res.acceptedBy || null });
+          var measured = 'Palmprint similarity ' + (typeof win.res.similarity === 'number' ? win.res.similarity.toFixed(3) : 'n/a') + ' (threshold ' + win.res.threshold + ', 1-snap packed match: the winning frame\'s bit-packed template scored by the 5-shift popcount matcher against ' + person.palmProfile.codes.length + ' enrolled packed templates), passive liveness passed (natural micro-shift across rapid frames), Show & Pay streaming scan.' + neuralMeasuredStr(win.res) + ' Scan latency: ' + (Date.now() - t0) + ' ms.' + shiftLogStr(win.res) + ' ' + diagStr();
+          return finish({ r: win.res, measured: measured, latencyMs: Date.now() - t0 });
+        });
       });
     }
     function finalOut(timedOut) {
@@ -1280,22 +1664,32 @@
       var liveRois = B.selectPalmprintLiveRois(frames);
       if (!liveRois) { fieldRec(null, null, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag); return finish({ fail: 'No usable open palm with readable print detail found in the scan. Nothing was verified. Show one open palm to the camera, fingers spread, in good light, and run the scan again. (' + analysed + ' frames scanned, ' + coded + ' produced a readable palm code.' + (lastHint ? ' Last guidance shown: ' + lastHint : '') + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr() + ')' }); }
       return Match.verifyRois(person.palmProfile, liveRois, { exhaustive: fieldExhaustiveOn() }).then(function (res) {
-        return impostorMaxFor(liveRois).then(function (impMax) {
-          if (res && res.verified && lv.pass) {
-            // The collected set matched and liveness passed — the
-            // win the streaming rule would have honoured.
-            win = { res: res, rois: liveRois, fast: false };
-            return verifiedOut();
-          }
-          var out = res;
-          if (res && res.verified && !lv.pass) {
-            // The palm matched but the micro-parallax evidence did
-            // not confirm a live hand: denied, reason stated.
-            out = { ok: true, verified: false, similarity: res.similarity, threshold: res.threshold, reason: 'The palm matched, but liveness could not be confirmed — no natural micro-movement was observed. Nothing was verified. Present the real hand, held live in front of the camera.' };
-          }
-          fieldRec(res ? res.similarity : null, impMax, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag);
-          var measured = 'Palmprint similarity ' + (res && typeof res.similarity === 'number' ? res.similarity.toFixed(3) : 'n/a') + ' (threshold ' + B.PALMPRINT_THRESHOLD + ', 1-snap packed match: ' + liveRois.length + ' live frames\' bit-packed templates scored by the 5-shift popcount matcher against ' + person.palmProfile.codes.length + ' enrolled packed templates), passive liveness ' + lv.verdict + ', Show & Pay streaming scan. Scan latency: ' + (Date.now() - t0) + ' ms.' + shiftLogStr(res) + ' Diagnostics: ' + analysed + ' frames scanned, ' + coded + ' with a readable code, best single-frame score ' + (matchState.best !== null ? matchState.best.toFixed(3) : 'n/a') + '.' + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr();
-          return finish({ r: out, measured: measured, latencyMs: Date.now() - t0 });
+        // v47: the exact collected-set judgement is FUSED — the
+        // EDCC result at its 0.32 bar OR the PalmNet cosine over
+        // the same ROIs at its threshold (null when the neural
+        // path has no evidence, which leaves res untouched).
+        return neuralScoreForRois(liveRois).then(function (nScore) {
+          var fused = B.fusePalmVerifyResults(res, nScore);
+          return impostorMaxFor(liveRois).then(function (impMax) {
+            return neuralImpostorMaxFor(liveRois).then(function (nImpMax) {
+              if (fused.verified && lv.pass) {
+                // The collected set matched and liveness passed — the
+                // win the streaming rule would have honoured.
+                win = { res: fused, rois: liveRois, fast: false };
+                return verifiedOut();
+              }
+              var out = fused;
+              if (fused.verified && !lv.pass) {
+                // The palm matched but the micro-parallax evidence did
+                // not confirm a live hand: denied, reason stated.
+                out = { ok: true, verified: false, similarity: fused.similarity, threshold: fused.threshold, neuralScore: fused.neuralScore, neuralThreshold: fused.neuralThreshold, acceptedBy: null, reason: 'The palm matched, but liveness could not be confirmed — no natural micro-movement was observed. Nothing was verified. Present the real hand, held live in front of the camera.' };
+                if (fused.shiftLog) out.shiftLog = fused.shiftLog;
+              }
+              fieldRec(fused.similarity, impMax, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag, { neuralScore: nScore, neuralImpostorMax: nImpMax, acceptedBy: fused.acceptedBy || null });
+              var measured = 'Palmprint similarity ' + (typeof fused.similarity === 'number' ? fused.similarity.toFixed(3) : 'n/a') + ' (threshold ' + B.PALMPRINT_THRESHOLD + ', 1-snap packed match: ' + liveRois.length + ' live frames\' bit-packed templates scored by the 5-shift popcount matcher against ' + person.palmProfile.codes.length + ' enrolled packed templates), passive liveness ' + lv.verdict + ', Show & Pay streaming scan.' + neuralMeasuredStr(fused) + ' Scan latency: ' + (Date.now() - t0) + ' ms.' + shiftLogStr(fused) + ' Diagnostics: ' + analysed + ' frames scanned, ' + coded + ' with a readable code, best single-frame score ' + (matchState.best !== null ? matchState.best.toFixed(3) : 'n/a') + (bestNeural !== null ? ', best PalmNet cosine ' + bestNeural.toFixed(3) : '') + '.' + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr();
+              return finish({ r: out, measured: measured, latencyMs: Date.now() - t0 });
+            });
+          });
         });
       });
     }
@@ -1316,8 +1710,16 @@
       }
       var score = res && typeof res.similarity === 'number' ? res.similarity : null;
       matchState = B.streamMatchUpdate(matchState, score);
-      if (res && res.verified && !win) {
-        win = { res: res, rois: [roi], fast: false };
+      // v47: record the frame's EDCC evidence and take the FUSED
+      // decision for the frame (tryWin also honours a neural score
+      // that landed earlier; a neural score landing later re-enters
+      // tryWin from its own continuation in step()).
+      if (typeof frameIdx === 'number') {
+        frameEdcc[frameIdx] = res || null;
+        if (roi) frameRoiByIdx[frameIdx] = roi;
+        tryWin(frameIdx);
+      } else if (res && res.verified && !win) {
+        win = { res: B.fusePalmVerifyResults(res, null), rois: [roi], fast: false };
       }
     }
     /* Pace grabs to the camera clock (v37): at least ~100 ms of
@@ -1388,6 +1790,20 @@
               // overlaps the NEXT frame's analysis instead of
               // blocking this frame's step (v37 pipelining, kept).
               prevMatch = { roi: r.roi, frameIdx: myIdx, promise: Match.verifyRois(person.palmProfile, [r.roi], { fast: true, exhaustive: fieldExhaustiveOn() }) };
+              // v47: the same patch is ALSO embedded by PalmNet,
+              // off-thread and unpipelined — the score lands in
+              // frameNeural whenever it lands and tryWin re-takes
+              // this frame's fused decision with it. It never
+              // delays the EDCC pipeline above.
+              if (neuralBanked) {
+                frameRoiByIdx[myIdx] = r.roi;
+                PalmNet.embedPair(r.roi).then(function (pair) {
+                  var s = pair ? B.palmnetScoreEmbeddings(neuralBanked, pair) : null;
+                  frameNeural[myIdx] = s;
+                  if (s !== null && (bestNeural === null || s > bestNeural)) bestNeural = s;
+                  tryWin(myIdx);
+                });
+              }
             } else {
               applyMatch(null, null, myIdx);
             }
@@ -1431,7 +1847,7 @@
           return prev.promise.then(function (res) { applyMatch(res, prev.roi, prev.frameIdx); return loop(); });
         }
         if (win) {
-          fieldRec(win.res.similarity, null, 'fail', 'rejected', sp.lightTag);
+          fieldRec(win.res.similarity, null, 'fail', 'rejected', sp.lightTag, { neuralScore: typeof win.res.neuralScore === 'number' ? win.res.neuralScore : null, neuralImpostorMax: null, acceptedBy: win.res.acceptedBy || null });
           Snd.buzz();
           return finish({ fail: 'Liveness could not be confirmed: the palm matched, but no natural micro-movement was observed. Nothing was verified. Present the real hand, held live — do not use a photo or a recording.' });
         }
@@ -1499,11 +1915,63 @@
       var n = Math.max(1, analysed);
       var s = 'Scan timing: ' + analysed + ' frames analysed in ' + wall + ' ms (' + (analysed / Math.max(1, wall) * 1000).toFixed(1) + ' frames/s); per frame — landmarks ' + Math.round(stLm / n) + ' ms, palm code ' + Math.round(stEnc / n) + ' ms, matching ' + Math.round(stMatch / n) + ' ms';
       if (geoFrames) s += ' (extra variant encodes ' + Math.round(stGeo) + ' ms in total, on ' + geoFrames + ' of ' + analysed + ' frames)';
-      return s + '.';
+      return s + '.' + neuralDiagSuffix();
     }
     var frameCanvas = null;
     var lastGrabT = -1;
     var prevMatch = null;
+
+    /* v47 PalmNet fusion state (same discipline as the 1:1
+       stream): each frame's probe is embedded ONCE off-thread and
+       scored against every candidate's banked embeddings in pure
+       JS; the per-candidate decision is the fused one. Candidates
+       without a bank simply have no neural evidence. */
+    var banksById = {};
+    var anyNeuralBank = false;
+    candidates.forEach(function (p) {
+      var bank = B.palmnetProfileEmbeddings(p.palmProfile);
+      if (bank) { banksById[p.id] = bank; anyNeuralBank = true; }
+    });
+    var frameResults = {};       // frameIdx -> per-candidate EDCC results array
+    var frameNeuralScores = {};  // frameIdx -> { personId: cosine|null } (absent = pending)
+    function tryWinIdentify(frameIdx) {
+      if (win) return;
+      var results = frameResults[frameIdx];
+      if (!results) return;
+      var scores = frameNeuralScores[frameIdx] || null;
+      for (var i = 0; i < candidates.length; i++) {
+        var p = candidates[i];
+        var fused = B.fusePalmVerifyResults(results[i] || null, scores ? scores[p.id] : null);
+        if (fused.verified) { win = { person: p, res: fused, fast: false }; return; }
+      }
+    }
+    function neuralScoresForRois(rois) {
+      if (!anyNeuralBank || !rois || !rois.length) return Promise.resolve(null);
+      return Promise.all(rois.map(function (roi) { return PalmNet.embedPair(roi); })).then(function (pairs) {
+        var probes = [];
+        pairs.forEach(function (pr) { if (pr) pr.forEach(function (e) { if (e) probes.push(e); }); });
+        if (!probes.length) return null;
+        var out = {};
+        candidates.forEach(function (p) {
+          if (banksById[p.id]) out[p.id] = B.palmnetScoreEmbeddings(banksById[p.id], probes);
+        });
+        return out;
+      }).catch(function () { return null; });
+    }
+    function neuralMeasuredStrId(res) {
+      if (res && typeof res.neuralScore === 'number') {
+        var by = res.acceptedBy === 'both' ? 'EDCC and PalmNet' : (res.acceptedBy === 'palmnet' ? 'PalmNet' : 'EDCC');
+        return ' PalmNet cosine ' + res.neuralScore.toFixed(3) + ' (threshold ' + B.PALMNET_THRESHOLD + '); accepted by ' + by + '.';
+      }
+      if (!anyNeuralBank) return ' PalmNet: no neural embeddings banked on this device — EDCC only.';
+      var note = PalmNet.statusNote();
+      return ' PalmNet: no neural score this scan' + (note ? ' — ' + note : '') + '.';
+    }
+    function neuralDiagSuffix() {
+      if (!anyNeuralBank) return '';
+      if (PalmNet.state === 'ready') return ' PalmNet neural matching active (threshold ' + B.PALMNET_THRESHOLD + ').';
+      return ' ' + PalmNet.statusNote();
+    }
 
     function spoofOut(sp) {
       DB.put('logs', { ts: Date.now(), personId: '', personName: '(wallet scan)', store: '', method: 'palm', measured: 'Spoof score ' + sp.score.toFixed(2) + ' - ' + sp.reasons.join('; '), result: 'Spoof / Screen Replay Detected' });
@@ -1517,7 +1985,7 @@
         : 'Liveness check failed: the view changed too abruptly for one held hand. Nothing was verified. Hold one open palm steady in front of the camera.' };
     }
     function identifiedOut() {
-      var measured = 'Palmprint similarity ' + win.res.similarity.toFixed(3) + ' (threshold ' + win.res.threshold + ', 1-snap packed match: the winning frame\'s bit-packed template scored by the 5-shift popcount matcher against ' + win.person.palmProfile.codes.length + ' enrolled packed templates), passive liveness passed (natural micro-shift across rapid frames), wallet identification scan (1:N over ' + candidates.length + ' enrolled palms). Scan latency: ' + (Date.now() - t0) + ' ms.' + shiftLogStr(win.res) + ' ' + diagStr();
+      var measured = 'Palmprint similarity ' + (typeof win.res.similarity === 'number' ? win.res.similarity.toFixed(3) : 'n/a') + ' (threshold ' + win.res.threshold + ', 1-snap packed match: the winning frame\'s bit-packed template scored by the 5-shift popcount matcher against ' + win.person.palmProfile.codes.length + ' enrolled packed templates), passive liveness passed (natural micro-shift across rapid frames), wallet identification scan (1:N over ' + candidates.length + ' enrolled palms).' + neuralMeasuredStrId(win.res) + ' Scan latency: ' + (Date.now() - t0) + ' ms.' + shiftLogStr(win.res) + ' ' + diagStr();
       return { person: win.person, r: win.res, measured: measured, latencyMs: Date.now() - t0 };
     }
     function finalOut(timedOut) {
@@ -1529,18 +1997,32 @@
         return { fail: 'No usable open palm with readable print detail found in the scan. Nothing was verified. Show one open palm to the camera, fingers spread, in good light, and run the scan again. (' + analysed + ' frames scanned, ' + coded + ' produced a readable palm code.' + (lastHint ? ' Last guidance shown: ' + lastHint : '') + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr() + ')' };
       }
       return Match.verifyRoisMulti(candidates.map(function (p) { return p.palmProfile; }), liveRois, { exhaustive: fieldExhaustiveOn() }).then(function (results) {
-        var best = null, bestPerson = null;
-        (results || []).forEach(function (ro, i) {
-          if (ro && typeof ro.similarity === 'number' && (best === null || ro.similarity > best.similarity)) { best = ro; bestPerson = candidates[i]; }
+        // v47: fuse each candidate's exact result with its PalmNet
+        // cosine over the same ROIs. A candidate verified by
+        // EITHER system at its own bar wins over the EDCC-best
+        // also-ran; with no neural evidence the fused list is the
+        // EDCC list and the choice below is the v46 choice.
+        return neuralScoresForRois(liveRois).then(function (scoresById) {
+          var fusedList = (results || []).map(function (ro, i) {
+            return B.fusePalmVerifyResults(ro, scoresById ? scoresById[candidates[i].id] : null);
+          });
+          var best = null, bestPerson = null;
+          fusedList.forEach(function (ro, i) {
+            if (ro && typeof ro.similarity === 'number' && (best === null || ro.similarity > best.similarity)) { best = ro; bestPerson = candidates[i]; }
+          });
+          var bestVerified = null, bestVerifiedPerson = null;
+          fusedList.forEach(function (ro, i) {
+            if (ro && ro.verified && (bestVerified === null || (typeof ro.similarity === 'number' ? ro.similarity : 0) > (typeof bestVerified.similarity === 'number' ? bestVerified.similarity : 0))) { bestVerified = ro; bestVerifiedPerson = candidates[i]; }
+          });
+          if (bestVerified && lv.pass) {
+            win = { person: bestVerifiedPerson, res: bestVerified, fast: false };
+            return identifiedOut();
+          }
+          if (bestVerified && !lv.pass) {
+            return { fail: 'That palm matched ' + bestVerifiedPerson.name + ', but liveness could not be confirmed — no natural micro-movement was observed. Nothing was opened. Present the real hand, held live in front of the camera.' };
+          }
+          return { fail: 'This palm did not match any registered palm on this device, so nothing was opened and no one was identified. (' + analysed + ' frames scanned, ' + coded + ' with a readable code, best score ' + (best && typeof best.similarity === 'number' ? best.similarity.toFixed(3) : 'n/a') + ' against any enrolled palm.' + neuralMeasuredStrId(best) + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr() + ')' };
         });
-        if (best && best.verified && lv.pass) {
-          win = { person: bestPerson, res: best, fast: false };
-          return identifiedOut();
-        }
-        if (best && best.verified && !lv.pass) {
-          return { fail: 'That palm matched ' + bestPerson.name + ', but liveness could not be confirmed — no natural micro-movement was observed. Nothing was opened. Present the real hand, held live in front of the camera.' };
-        }
-        return { fail: 'This palm did not match any registered palm on this device, so nothing was opened and no one was identified. (' + analysed + ' frames scanned, ' + coded + ' with a readable code, best score ' + (best && typeof best.similarity === 'number' ? best.similarity.toFixed(3) : 'n/a') + ' against any enrolled palm.' + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr() + ')' };
       });
     }
     function pushApplied(p, score, frameIdx) {
@@ -1565,12 +2047,18 @@
         var score = res && typeof res.similarity === 'number' ? res.similarity : null;
         states[p.id] = B.streamMatchUpdate(states[p.id], score);
         pushApplied(p, score, frameIdx);
-        // v45: the 1-snap rule — the first candidate whose packed
-        // match verifies on this frame is the identification.
-        if (res && res.verified && !win) {
-          win = { person: p, res: res, fast: false };
-        }
       });
+      // v45: the 1-snap rule — the first candidate whose match
+      // verifies on this frame is the identification. v47: the
+      // match judged here is the FUSED one (EDCC at 0.32 OR
+      // PalmNet at its threshold), taken by tryWinIdentify from
+      // this frame's EDCC results plus whatever neural scores
+      // have landed for it; a neural score landing later re-enters
+      // tryWinIdentify from its own continuation in step().
+      if (typeof frameIdx === 'number') {
+        frameResults[frameIdx] = results || null;
+        tryWinIdentify(frameIdx);
+      }
     }
     function waitFreshFrame() {
       if (lastGrabT < 0) return Promise.resolve();
@@ -1619,6 +2107,20 @@
               // composition — the probe is encoded once inside the
               // worker and scored against every candidate.
               prevMatch = { roi: r.roi, frameIdx: myIdx, promise: Match.verifyRoisMulti(candidates.map(function (p) { return p.palmProfile; }), [r.roi], { exhaustive: fieldExhaustiveOn() }) };
+              // v47: the same frame is embedded ONCE by PalmNet
+              // and scored against every banked candidate in pure
+              // JS when it lands — off the EDCC pipeline's path.
+              if (anyNeuralBank) {
+                PalmNet.embedPair(r.roi).then(function (pair) {
+                  if (!pair) { frameNeuralScores[myIdx] = null; return; }
+                  var scores = {};
+                  candidates.forEach(function (p) {
+                    if (banksById[p.id]) scores[p.id] = B.palmnetScoreEmbeddings(banksById[p.id], pair);
+                  });
+                  frameNeuralScores[myIdx] = scores;
+                  tryWinIdentify(myIdx);
+                });
+              }
             } else {
               applyMatch(null, null, myIdx);
             }
@@ -1889,12 +2391,31 @@
         return;
       }
       enroll.palm = { v: 4, format: B.PALMPRINT_FORMAT, codes: sel.codes };
-      Cam.stop();
-      $('palmStatus').textContent = 'Palm captured.';
-      $('palmMsg').innerHTML = '<div class="success">Palm enrolled hands-free in ' + (res.elapsedMs / 1000).toFixed(1) + ' s: one automatic 900 ms burst (' + res.burst.frames + ' frames) banked ' + sel.codes.length + ' palmprint templates (bit-packed EDCC — the palm\'s own print pattern), and passive liveness passed (natural micro-shift ' + (res.burst.liveness.microShift * 100).toFixed(1) + '% across the burst).</div>';
-      Snd.chime();
-      Snd.speak('Palm captured');
-      advanceFrom('palm');
+      // v47: bank PalmNet neural embeddings from the SAME frames
+      // the EDCC burst banked (sel.picks are their indices into
+      // res.results), so a new profile carries both template
+      // types from one capture. Fail-soft: if the neural runtime
+      // cannot produce embeddings, the enrolment still completes
+      // EDCC-only and the Registry offers a Neural Scan for this
+      // profile later — the message below states which happened.
+      var pickRois = (sel.picks || []).map(function (i) { return res.results[i] && res.results[i].roi; }).filter(function (r) { return !!r; });
+      PalmNet.embedRois(pickRois).then(function (embs) {
+        var good = (embs || []).filter(function (e) { return !!e; });
+        var bank = good.length ? B.palmnetBankFromEmbeddings(good) : null;
+        var neuralNote;
+        if (bank) {
+          enroll.palm.neural = bank;
+          neuralNote = ' PalmNet neural embeddings banked too (' + bank.embeddings.length + '), so this palm can also match through the neural matcher.';
+        } else {
+          neuralNote = ' PalmNet neural embeddings were not banked (' + (PalmNet.state === 'failed' ? PalmNet.failReason : 'the neural runtime did not produce embeddings') + ') — this palm verifies by EDCC, and the Registry will offer a Neural Scan to add them.';
+        }
+        Cam.stop();
+        $('palmStatus').textContent = 'Palm captured.';
+        $('palmMsg').innerHTML = '<div class="success">Palm enrolled hands-free in ' + (res.elapsedMs / 1000).toFixed(1) + ' s: one automatic 900 ms burst (' + res.burst.frames + ' frames) banked ' + sel.codes.length + ' palmprint templates (bit-packed EDCC — the palm\'s own print pattern), and passive liveness passed (natural micro-shift ' + (res.burst.liveness.microShift * 100).toFixed(1) + '% across the burst).' + esc(neuralNote) + '</div>';
+        Snd.chime();
+        Snd.speak('Palm captured');
+        advanceFrom('palm');
+      });
     }).catch(function (e) {
       palmScanBusy = false;
       $('palmCapture').disabled = false;
@@ -2071,13 +2592,23 @@
       palmScanBusy = true;
       $('termScan').disabled = true;
       $('termResult').innerHTML = '<div class="notice">Show &amp; Pay — the customer simply holds an open palm toward the camera, like tapping a card. Scanning...</div>';
-      var fieldRec = function (genuineScore, impostorMax, liveness, result, lightTag) {
+      var fieldRec = function (genuineScore, impostorMax, liveness, result, lightTag, neural) {
         if (!fieldModeOn()) return;
-        writeFieldRecord({
+        var rec = {
           ts: Date.now(), biomId: person.id, camera: currentCameraTag(termFacingKey()),
           lighting: lightTag || '', genuineScore: genuineScore, impostorMax: impostorMax,
           liveness: liveness, spoofTag: $('fieldAttemptTag').value, result: result
-        });
+        };
+        // v47: the PalmNet per-system evidence rides the record
+        // (the result above is the FUSED verdict). The CSV export
+        // keeps its pinned v18 columns; these fields live on the
+        // record and feed fieldTestStats' fused FAR.
+        if (neural) {
+          rec.neuralScore = typeof neural.neuralScore === 'number' ? neural.neuralScore : null;
+          rec.neuralImpostorMax = typeof neural.neuralImpostorMax === 'number' ? neural.neuralImpostorMax : null;
+          rec.acceptedBy = neural.acceptedBy || null;
+        }
+        writeFieldRecord(rec);
       };
       var control = { cancelled: false, onFrame: function (info) { termSession.frame({ hasHand: info.hasHand, pose: info.pose }); } };
       termControl = control;
@@ -2551,9 +3082,9 @@
       }).map(function (p) {
         return '<tr><td><b>' + esc(p.name) + '</b><br><span style="color:var(--muted)">' + esc(p.phone || '') + '</span>' + (p.loyaltyPoints ? '<br><span style="color:var(--muted)">Loyalty: ' + p.loyaltyPoints + ' pts</span>' : '') + '</td>' +
           '<td>' + esc(p.id) + '</td><td>' + esc(p.type) + '<br><span style="color:var(--muted)">' + esc(p.store) + '</span></td>' +
-          '<td>' + (personHasMethod(p) ? '<span class="badge ok">Enrolled</span>' : (B.palmprintProfileFormat(p.palmProfile) === 'legacy' ? '<span class="badge bad">Palm re-scan needed</span>' : '<span class="badge bad">Not enrolled</span>')) + '</td>' +
+          '<td>' + (personHasMethod(p) ? '<span class="badge ok">Enrolled</span>' : (B.palmprintProfileFormat(p.palmProfile) === 'legacy' ? '<span class="badge bad">Palm re-scan needed</span>' : '<span class="badge bad">Not enrolled</span>')) + (B.palmnetNeedsScan(p.palmProfile) ? '<br><span class="badge warn">Neural scan needed</span>' : '') + '</td>' +
           '<td>' + (p.walletProvider ? esc(p.walletProvider) + '<br>' + esc(B.maskWalletNumber(p.walletNumber)) : '—') + '</td>' +
-          '<td><button class="btn small" data-verify="' + esc(p.id) + '">Verify</button>' + (personHasMethod(p) ? ' <button class="btn small" data-topup="' + esc(p.id) + '">Add Angles</button>' : '') + (B.palmprintProfileFormat(p.palmProfile) === 'legacy' ? ' <button class="btn small" data-topup="' + esc(p.id) + '">Re-scan Palm</button>' : '') + '</td></tr>';
+          '<td><button class="btn small" data-verify="' + esc(p.id) + '">Verify</button>' + (personHasMethod(p) ? ' <button class="btn small" data-topup="' + esc(p.id) + '">Add Angles</button>' : '') + (B.palmprintProfileFormat(p.palmProfile) === 'legacy' ? ' <button class="btn small" data-topup="' + esc(p.id) + '">Re-scan Palm</button>' : '') + (B.palmnetNeedsScan(p.palmProfile) ? ' <button class="btn small" data-neural="' + esc(p.id) + '">Neural Scan</button>' : '') + '</td></tr>';
       }).join('');
       $('registryBody').innerHTML = rows || '<tr><td colspan="6" style="color:var(--muted)">No enrollments on this device yet.</td></tr>';
       document.querySelectorAll('[data-verify]').forEach(function (b) {
@@ -2567,6 +3098,9 @@
       });
       document.querySelectorAll('[data-topup]').forEach(function (b) {
         b.addEventListener('click', function () { openTopup(b.dataset.topup); });
+      });
+      document.querySelectorAll('[data-neural]').forEach(function (b) {
+        b.addEventListener('click', function () { openTopup(b.dataset.neural, 'neural'); });
       });
     });
   }
@@ -2588,15 +3122,24 @@
   var topupControl = null;
   var topupPersonId = null;
   var topupBusy = false;
-  function openTopup(personId) {
+  var topupMode = 'angles'; // 'angles' (EDCC + neural) | 'neural' (neural only, v47)
+  function openTopup(personId, mode) {
     DB.all('people').then(function (people) {
       var person = people.find(function (p) { return p.id === personId; }) || null;
       if (!person) return;
       var fmt = B.palmprintProfileFormat(person.palmProfile);
       if (fmt !== 'packed96' && fmt !== 'legacy') return;
+      if (mode === 'neural' && fmt !== 'packed96') return; // a legacy palm needs the full re-scan first
       topupPersonId = personId;
+      topupMode = mode === 'neural' ? 'neural' : 'angles';
       go('topup');
-      if (fmt === 'legacy') {
+      if ($('topTitle')) $('topTitle').textContent = topupMode === 'neural' ? 'Neural Scan — add PalmNet embeddings' : 'Add Angles — widen a palm profile';
+      if ($('topSub')) $('topSub').textContent = topupMode === 'neural'
+        ? 'Runs the same burst capture as enrolment and banks PalmNet neural embeddings for this person\'s palm, so it can match through the neural matcher as well as EDCC. Their EDCC templates, Biom ID, wallet, balance, statement, linked accounts and loyalty points do not change.'
+        : 'Runs the same burst capture as enrolment and adds diverse sharp templates to this person\'s stored profile — or re-banks the palm in the current format when it was enrolled in the previous one. Their Biom ID, wallet, balance, statement, linked accounts and loyalty points do not change — only the palm profile gains templates.';
+      if (topupMode === 'neural') {
+        $('topWho').innerHTML = '<b>' + esc(person.name) + '</b> — ' + esc(person.id) + '<br><span style="color:var(--muted)">Neural scan: this palm is enrolled for the EDCC matcher but has no PalmNet neural embeddings yet, so it verifies EDCC-only. One burst banks neural embeddings for the same palm; the EDCC templates, Biom ID, wallet and points do not change.</span>';
+      } else if (fmt === 'legacy') {
         $('topWho').innerHTML = '<b>' + esc(person.name) + '</b> — ' + esc(person.id) + '<br><span style="color:var(--muted)">Palm re-scan needed: this palm was enrolled in the previous template format, which the current packed matcher cannot read. One burst re-banks it in the current format; the old codes stay archived in this record, and nothing else about this person changes.</span>';
       } else {
         $('topWho').innerHTML = '<b>' + esc(person.name) + '</b> — ' + esc(person.id) + '<br><span style="color:var(--muted)">Currently banked: ' + person.palmProfile.codes.length + ' packed palm templates' + (Array.isArray(person.palmProfile.poses) ? ' with pose data.' : ' from a single-posture enrolment — no pose data yet.') + ' The burst adds diverse sharp templates; nothing else about this person changes.</span>';
@@ -2649,34 +3192,81 @@
       return DB.all('people').then(function (people) {
         var person = people.find(function (p) { return p.id === topupPersonId; }) || null;
         if (!person) { $('topMsg').innerHTML = '<div class="error">That person is no longer in the registry — nothing was changed.</div>'; return; }
+        // v47 Neural scan mode: bank PalmNet embeddings only —
+        // the EDCC profile is carried over untouched.
+        if (topupMode === 'neural') {
+          return PalmNet.embedRois(neuralCandidateRois(res.results)).then(function (embs) {
+            var good = (embs || []).filter(function (e) { return !!e; });
+            if (!good.length) {
+              $('topMsg').innerHTML = '<div class="error">The PalmNet neural matcher produced no embeddings for this burst (' + (PalmNet.state === 'failed' ? esc(PalmNet.failReason) : 'the model may still be loading') + '). Nothing was changed. Run it again in a few seconds.</div>';
+              Snd.buzz();
+              return;
+            }
+            var nMerge = B.mergePalmnetEmbeddings(person.palmProfile.neural || null, good);
+            if (!nMerge.changed) {
+              $('topMsg').innerHTML = '<div class="notice">No new neural embeddings were added: ' + nMerge.skipped + ' candidate(s) were near-duplicates of embeddings already banked, or the bank is full. The stored profile is unchanged.</div>';
+              return;
+            }
+            var nProfile = Object.assign({}, person.palmProfile, { neural: nMerge.neural });
+            var nUpdated = Object.assign({}, person, { palmProfile: nProfile });
+            return DB.put('people', nUpdated).then(function () {
+              $('topMsg').innerHTML = '<div class="success">Neural embeddings banked for ' + esc(person.name) + ': ' + nMerge.added + ' new embedding(s), ' + nMerge.total + ' in the bank. This palm now matches through EDCC and PalmNet. EDCC templates, Biom ID, wallet, balance, statement, linked accounts and points are untouched.</div>';
+              Snd.chime();
+              Snd.speak('Neural scan banked');
+            });
+          });
+        }
         var merged = B.mergePalmprintProfileCodes(person.palmProfile, res.results);
         if (!merged) {
           $('topMsg').innerHTML = '<div class="error">The burst did not bank enough usable templates — three time-spaced sharp templates are needed. Nothing was changed. Run it again and hold the palm steady.</div>';
           return;
         }
-        if (merged.rebanked) {
-          var reProfile = { v: 4, format: B.PALMPRINT_FORMAT, codes: merged.codes };
-          if (person.palmProfile.legacyCodes) reProfile.legacyCodes = person.palmProfile.legacyCodes;
-          if (merged.poses.some(function (d) { return !!d; })) reProfile.poses = merged.poses;
-          var reUpdated = Object.assign({}, person, { palmProfile: reProfile });
-          return DB.put('people', reUpdated).then(function () {
-            $('topMsg').innerHTML = '<div class="success">Palm re-banked for ' + esc(person.name) + ': ' + merged.codes.length + ' packed templates banked in the current format. The previous codes stay archived in this record. Biom ID, wallet, balance, statement, linked accounts and points are untouched.</div>';
+        // v47: Add Angles banks BOTH template types from the same
+        // burst — the EDCC merge above and the neural merge here.
+        return PalmNet.embedRois(neuralCandidateRois(res.results)).then(function (embs) {
+          var good = (embs || []).filter(function (e) { return !!e; });
+          var nMerge = good.length
+            ? B.mergePalmnetEmbeddings(person.palmProfile.neural || null, good)
+            : { neural: person.palmProfile.neural || null, added: 0, skipped: 0, total: 0, changed: false };
+          var neuralNote = '';
+          if (nMerge.changed) neuralNote = ' PalmNet neural embeddings updated too: ' + nMerge.added + ' new, ' + nMerge.total + ' banked.';
+          else if (!person.palmProfile.neural && !good.length) neuralNote = ' PalmNet neural embeddings were not banked (' + (PalmNet.state === 'failed' ? PalmNet.failReason : 'the neural runtime produced none') + ') — the Registry will offer a Neural Scan.';
+          else if (good.length) neuralNote = ' Neural embeddings unchanged (' + nMerge.skipped + ' near-duplicate candidate(s) skipped).';
+          if (merged.rebanked) {
+            var reProfile = { v: 4, format: B.PALMPRINT_FORMAT, codes: merged.codes };
+            if (person.palmProfile.legacyCodes) reProfile.legacyCodes = person.palmProfile.legacyCodes;
+            if (merged.poses.some(function (d) { return !!d; })) reProfile.poses = merged.poses;
+            if (nMerge.neural) reProfile.neural = nMerge.neural;
+            var reUpdated = Object.assign({}, person, { palmProfile: reProfile });
+            return DB.put('people', reUpdated).then(function () {
+              $('topMsg').innerHTML = '<div class="success">Palm re-banked for ' + esc(person.name) + ': ' + merged.codes.length + ' packed templates banked in the current format. The previous codes stay archived in this record. Biom ID, wallet, balance, statement, linked accounts and points are untouched.' + esc(neuralNote) + '</div>';
+              Snd.chime();
+              Snd.speak('Palm re-banked');
+            });
+          }
+          if (!merged.changed && !nMerge.changed) {
+            $('topMsg').innerHTML = '<div class="notice">No new templates were added: ' + merged.skipped + ' candidate template(s) were skipped as duplicates or poses already covered, and no banked template was redundant enough to replace. The stored profile is unchanged.' + esc(neuralNote) + '</div>';
+            return;
+          }
+          if (!merged.changed && nMerge.changed) {
+            var keepProfile = Object.assign({}, person.palmProfile, { neural: nMerge.neural });
+            var keepUpdated = Object.assign({}, person, { palmProfile: keepProfile });
+            return DB.put('people', keepUpdated).then(function () {
+              $('topMsg').innerHTML = '<div class="success">Neural embeddings added for ' + esc(person.name) + ': ' + nMerge.added + ' new embedding(s), ' + nMerge.total + ' in the bank. The EDCC templates were already covered by this burst, so they are unchanged. Biom ID, wallet, balance, statement, linked accounts and points are untouched.</div>';
+              Snd.chime();
+              Snd.speak('Neural embeddings added');
+            });
+          }
+          var profile = { v: 4, format: B.PALMPRINT_FORMAT, codes: merged.codes };
+          if (merged.poses.some(function (d) { return !!d; })) profile.poses = merged.poses;
+          if (person.palmProfile.legacyCodes) profile.legacyCodes = person.palmProfile.legacyCodes;
+          if (nMerge.neural) profile.neural = nMerge.neural;
+          var updated = Object.assign({}, person, { palmProfile: profile });
+          return DB.put('people', updated).then(function () {
+            $('topMsg').innerHTML = '<div class="success">Templates added for ' + esc(person.name) + ': ' + merged.added + ' new template(s) appended' + (merged.replaced ? ', ' + merged.replaced + ' redundant template(s) replaced at the cap' : '') + (merged.skipped ? ', ' + merged.skipped + ' skipped (duplicate or already covered)' : '') + '. The profile now holds ' + merged.codes.length + ' templates. Biom ID, wallet, balance, statement, linked accounts and points are untouched.' + esc(neuralNote) + '</div>';
             Snd.chime();
-            Snd.speak('Palm re-banked');
+            Snd.speak('Templates added');
           });
-        }
-        if (!merged.changed) {
-          $('topMsg').innerHTML = '<div class="notice">No new templates were added: ' + merged.skipped + ' candidate template(s) were skipped as duplicates or poses already covered, and no banked template was redundant enough to replace. The stored profile is unchanged.</div>';
-          return;
-        }
-        var profile = { v: 4, format: B.PALMPRINT_FORMAT, codes: merged.codes };
-        if (merged.poses.some(function (d) { return !!d; })) profile.poses = merged.poses;
-        if (person.palmProfile.legacyCodes) profile.legacyCodes = person.palmProfile.legacyCodes;
-        var updated = Object.assign({}, person, { palmProfile: profile });
-        return DB.put('people', updated).then(function () {
-          $('topMsg').innerHTML = '<div class="success">Templates added for ' + esc(person.name) + ': ' + merged.added + ' new template(s) appended' + (merged.replaced ? ', ' + merged.replaced + ' redundant template(s) replaced at the cap' : '') + (merged.skipped ? ', ' + merged.skipped + ' skipped (duplicate or already covered)' : '') + '. The profile now holds ' + merged.codes.length + ' templates. Biom ID, wallet, balance, statement, linked accounts and points are untouched.</div>';
-          Snd.chime();
-          Snd.speak('Templates added');
         });
       });
     }).catch(function (e) {
