@@ -206,9 +206,10 @@
           <button class="setrow" data-acct-toggle="security"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 2.8v5.4c0 4.6-3 8-7 9.8-4-1.8-7-5.2-7-9.8V5.8Z"/><path d="M9.2 12l2 2 3.6-3.8"/></svg></span><span class="setlbl">Security</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
           <div class="setdetail hidden" id="acDetail-security"><div class="kv" id="acSecBody"></div></div>
           <button class="setrow" data-acct-toggle="notif"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 10a6 6 0 0 1 12 0c0 4 1.4 5.6 2.4 6.6H3.6C4.6 15.6 6 14 6 10Z"/><path d="M10 20a2.2 2.2 0 0 0 4 0"/></svg></span><span class="setlbl">Notifications</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
-          <div class="setdetail hidden" id="acDetail-notif"><p class="sub" style="margin:0">TSG Biom sends no notifications and makes no network calls for a scan — results are announced on screen and by voice on this device.</p></div>
+          <div class="setdetail hidden" id="acDetail-notif"><p class="sub" style="margin:0">TSG Biom sends no notifications. Scan results are announced on screen and by voice on this device. If Scan Sync is on (More → Scan Sync), the scan record is also posted to your own TSG Biom server in the background.</p></div>
           <button class="setrow" data-acct-toggle="lang"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M3.4 12h17.2M12 3.4c2.4 2.3 3.6 5.2 3.6 8.6s-1.2 6.3-3.6 8.6c-2.4-2.3-3.6-5.2-3.6-8.6s1.2-6.3 3.6-8.6Z"/></svg></span><span class="setlbl">Language</span><span class="setval">English</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
           <div class="setdetail hidden" id="acDetail-lang"><p class="sub" style="margin:0">The app interface is English. Bangla is not available in this build.</p></div>
+          <button class="setrow" data-go="more"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8a7 7 0 0 1 12 3M17 16a7 7 0 0 1-12-3"/><path d="M19 4v5h-5M5 20v-5h5"/></svg></span><span class="setlbl">Scan Sync</span><span class="setval">More</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
           <button class="setrow" id="acRowHelp"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M9.6 9.4A2.5 2.5 0 1 1 12 12.4V14"/><circle cx="12" cy="17" r=".4"/></svg></span><span class="setlbl">Help and Support</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
           <button class="setrow danger" id="acLogout"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"/><path d="M10 8l-4 4 4 4M6 12h11"/></svg></span><span class="setlbl">Log Out</span></button>
         </div>
@@ -270,6 +271,22 @@
       <label class="check"><input type="checkbox" id="fieldModeToggle2"> Field Test Mode — record GAR / FAR / spoof metrics for the 20-person, 200-scan validation</label>
       <label class="check"><input type="checkbox" id="fieldExhaustiveToggle2"> Exhaustive shift logging — evaluate all five shifts per comparison and log them in the scan record</label>
       <p class="sub" style="margin:8px 0 0">The full field-test panel, live metrics and the CSV export live under Transactions / Logs.</p>
+    </div>
+    <div class="card" style="margin-top:16px"><h2>Scan Sync</h2>
+      <p class="sub" style="margin:0 0 10px">Mirror every scan on this device to your own TSG Biom server, so real scans can be reviewed off-device. Each scan posts a small record (who, which hand, the scores, the result) and each palm-bank change posts the encrypted palm codes — <b>never a palm image</b>. Matching always stays on this device; sync runs in the background and never delays a scan. Off by default.</p>
+      <label>Server endpoint URL</label>
+      <input id="syncEndpoint" placeholder="https://your-project.vercel.app" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <label style="margin-top:10px">Device key</label>
+      <input id="syncDeviceKey" type="password" placeholder="The DEVICE_KEY you set on the server" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <p class="sub" style="margin:6px 0 0">The key is stored only in this device's settings — it is never synced and never written to a log.</p>
+      <label style="margin-top:10px">Device label</label>
+      <input id="syncLabel" placeholder="Chairman phone" autocomplete="off" spellcheck="false">
+      <label class="check" style="margin-top:12px"><input type="checkbox" id="syncOn"> Sync ON — post scan records and palm banks to the server above</label>
+      <div class="kv" style="margin-top:10px"><b>Status:</b> <span id="syncStatus">Off</span></div>
+      <div class="row" style="margin-top:10px">
+        <div><button class="btn primary" id="syncSaveBtn">Save settings</button></div>
+        <div><button class="btn" id="syncNowBtn">Sync now</button></div>
+      </div>
     </div>
     <div class="card" style="margin-top:16px"><h2>Delete all data</h2>
       <p class="sub" style="margin:0 0 10px">Erase everything stored on this device — all registered people, palm templates, wallets, balances, statements, linked accounts, transactions and logs — and return the app to an empty first-run state. App updates never do this; this button is the only erase, and only when you choose it. <b>It cannot be undone</b> — there is no copy anywhere else.</p>

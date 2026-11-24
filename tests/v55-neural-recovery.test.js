@@ -287,10 +287,17 @@ check('FIX3 the shipped manifest names the running model (the match case is the 
 })();
 
 /* ---------------- versions ------------------------------------- */
-check('VERSION app data version is v55', appSrc.indexOf("APP_DATA_VERSION = 'v55'") !== -1);
-check('VERSION shell is v55', swSrc.indexOf('tsg-biom-shell-v55') !== -1);
-check('VERSION v55 is the newest link in the chain',
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v55');
+// v56: the three absolute pins below were converted to the
+// version-coherence form (the v48/v49/v50/v51/v52/v54 pattern)
+// when v56 shipped — v55 remains IN the chain as an adoption
+// step; the living current-version pins are in v38-migration
+// + the v56 suite. The v55 proofs in this suite are unchanged.
+check('VERSION app data version and shell version agree', (function () {
+  const dv = (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1];
+  const sv = (swSrc.match(/tsg-biom-shell-(v\d+)/) || [])[1];
+  return !!dv && dv === sv;
+})());
+check('VERSION v55 remains in the chain as an adoption step', B.BIOM_DATA_VERSIONS.indexOf('v55') !== -1);
 
 /* ---------------- FIX 3: the worker loader, run for real ------- */
 /* The shipped palmnetWorkerMain, extracted from app.js and run

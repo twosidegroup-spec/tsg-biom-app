@@ -40,8 +40,16 @@
      localStorage migration has run; if anything throws, the stamp
      is skipped, nothing is deleted, and the next launch retries —
      the app boots on the un-migrated data either way, because its
-     readers fail closed per record. */
-  var APP_DATA_VERSION = 'v55';
+     readers fail closed per record.
+
+     v56 adds the Scan Sync (the Chairman's order 2026-11-24
+     22:20): a DEFAULT-OFF, owner-configured mirror of scan
+     records and encrypted palm banks to his own TSG Biom API.
+     It is not a data-shape change — sync preferences are
+     localStorage prefs and the outbox is one 'syncOutbox' meta
+     row — so the v56 migration step is a pure adoption like
+     the others, and with sync off the app is v55 exactly. */
+  var APP_DATA_VERSION = 'v56';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -229,6 +237,232 @@
         return true;
       });
     }).catch(function () { return false; });
+  }
+
+  /* ---------------- Scan Sync (v56) ----------------------------------
+     The Chairman's order 2026-11-24 22:20: "make a connection to
+     u whenever i scan palm it will be seen by u" — every scan on
+     this device becomes visible on his own TSG Biom API (his
+     Vercel, TSG's code, a private data repo behind it), so real
+     palms and real results can be reviewed off-device.
+
+     Design rules, all pinned by tests/v56-sync.test.js:
+     - DEFAULT OFF. With sync off or unconfigured there are ZERO
+       network calls and ZERO behaviour change — the app is v55
+       exactly. noteScan/noteProfile return before touching the
+       queue when the gate is closed.
+     - Matching never waits on the network: enrol/verify/money
+       paths call note* fire-and-forget; the flush runs in the
+       background (on boot, debounced after each enqueue, and on
+       the Sync now button) and removes an item only on a 2xx.
+       A failure leaves the queue intact for the next attempt.
+     - A 401 (key rejected) latches: the status line says so and
+       no further attempt is made until the settings are saved
+       again — no retry storm against a wrong key.
+     - Records are built by B.syncScanRecord / B.syncProfileRecord
+       from the SAME measured values the Logs entry / Field Test
+       record of the event carries, in the same closure that
+       writes the log (the v53 card<->log equality discipline).
+     - Templates only, never images. The device key lives ONLY
+       in the device localStorage prefs below — never in a synced
+       record, never in a log.
+     - Delete All Data sends NO delete-all record: the outbox is
+       a meta row, so DB.clearAll erases it with everything else,
+       and wireWipeData also clears the sync prefs and resets
+       this engine — a queued record would be wiped unsent
+       anyway, so the wipe stays exactly the v46 wipe. */
+  /* SYNC-ENGINE-BEGIN — createBiomSync is a pure factory over its
+     deps (no DOM, no globals beyond Date/JSON/setTimeout) so the
+     test suite can extract and drive it with stub deps. */
+  function createBiomSync(deps) {
+    var queue = null;        // null until the outbox has loaded
+    var loadPromise = null;
+    var saveChain = Promise.resolve();
+    var flushing = false;
+    var keyRejected = false;
+    var lastSyncTs = 0;
+    var lastError = '';
+    var flushTimer = null;
+
+    function prefs() { return deps.getPrefs(); }
+    function configured() { var p = prefs(); return !!(p.endpoint && p.deviceKey); }
+    function active() { var p = prefs(); return !!(p.on && p.endpoint && p.deviceKey); }
+
+    function ensureLoaded() {
+      if (queue !== null) return Promise.resolve(queue);
+      if (!loadPromise) {
+        loadPromise = deps.loadOutbox().then(function (items) {
+          queue = Array.isArray(items) ? items.slice() : [];
+          return queue;
+        }).catch(function () { queue = []; return queue; });
+      }
+      return loadPromise;
+    }
+    function persist() {
+      var snap = queue ? queue.slice() : [];
+      saveChain = saveChain.then(function () { return deps.saveOutbox(snap); }).catch(function () {});
+      return saveChain;
+    }
+    function scheduleFlush() {
+      if (flushTimer) return;
+      flushTimer = setTimeout(function () { flushTimer = null; flush(); }, 900);
+    }
+    function fillRecord(core, ts) {
+      var p = prefs();
+      var rec = { id: deps.uuid(), ts: ts, deviceLabel: p.label || '', modelId: deps.modelId, appVersion: deps.appVersion };
+      Object.keys(core).forEach(function (k) { rec[k] = core[k]; });
+      return rec;
+    }
+    function noteScan(fields) {
+      if (!active()) return false;
+      var core = deps.B.syncScanRecord(fields);
+      if (!core) return false;
+      var rec = fillRecord(core, fields && typeof fields.ts === 'number' ? fields.ts : deps.now());
+      ensureLoaded().then(function () {
+        queue.push({ type: 'scan', record: rec });
+        persist();
+        scheduleFlush();
+      });
+      return true;
+    }
+    function noteProfile(person) {
+      if (!active()) return false;
+      var core = deps.B.syncProfileRecord(person, deps.now());
+      if (!core) return false;
+      ensureLoaded().then(function () {
+        // Only the newest bank per person matters: an older queued
+        // upsert for the same Biom ID is replaced, never duplicated.
+        queue = queue.filter(function (it) { return !(it.type === 'profile' && it.record.biomId === core.biomId); });
+        queue.push({ type: 'profile', record: core });
+        persist();
+        scheduleFlush();
+      });
+      return true;
+    }
+    function flush() {
+      if (flushing || keyRejected || !active()) return Promise.resolve(state());
+      flushing = true;
+      return ensureLoaded().then(async function () {
+        var p = prefs();
+        var base = String(p.endpoint || '').replace(/\/+$/, '');
+        while (queue.length) {
+          var item = queue[0];
+          var url = base + (item.type === 'profile' ? '/api/profiles' : '/api/scans');
+          var res = null;
+          try {
+            res = await deps.fetchFn(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'x-device-key': p.deviceKey },
+              body: JSON.stringify(item.record)
+            });
+          } catch (e) {
+            lastError = 'network unreachable — will retry';
+            break;
+          }
+          if (res && res.status >= 200 && res.status < 300) {
+            queue.shift();
+            lastSyncTs = deps.now();
+            lastError = '';
+            await persist();
+            continue;
+          }
+          if (res && res.status === 401) { keyRejected = true; lastError = 'key rejected'; }
+          else lastError = 'server answered ' + (res ? res.status : 'no response') + ' — will retry';
+          break;
+        }
+        flushing = false;
+        deps.onStatus();
+        return state();
+      }).catch(function () { flushing = false; return state(); });
+    }
+    function state() {
+      return {
+        on: !!prefs().on, configured: configured(),
+        queued: queue ? queue.length : 0,
+        keyRejected: keyRejected, lastSyncTs: lastSyncTs, lastError: lastError
+      };
+    }
+    function statusText() {
+      var s = state();
+      if (!s.on) return 'Off';
+      if (!s.configured) return 'On — endpoint URL and device key needed';
+      if (s.keyRejected) return 'Key rejected by the server — check the device key, then Save settings';
+      var base = s.lastSyncTs ? ('Last synced ' + new Date(s.lastSyncTs).toLocaleTimeString()) : 'Not synced yet';
+      return base + ' · ' + s.queued + ' queued' + (s.lastError ? ' · ' + s.lastError : '');
+    }
+    function settingsChanged() { keyRejected = false; if (lastError === 'key rejected') lastError = ''; deps.onStatus(); }
+    function reset() {
+      queue = [];
+      keyRejected = false;
+      lastSyncTs = 0;
+      lastError = '';
+      if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+      // Persist AFTER any in-flight persist of the old queue, so
+      // the emptied outbox is the final state (see wireWipeData).
+      persist();
+    }
+    return {
+      noteScan: noteScan, noteProfile: noteProfile, flush: flush,
+      scheduleFlush: scheduleFlush, state: state, statusText: statusText,
+      settingsChanged: settingsChanged, reset: reset, ensureLoaded: ensureLoaded
+    };
+  }
+  /* SYNC-ENGINE-END */
+
+  function syncPrefGet(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
+  function syncPrefSet(k, v) { try { if (v) localStorage.setItem(k, v); else localStorage.removeItem(k); } catch (e) {} }
+  function syncUuid() {
+    try { if (window.crypto && crypto.randomUUID) return crypto.randomUUID(); } catch (e) {}
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+      var r = Math.random() * 16 | 0;
+      return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+    });
+  }
+  var Sync = createBiomSync({
+    B: B,
+    modelId: B.PALMNET_MODEL_ID,
+    appVersion: APP_DATA_VERSION,
+    getPrefs: function () {
+      return {
+        on: syncPrefGet('biomSyncOn') === '1',
+        endpoint: syncPrefGet('biomSyncEndpoint'),
+        deviceKey: syncPrefGet('biomSyncDeviceKey'),
+        label: syncPrefGet('biomSyncLabel') || 'Chairman phone'
+      };
+    },
+    loadOutbox: function () { return DB.getMeta('syncOutbox', []); },
+    saveOutbox: function (items) { return DB.setMeta('syncOutbox', items); },
+    fetchFn: function (url, opts) { return fetch(url, opts); },
+    now: function () { return Date.now(); },
+    uuid: syncUuid,
+    onStatus: function () { renderSyncStatus(); }
+  });
+  function renderSyncStatus() {
+    var el = $('syncStatus');
+    if (el) el.textContent = Sync.statusText();
+  }
+  function fillSyncSettings() {
+    if ($('syncEndpoint')) $('syncEndpoint').value = syncPrefGet('biomSyncEndpoint');
+    if ($('syncDeviceKey')) $('syncDeviceKey').value = syncPrefGet('biomSyncDeviceKey');
+    if ($('syncLabel')) $('syncLabel').value = syncPrefGet('biomSyncLabel');
+    if ($('syncOn')) $('syncOn').checked = syncPrefGet('biomSyncOn') === '1';
+    renderSyncStatus();
+  }
+  function wireSyncSettings() {
+    var save = $('syncSaveBtn'), nowBtn = $('syncNowBtn');
+    if (save) save.addEventListener('click', function () {
+      syncPrefSet('biomSyncEndpoint', $('syncEndpoint').value.trim());
+      syncPrefSet('biomSyncDeviceKey', $('syncDeviceKey').value.trim());
+      syncPrefSet('biomSyncLabel', $('syncLabel').value.trim());
+      syncPrefSet('biomSyncOn', $('syncOn').checked ? '1' : '');
+      Sync.settingsChanged();
+      renderSyncStatus();
+      toast(Sync.state().on ? 'Scan Sync settings saved.' : 'Scan Sync is off. Settings saved.');
+      Sync.flush();
+    });
+    if (nowBtn) nowBtn.addEventListener('click', function () {
+      Sync.flush().then(function () { renderSyncStatus(); });
+    });
   }
 
   /* ---------------- Small helpers ---------------------------------------- */
@@ -2459,6 +2693,7 @@
 
     function spoofOut(sp) {
       DB.put('logs', { ts: Date.now(), personId: '', personName: '(wallet scan)', store: '', method: 'palm', measured: 'Spoof score ' + sp.score.toFixed(2) + ' - ' + sp.reasons.join('; '), result: 'Spoof / Screen Replay Detected' });
+      Sync.noteScan({ kind: 'identify', profileName: '', biomId: '', result: 'Spoof / Screen Replay Detected' });
       Snd.buzz();
       return { fail: 'Spoof / Screen Replay Detected — the scan showed a screen or a recording, not a live hand (' + sp.reasons.join('; ') + '). Nothing was verified. Present the real hand, live in front of the camera.' };
     }
@@ -2726,6 +2961,7 @@
     if (page !== 'topup' && topupControl) topupControl.cancelled = true;
     if (page !== 'wallet') { if (walletControl) walletControl.cancelled = true; walletSession.leave(); }
     if (page === 'wallet') { renderWallet(); Pipeline.enterScanView(); }
+    if (page === 'more') { fillSyncSettings(); }
     if (page === 'account') { renderAccount(); }
     if (page === 'dashboard') renderDashboard();
     if (page === 'registry') renderRegistry();
@@ -2812,6 +3048,10 @@
         enrolledAt: Date.now()
       };
       return DB.put('people', person).then(function () {
+        // v56 Scan Sync: the new bank upserts and the enrol scan
+        // record queues (no-ops when sync is off).
+        Sync.noteProfile(person);
+        Sync.noteScan({ kind: 'enrol', profileName: person.name, biomId: person.id, hand: B.palmProfileHand(person.palmProfile), result: 'Enrolled' });
         setStep('done');
         $('enrollDoneBody').innerHTML =
           '<b>Name:</b> ' + esc(person.name) + '<br><b>Biom ID:</b> ' + esc(person.id) + '<br>' +
@@ -2908,6 +3148,7 @@
       if (res.stopped) { $('palmCapture').disabled = false; $('palmStatus').textContent = 'Capture stopped.'; return; }
       if (res.spoof && res.spoof.spoof) {
         DB.put('logs', { ts: Date.now(), personId: '', personName: '(enrolment attempt)', store: '', method: 'palm', measured: 'Spoof score ' + res.spoof.score.toFixed(2) + ' - ' + res.spoof.reasons.join('; '), result: 'Spoof / Screen Replay Detected' });
+        Sync.noteScan({ kind: 'enrol', profileName: '', biomId: '', result: 'Spoof / Screen Replay Detected' });
         $('palmMsg').innerHTML = '<div class="error">Spoof / Screen Replay Detected — the scan showed a screen or a recording, not a live hand (' + esc(res.spoof.reasons.join('; ')) + '). Nothing was stored. Enrolment requires the real hand, live in front of the camera.</div>';
         $('palmCapture').disabled = false;
         Snd.buzz();
@@ -3193,6 +3434,9 @@
           if (neural.handGate) rec.handGate = true;
         }
         writeFieldRecord(rec);
+        // v56 Scan Sync: the same measured values, in the same
+        // closure, queue the wire record (no-op when sync is off).
+        Sync.noteScan({ kind: 'field-test', profileName: person.name, biomId: person.id, hand: neural && neural.probeHand ? neural.probeHand : null, edccScore: genuineScore, palmnetScore: neural && typeof neural.neuralScore === 'number' ? neural.neuralScore : null, result: result });
       };
       var control = { cancelled: false, onFrame: function (info) { termSession.frame({ hasHand: info.hasHand, pose: info.pose }); } };
       termControl = control;
@@ -3225,6 +3469,9 @@
         if (out.fail) { Snd.buzz(); $('termResult').innerHTML = '<div class="error">' + esc(out.fail) + '</div>' + scanDiagHTML(out.diag); return; }
         var r = out.r;
         var verified = r.ok === true && r.verified === true; // fail closed: only an explicit pass verifies
+        // v56 Scan Sync: queued in the same closure that writes the
+        // terminal log below, from the same outcome values.
+        Sync.noteScan({ kind: amount > 0 ? 'money-auth' : 'verify', profileName: person.name, biomId: person.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: verified ? 'Verified' : 'Denied' });
         return logVerification(person, method, out.measured, verified ? 'Verified' : 'Denied').then(function () {
           var html;
           // v20 latency line: the exact end-to-end scan time, shown on
@@ -3538,6 +3785,12 @@
     // button beside the amount.
     var diagHtml = scanDiagHTML(out && out.diag);
     var ctx = walletScanCtx;
+    // v56 Scan Sync: a judged scan that failed queues its record
+    // too — the Chairman asked to see every scan, not only passes.
+    // (No diag = no judged scan — a camera failure queues nothing.)
+    if (ctx && ctx.syncKind && out && out.diag) {
+      Sync.noteScan({ kind: ctx.syncKind, profileName: '', biomId: ctx.recoverPersonId || '', hand: out.diag.probeHand || null, edccScore: typeof out.diag.edcc === 'number' ? out.diag.edcc : null, palmnetScore: typeof out.diag.neural === 'number' ? out.diag.neural : null, result: 'Denied' });
+    }
     if (ctx && ctx.recoverable) diagHtml += renderWalletRecovery(ctx);
     $('wScanDiag').innerHTML = diagHtml;
     wireWalletRecovery(ctx);
@@ -3607,6 +3860,7 @@
   $('walletOpenScan').addEventListener('click', function () {
     showWalletScan({
       title: 'Open your wallet — palm scan',
+      syncKind: 'wallet-open', // v56 Scan Sync kind for this context
       recoverable: true, // v53: a failed open offers the owner recovery (profile picker — the palm matched nobody)
       prompt: 'Show your open palm to the camera. If it matches a registered palm, that person\'s wallet opens. A palm that is not registered opens nothing.',
       run: function () {
@@ -3614,6 +3868,7 @@
           return streamIdentifyPalm($('wScanVideo'), $('wScanStatus'), people, walletSwapCamera, walletControl).then(function (out) {
             if (!out || out.fail || !out.person) { walletScanFailed(out); return; }
             walletSessionId = out.person.id;
+            Sync.noteScan({ kind: 'wallet-open', profileName: out.person.name, biomId: out.person.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
             hideWalletScan();
             return renderWallet().then(function () {
               $('wHomeMsg').innerHTML = '<div class="success">Wallet opened for ' + esc(out.person.name) + ' (' + esc(out.person.id) + ').<br><span style="color:var(--muted)">' + esc(out.measured) + '</span></div>';
@@ -3631,6 +3886,7 @@
     if (!person) return;
     showWalletScan({
       title: 'Open ' + person.name + '\'s wallet',
+      syncKind: 'wallet-open', // v56 Scan Sync kind for this context
       recoverable: true, recoverPersonId: personId, // v53: a failed open offers the owner recovery for this named profile
       prompt: 'Scan ' + person.name + '\'s palm. The wallet opens only if the palm verifies as ' + person.name + ' (' + person.id + ') — nobody else\'s palm can open it.',
       run: function () {
@@ -3640,6 +3896,7 @@
             var auth = authFromVerify(out, personId);
             if (!auth.verified) { walletScanFailed(out); return; }
             walletSessionId = personId;
+            Sync.noteScan({ kind: 'wallet-open', profileName: fresh.name, biomId: fresh.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
             hideWalletScan();
             return renderWallet().then(function () {
               $('wHomeMsg').innerHTML = '<div class="success">Wallet opened for ' + esc(fresh.name) + ' (' + esc(fresh.id) + ').<br><span style="color:var(--muted)">' + esc(out.measured) + '</span></div>';
@@ -3697,6 +3954,7 @@
     if (!accountId) { $('wAddMsg').innerHTML = '<div class="error">Link a funding account first — Add Money needs an account to add from.</div>'; return; }
     showWalletScan({
       title: 'Add money — confirm with your own palm',
+      syncKind: 'money-auth', // v56 Scan Sync kind for this context
       prompt: 'Scan YOUR OWN palm to add ' + fmtBDT(amt.amount) + ' of demo money to your wallet. Another person\'s palm, or no match, adds nothing.',
       run: function () {
         return DB.all('people').then(function (people) {
@@ -3708,6 +3966,7 @@
               var res = B.walletApplyAddMoney(fresh, amt.amount, accountId, auth, Date.now(), B.walletDemoRef(seq));
               if (!res.ok) { $('wScanMsg').innerHTML = '<div class="error">' + esc(res.error) + '</div>'; $('wScanRun').disabled = false; return; }
               return DB.put('people', res.person).then(function () {
+                Sync.noteScan({ kind: 'money-auth', profileName: fresh.name, biomId: fresh.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
                 hideWalletScan();
                 return renderWallet();
               }).then(function () {
@@ -3746,6 +4005,7 @@
     sendDraft.amount = amt.amount;
     showWalletScan({
       title: 'Send money — scan the receiver\'s palm',
+      syncKind: 'identify', // v56 Scan Sync kind for this context
       prompt: 'The RECEIVER shows their open palm. The scan finds their Biom ID — if the palm matches no registered palm, no money can be sent.',
       run: function () {
         return DB.all('people').then(function (people) {
@@ -3759,6 +4019,7 @@
             }
             sendDraft.receiverId = out.person.id;
             sendDraft.receiverName = out.person.name;
+            Sync.noteScan({ kind: 'identify', profileName: out.person.name, biomId: out.person.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
             hideWalletScan();
             $('walletSend').classList.remove('hidden');
             renderSendConfirm();
@@ -3786,6 +4047,7 @@
     if (!me || !sendDraft.receiverId) return;
     showWalletScan({
       title: 'Send money — authorise with your own palm',
+      syncKind: 'money-auth', // v56 Scan Sync kind for this context
       prompt: 'Scan YOUR OWN palm to send ' + fmtBDT(sendDraft.amount) + ' of demo money to ' + sendDraft.receiverName + ' (' + sendDraft.receiverId + '). Only your palm can authorise a send from your wallet.',
       run: function () {
         return DB.all('people').then(function (people) {
@@ -3799,6 +4061,7 @@
               // The transfer was computed atomically from the one
               // snapshot above; persist both updated records.
               return DB.put('people', res.sender).then(function () { return DB.put('people', res.receiver); }).then(function () {
+                Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: freshSender.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
                 var sentAmount = sendDraft.amount, sentTo = sendDraft.receiverName, sentToId = sendDraft.receiverId, sentRef = res.senderEntry.ref, newBal = res.senderEntry.balanceAfter;
                 sendDraft = { amount: null, receiverId: null, receiverName: null };
                 hideWalletScan();
@@ -3878,7 +4141,10 @@
         '<b>Daily limit:</b> ' + (lim.daily ? fmtBDT(lim.daily) : 'No limit') + '<br>' +
         '<span style="color:var(--muted)">Limits are chosen at registration. Above a limit, a Biom Pay payment is not created on palm alone — PIN confirmation is required.</span>';
       $('acSecBody').innerHTML =
-        'Palm templates are stored only on this device — nothing about your palm leaves it.<br>' +
+        'Palm templates are stored on this device, and matching always happens on this device.<br>' +
+        '<b>Scan sync:</b> ' + (Sync.state().on && Sync.state().configured
+          ? 'ON — scan records and encrypted palm codes also sync to your own TSG Biom server (More → Scan Sync), so your scans can be reviewed off-device. The palm image itself is never sent — there is no image in what syncs.'
+          : 'OFF — nothing about your palm leaves this device. If you switch Scan Sync on (More → Scan Sync), scan records and encrypted palm codes sync to your own TSG Biom server; the palm image itself is never sent.') + '<br>' +
         '<b>Registered palm:</b> ' + (hand ? (hand === 'left' ? 'Left' : 'Right') + ' hand' : 'hand not recorded') + '<br>' +
         '<b>Money scans:</b> Add Money, Send Money and Biom Pay use the strict money rule — a two-frame confirmation that must clearly beat every other enrolled palm.<br>' +
         '<span style="color:var(--muted)">Erase everything on this device from More → Delete All Data.</span>';
@@ -3914,6 +4180,7 @@
     if (!me) return;
     showWalletScan({
       title: 'Scan Palm — verify it is you',
+      syncKind: 'verify', // v56 Scan Sync kind for this context
       prompt: 'Show your open palm. This is a plain identity check on the open wallet — it authorises nothing and moves no money.',
       run: function () {
         return DB.all('people').then(function (people) {
@@ -3921,6 +4188,7 @@
           return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, walletSwapCamera, function () {}, walletControl).then(function (out) {
             var auth = authFromVerify(out, fresh.id);
             if (!auth.verified) { walletScanFailed(out); return; }
+            Sync.noteScan({ kind: 'verify', profileName: fresh.name, biomId: fresh.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
             hideWalletScan();
             return renderWallet().then(function () {
               $('wHomeMsg').innerHTML = '<div class="success">Palm verified — this wallet belongs to ' + esc(fresh.name) + ' (' + esc(fresh.id) + ').<br><span style="color:var(--muted)">' + esc(out.measured) + '</span></div>';
@@ -4096,6 +4364,7 @@
       if (res.stopped) { $('topStatus').textContent = 'Capture stopped.'; return; }
       if (res.spoof && res.spoof.spoof) {
         DB.put('logs', { ts: Date.now(), personId: '', personName: '(add-angles attempt)', store: '', method: 'palm', measured: 'Spoof score ' + res.spoof.score.toFixed(2) + ' - ' + res.spoof.reasons.join('; '), result: 'Spoof / Screen Replay Detected' });
+        Sync.noteScan({ kind: 'topup', profileName: '', biomId: '', result: 'Spoof / Screen Replay Detected' });
         $('topMsg').innerHTML = '<div class="error">Spoof / Screen Replay Detected — the scan showed a screen or a recording, not a live hand (' + esc(res.spoof.reasons.join('; ')) + '). Nothing was changed.</div>';
         Snd.buzz();
         return;
@@ -4138,6 +4407,7 @@
           var guard = B.bankingGuardCheck(person.palmProfile, { edccProbes: candProbes, neuralEmbeddings: good, hand: captureHand });
           if (guard.status === 'fail') {
             DB.put('logs', { ts: Date.now(), personId: person.id, personName: person.name, store: '', method: 'palm', measured: 'Banking refused by the v49 same-person guard: the captured palm did not verify against this profile (EDCC ' + (guard.edccChecked ? guard.edccScore.toFixed(3) : 'not checkable') + ', PalmNet ' + (guard.neuralChecked ? guard.neuralScore.toFixed(3) : 'not checkable') + '). Nothing was banked.' + (guard.handGate ? ' Hand gate: the captured palm is the ' + guard.probeHand + ' hand; this profile recorded the ' + guard.profileHand + ' hand — the other hand is a different identity.' : ''), result: 'Banking Refused — Palm Mismatch' });
+            Sync.noteScan({ kind: 'topup', profileName: person.name, biomId: person.id, hand: guard.probeHand || null, edccScore: guard.edccChecked ? guard.edccScore : null, palmnetScore: guard.neuralChecked ? guard.neuralScore : null, result: 'Banking Refused — Palm Mismatch' });
             // v55 (AUDIT-v54.md, Defect 1): the refusal wording
             // must not claim a checked mismatch when the neural
             // leg never ran. When the profile's stored neural
@@ -4208,6 +4478,8 @@
             if (stampHand) nProfile.hand = stampHand;
             var nUpdated = Object.assign({}, person, { palmProfile: nProfile });
             return DB.put('people', nUpdated).then(function () {
+              Sync.noteProfile(nUpdated);
+              Sync.noteScan({ kind: 'topup', profileName: person.name, biomId: person.id, hand: B.palmProfileHand(nUpdated.palmProfile), result: 'Banked' });
               $('topMsg').innerHTML = '<div class="success">Neural embeddings banked for ' + esc(person.name) + ': ' + nMerge.added + ' new embedding(s), ' + nMerge.total + ' in the bank. This palm now matches through EDCC and PalmNet. EDCC templates, Biom ID, wallet, balance, statement, linked accounts and points are untouched.' + esc(stampNote) + '</div>';
               Snd.chime();
               Snd.speak('Neural scan banked');
@@ -4243,6 +4515,8 @@
             if (nMerge.neural) reProfile.neural = nMerge.neural;
             var reUpdated = Object.assign({}, person, { palmProfile: reProfile });
             return DB.put('people', reUpdated).then(function () {
+              Sync.noteProfile(reUpdated);
+              Sync.noteScan({ kind: 'topup', profileName: person.name, biomId: person.id, hand: B.palmProfileHand(reUpdated.palmProfile), result: 'Banked' });
               $('topMsg').innerHTML = '<div class="success">Palm re-banked for ' + esc(person.name) + ': ' + merged.codes.length + ' packed templates banked in the current format. The previous codes stay archived in this record. Biom ID, wallet, balance, statement, linked accounts and points are untouched.' + esc(neuralNote) + (captureHand ? ' This capture recorded the profile\'s hand: ' + captureHand + ' — the other hand will not match this profile.' : '') + '</div>';
               Snd.chime();
               Snd.speak('Palm re-banked');
@@ -4258,6 +4532,8 @@
               var stampOnlyProfile = Object.assign({}, person.palmProfile, { hand: stampHand });
               var stampOnlyUpdated = Object.assign({}, person, { palmProfile: stampOnlyProfile });
               return DB.put('people', stampOnlyUpdated).then(function () {
+                Sync.noteProfile(stampOnlyUpdated);
+                Sync.noteScan({ kind: 'topup', profileName: person.name, biomId: person.id, hand: B.palmProfileHand(stampOnlyUpdated.palmProfile), result: 'Banked' });
                 $('topMsg').innerHTML = '<div class="notice">No new templates were added: ' + merged.skipped + ' candidate template(s) were skipped as duplicates or poses already covered, and no banked template was redundant enough to replace. The stored templates are unchanged.' + esc(neuralNote) + esc(stampNote) + '</div>';
               });
             }
@@ -4269,6 +4545,8 @@
             if (stampHand) keepProfile.hand = stampHand;
             var keepUpdated = Object.assign({}, person, { palmProfile: keepProfile });
             return DB.put('people', keepUpdated).then(function () {
+              Sync.noteProfile(keepUpdated);
+              Sync.noteScan({ kind: 'topup', profileName: person.name, biomId: person.id, hand: B.palmProfileHand(keepUpdated.palmProfile), result: 'Banked' });
               $('topMsg').innerHTML = '<div class="success">Neural embeddings added for ' + esc(person.name) + ': ' + nMerge.added + ' new embedding(s), ' + nMerge.total + ' in the bank. The EDCC templates were already covered by this burst, so they are unchanged. Biom ID, wallet, balance, statement, linked accounts and points are untouched.' + esc(stampNote) + '</div>';
               Snd.chime();
               Snd.speak('Neural embeddings added');
@@ -4284,6 +4562,8 @@
           profile.hand = B.palmProfileHand(person.palmProfile) || captureHand;
           var updated = Object.assign({}, person, { palmProfile: profile });
           return DB.put('people', updated).then(function () {
+            Sync.noteProfile(updated);
+            Sync.noteScan({ kind: 'topup', profileName: person.name, biomId: person.id, hand: B.palmProfileHand(updated.palmProfile), result: 'Banked' });
             $('topMsg').innerHTML = '<div class="success">Templates added for ' + esc(person.name) + ': ' + merged.added + ' new template(s) appended' + (merged.replaced ? ', ' + merged.replaced + ' redundant template(s) replaced at the cap' : '') + (merged.skipped ? ', ' + merged.skipped + ' skipped (duplicate or already covered)' : '') + '. The profile now holds ' + merged.codes.length + ' templates. Biom ID, wallet, balance, statement, linked accounts and points are untouched.' + esc(neuralNote) + esc(stampNote) + '</div>';
             Snd.chime();
             Snd.speak('Templates added');
@@ -4362,6 +4642,7 @@
         if (res.stopped) return 'Capture stopped — nothing was changed.';
         if (res.spoof && res.spoof.spoof) {
           DB.put('logs', { ts: Date.now(), personId: '', personName: '(re-registration attempt)', store: '', method: 'palm', measured: 'Spoof score ' + res.spoof.score.toFixed(2) + ' - ' + res.spoof.reasons.join('; '), result: 'Spoof / Screen Replay Detected' });
+          Sync.noteScan({ kind: 're-register', profileName: '', biomId: '', result: 'Spoof / Screen Replay Detected' });
           return 'Spoof / Screen Replay Detected — the ' + stepName + ' capture showed a screen or a recording, not a live hand (' + res.spoof.reasons.join('; ') + '). Nothing was changed.';
         }
         if (!res.burst) return 'No capture burst ran in the ' + stepName + ' step' + (res.hint ? ' (' + res.hint + ')' : '') + ' — nothing was changed. Run the re-registration again.';
@@ -4422,6 +4703,11 @@
           measured: 'Owner re-registration: after the banking guard refused ' + pathNote + ', the owner confirmed (typed REPLACE) replacement of this profile\'s palm bank. Old bank: ' + oldEdcc + ' EDCC template(s), ' + oldNeural + ' PalmNet embedding(s). New bank: ' + codes.length + ' EDCC template(s), ' + (bank ? bank.embeddings.length : 0) + ' PalmNet embedding(s), hand recorded: ' + (hand || 'not determined') + '. Biom ID, wallet, balance, statement, linked accounts, limits and points unchanged.',
           result: 'Owner Re-registration' });
       }).then(function () {
+        // v56 Scan Sync: the replaced bank upserts and the
+        // re-registration record queues, from the same values the
+        // Logs event above carries.
+        Sync.noteProfile(updated);
+        Sync.noteScan({ kind: 're-register', profileName: person.name, biomId: person.id, hand: hand, result: 'Owner Re-registration' });
         recoveryPersonId = null;
         recoveryVia = null;
         reregPerson = null;
@@ -4572,6 +4858,13 @@
         var wiped = B.wipeBiomData(snap);
         return DB.clearAll().then(function () { return wiped; });
       }).then(function (wiped) {
+        // v56: the wipe also clears the Scan Sync prefs and the
+        // in-memory outbox (the persisted outbox is a meta row,
+        // already erased by clearAll above). NO delete-all record
+        // is sent: the queue that would carry it is wiped with
+        // everything else, by design (see the Sync section).
+        ['biomSyncEndpoint', 'biomSyncDeviceKey', 'biomSyncLabel', 'biomSyncOn'].forEach(function (k) { try { localStorage.removeItem(k); } catch (e) {} });
+        Sync.reset();
         try { localStorage.setItem(DV_KEY, APP_DATA_VERSION); } catch (e) {}
         try { localStorage.setItem(DBV_KEY, APP_DATA_VERSION); } catch (e) {}
         closePanel();
@@ -4589,6 +4882,7 @@
     });
   }
   wireWipeData();
+  wireSyncSettings();
 
   /* ---------------- Install (PWA) ---------------------------------------- */
   var deferredPrompt = null;
@@ -4610,5 +4904,12 @@
   syncCamToggle('terminal');
   ['enrollPalm', 'terminal'].forEach(function (g) { syncFlashToggle(g); });
   fillStoreSelects();
-  DB.open().then(function () { return migrateDbStores(); }).then(function () { renderDashboard(); fillTerminalPeople(); renderWallet(); });
+  DB.open().then(function () { return migrateDbStores(); }).then(function () { renderDashboard(); fillTerminalPeople(); renderWallet(); })
+    .then(function () {
+      // v56 Scan Sync boot: load the persisted outbox, paint the
+      // settings card, and attempt a background flush. When sync
+      // is off or unconfigured every step here is a no-op.
+      fillSyncSettings();
+      return Sync.ensureLoaded();
+    }).then(function () { return Sync.flush(); }).catch(function () {});
 })();

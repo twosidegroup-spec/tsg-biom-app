@@ -4499,6 +4499,55 @@
     return { disabled: false, applyTorch: false, note: o.prefOn ? FLASH_NOTE_FRONT : '' };
   }
 
+  /* ================= Scan Sync record builders (v56) ============
+     Pure builders for the two record shapes the Scan Sync posts
+     to the owner's own TSG Biom API (see the v56 note in the
+     migration chain below). They build from the SAME measured
+     values the Logs entry / Field Test record of the event
+     carries — the app calls them in the same closure that writes
+     the log, so the synced record and the on-device record can
+     never disagree (the v53 card<->log equality discipline,
+     extended to the wire). The app adds id, ts, deviceLabel,
+     modelId and appVersion around these cores.
+
+     Templates only, never images: the profile record carries the
+     stored bank's packed EDCC codes and PalmNet embeddings (the
+     base64 strings already on the person record) plus the model
+     stamp — exactly what the API's profile shape whitelists. */
+  var SYNC_SCAN_KINDS = ['enrol', 'verify', 'identify', 'wallet-open', 'money-auth', 'topup', 're-register', 'delete-all', 'field-test'];
+  function syncScoreOrNull(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
+  function syncScanRecord(fields) {
+    if (!fields || typeof fields !== 'object') return null;
+    if (SYNC_SCAN_KINDS.indexOf(fields.kind) === -1) return null;
+    return {
+      kind: fields.kind,
+      profileName: typeof fields.profileName === 'string' ? fields.profileName : '',
+      biomId: typeof fields.biomId === 'string' ? fields.biomId : '',
+      hand: fields.hand === 'left' || fields.hand === 'right' ? fields.hand : null,
+      edccScore: syncScoreOrNull(fields.edccScore),
+      palmnetScore: syncScoreOrNull(fields.palmnetScore),
+      result: typeof fields.result === 'string' ? fields.result : ''
+    };
+  }
+  function syncProfileRecord(person, updatedTs) {
+    if (!person || typeof person !== 'object' || !person.id) return null;
+    var prof = person.palmProfile;
+    if (!prof || typeof prof !== 'object') return null;
+    var codes = Array.isArray(prof.codes) ? prof.codes.filter(function (c) { return typeof c === 'string'; }) : [];
+    var neural = prof.neural && typeof prof.neural === 'object' ? prof.neural : null;
+    var embs = neural && Array.isArray(neural.embeddings) ? neural.embeddings.filter(function (c) { return typeof c === 'string'; }) : [];
+    if (!codes.length && !embs.length) return null; // no bank — nothing to upsert
+    return {
+      biomId: person.id,
+      name: typeof person.name === 'string' ? person.name : '',
+      hand: palmProfileHand(prof),
+      edccCodes: codes,
+      neuralEmbeddings: embs,
+      neuralModel: neural && typeof neural.model === 'string' ? neural.model : '',
+      updatedTs: typeof updatedTs === 'number' && isFinite(updatedTs) ? updatedTs : null
+    };
+  }
+
   /* ================= Stored-data migration (v38) =================
      STANDING RULE (the Chairman's order, 2026-11-23): "from now keep
      data dont wipe". App updates MIGRATE the on-device store forward
@@ -4735,8 +4784,31 @@
      the step is therefore the identity, and a v54 store —
      neural banks of either stamp, hand stamps, wallet
      balance, statement and linked accounts included —
-     opens under v55 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55'];
+     opens under v55 byte-identical.
+
+     v55 -> v56 is an ADOPTION: v56 changes no stored field,
+     no threshold, bar, fusion, guard leg or gate, and no
+     model byte. It adds the Scan Sync (the Chairman's order
+     2026-11-24 22:20 — "make a connection to u whenever i
+     scan palm it will be seen by u"): when the owner turns
+     it ON in More and points it at his own TSG Biom API,
+     every event that already writes a Logs entry or a Field
+     Test record also queues a scan record for that server,
+     and every bank change queues a profile upsert — the
+     encrypted templates only, never an image. Sync is
+     DEFAULT OFF and, when off or unconfigured, the app is
+     v55 exactly: zero network calls, zero behaviour change.
+     Sync state does not live in these four stores' row
+     shapes: the preferences are device localStorage prefs
+     (like the Field Test toggles) and the outbox is one
+     'syncOutbox' meta row whose VALUE the migration never
+     interprets — a store written by v55 simply lacks that
+     row, which every reader treats as an empty queue. The
+     step is therefore the identity, and a v55 store —
+     neural banks of either stamp, hand stamps, wallet
+     balance, statement and linked accounts included —
+     opens under v56 byte-identical. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -4754,6 +4826,7 @@
     'v53': function (snap) { return snap; },
     'v54': function (snap) { return snap; },
     'v55': function (snap) { return snap; },
+    'v56': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
@@ -5048,6 +5121,9 @@
     FLASH_NOTE_FRONT: FLASH_NOTE_FRONT,
     FLASH_NOTE_PENDING: FLASH_NOTE_PENDING,
     migrateBiomData: migrateBiomData,
+    syncScanRecord: syncScanRecord,
+    syncProfileRecord: syncProfileRecord,
+    SYNC_SCAN_KINDS: SYNC_SCAN_KINDS,
     wipeBiomData: wipeBiomData,
     emptyBiomDataSnapshot: emptyBiomDataSnapshot,
     BIOM_DATA_VERSIONS: BIOM_DATA_VERSIONS,

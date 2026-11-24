@@ -173,7 +173,19 @@
    so a v54 store — neural banks of either stamp included —
    opens under v55 byte-identical. The v55 section below
    proves exactly that, with one stale-stamped and one
-   current-stamped bank side by side. */
+   current-stamped bank side by side.
+
+   Extended for v56 (2026-11-24): the chain gains 'v56' — an
+   ADOPTION step. v56 changes no stored field; it adds the
+   Scan Sync (default OFF): scan records and encrypted palm
+   banks mirror to the owner's own TSG Biom API when he turns
+   it on. Sync preferences are localStorage prefs and the
+   outbox is one 'syncOutbox' meta row whose value the
+   migration never interprets, so a v55 store — with or
+   without that row — opens under v56 byte-identical, and
+   with sync off the app behaves exactly as v55 (proven in
+   v56-sync.test.js). The v56 section below proves the
+   adoption on the two-stamp store carrying a queued outbox. */
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -295,8 +307,8 @@ check('MIGRATE a store with a missing logs array keeps the people', Array.isArra
    its migration step is an adoption like v38's. A store written by
    v38 (and one written by v37, through both steps) must open under
    v39 with the person, codes and points intact and still verify. */
-check('CHAIN v55 is the newest link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v55' &&
-  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40,v41,v42,v43,v44,v45,v46,v47,v48,v49,v50,v51,v52,v53,v54,v55', B.BIOM_DATA_VERSIONS.join(','));
+check('CHAIN v56 is the newest link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v56' &&
+  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40,v41,v42,v43,v44,v45,v46,v47,v48,v49,v50,v51,v52,v53,v54,v55,v56', B.BIOM_DATA_VERSIONS.join(','));
 const mig39 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v38', 'v39');
 check('MIGRATE v38->v39 runs the v39 step', mig39.appliedSteps.indexOf('v39') !== -1, mig39.appliedSteps.join(','));
 check('MIGRATE v38->v39 is an adoption: no store rewritten', mig39.changed === false && mig39.changedStores.length === 0,
@@ -799,6 +811,35 @@ const migAgain55 = B.migrateBiomData(mig55.snapshot, 'v55', 'v55');
 check('MIGRATE is idempotent at v55', migAgain55.appliedSteps.length === 0 && migAgain55.changed === false &&
   migAgain55.snapshot.people[0].wallet.balance === 450);
 
+/* ---------- v56: Scan Sync — a pure adoption -------------------
+   v56 changes no stored field. Sync preferences are localStorage
+   prefs (never in these stores) and the outbox is one
+   'syncOutbox' meta row whose VALUE the migration never
+   interprets. The store below is the v55 two-stamp store PLUS a
+   queued outbox row: the adoption must leave every byte —
+   both bank stamps, the wallet, and the queued items —
+   exactly as it found them. */
+const v56Store = JSON.parse(JSON.stringify(v55Store));
+v56Store.meta = (v56Store.meta || []).concat([{ key: 'syncOutbox', value: [{ type: 'scan', record: { id: 'q1', ts: 1764000000000, kind: 'verify', biomId: 'TSG-BIO-1', result: 'Verified' } }] }]);
+const v56Before = JSON.stringify(v56Store);
+const mig56 = B.migrateBiomData(v56Store, 'v55', 'v56');
+check('MIGRATE v55->v56 runs the v56 step', mig56.appliedSteps.indexOf('v56') !== -1, mig56.appliedSteps.join(','));
+check('MIGRATE v55->v56 rewrites NOTHING (pure adoption — banks, wallet and the queued outbox all survive byte-identical)',
+  mig56.changed === false && JSON.stringify(mig56.snapshot) === v56Before,
+  'changedStores=' + JSON.stringify(mig56.changedStores));
+check('SURVIVE v56 both bank stamps and the outbox row are intact',
+  mig56.snapshot.people[0].palmProfile.neural.model === 'palmnet-v1' &&
+  mig56.snapshot.people[1].palmProfile.neural.model === 'palmnet-r3-ep12' &&
+  mig56.snapshot.meta.some(function (r) { return r.key === 'syncOutbox' && r.value.length === 1 && r.value[0].record.id === 'q1'; }));
+const migChain56 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v37', 'v56');
+check('MIGRATE v37->v56 runs all nineteen steps in order', migChain56.appliedSteps.join(',') === 'v38,v39,v40,v41,v42,v43,v44,v45,v46,v47,v48,v49,v50,v51,v52,v53,v54,v55,v56', migChain56.appliedSteps.join(','));
+check('MIGRATE v37->v56 keeps the person, gains the wallet, flags the palm',
+  migChain56.snapshot.people.length === 1 && migChain56.snapshot.people[0].loyaltyPoints === 137 &&
+  migChain56.snapshot.people[0].wallet.balance === 0 && migChain56.snapshot.people[0].palmProfile.format === 'legacy');
+const migAgain56 = B.migrateBiomData(mig56.snapshot, 'v56', 'v56');
+check('MIGRATE is idempotent at v56', migAgain56.appliedSteps.length === 0 && migAgain56.changed === false &&
+  migAgain56.snapshot.people[0].wallet.balance === 450);
+
 /* ---------- the shipped app source carries no AUTOMATIC wipe -------
    v46 note: the only erase in the app is the owner's confirmed
    Delete All Data action (DB.clearAll + B.wipeBiomData, wired in
@@ -806,12 +847,12 @@ check('MIGRATE is idempotent at v55', migAgain55.appliedSteps.length === 0 && mi
    and is still pinned here: deleting the whole database and
    removing store keys, the retired update-time wipe mechanics. */
 const appSrc = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
-check('APP declares the current data version (v55)', appSrc.indexOf("APP_DATA_VERSION = 'v55'") !== -1);
+check('APP declares the current data version (v56)', appSrc.indexOf("APP_DATA_VERSION = 'v56'") !== -1);
 check('APP startup runs the migration', appSrc.indexOf('migrateBiomData') !== -1 && appSrc.indexOf('migrateDbStores') !== -1);
 check('APP contains no database deletion (the retired wipe)', appSrc.indexOf('deleteDatabase') === -1);
 check('APP contains no store-key removal (the retired wipe)', !/removeItem\(\s*'tsgbiom_/.test(appSrc));
 const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
-check('APP shell is v55', swSrc.indexOf('tsg-biom-shell-v55') !== -1);
+check('APP shell is v56', swSrc.indexOf('tsg-biom-shell-v56') !== -1);
 
 console.log(fail === 0 ? 'ALL MIGRATION TESTS PASSED (' + pass + ')' : fail + ' FAILURES, ' + pass + ' passed');
 process.exit(fail === 0 ? 0 : 1);
