@@ -1,9 +1,9 @@
 {
   "model": "palmnet.onnx",
   "format": "onnx-single-file-base64-parts",
-  "bytes": 4577641,
-  "sha256": "3399eb47115a6a4cdbb9f8dde7b69a2a29c131d051b07cc2de2eecf0d84910b5",
-  "base64Chars": 6103524,
+  "bytes": 4317738,
+  "sha256": "b669eb67cd470927e90db8d1bc211241e9457baf6380ef9374f084a2b9cc4ec7",
+  "base64Chars": 5756984,
   "parts": [
     "palmnet.b64.part00",
     "palmnet.b64.part01",
@@ -13,5 +13,7 @@
     "palmnet.b64.part05",
     "palmnet.b64.part06"
   ],
-  "note": "PalmNet neural palmprint model (MobileNetV3-Small + ArcFace, 256-d embedding), trained and verified in PalmNet-Bench (~/workspace/palmnet-bench). Stored as base64 text parts because the repo snapshot-push channel carries UTF-8 text only; the app fetches the parts, concatenates, base64-decodes and verifies length + SHA-256 before creating the ONNX session. The original two-file export (palmnet.onnx + palmnet.onnx.data, 4,583,023 B) produces bit-identical embeddings to this single-file inline (verified max abs diff 0.0 on EVAL ROIs)."
+  "modelId": "palmnet-r3-ep12",
+  "neuralThreshold": 0.5895,
+  "note": "PalmNet neural palmprint model, Round 3 snapshot (MobileNetV3-Small + ArcFace, 256-d embedding): the Round 3 trainer's selected best checkpoint (epoch 12, clean EVAL EER 0.0012%, EER threshold 0.5895), copied while Round 3 training continued in the background and integrated early by the Chairman's order 2026-11-24. Full measurement: ~/workspace/palmnet-bench/round3/integration-v54/measurement.md. Stored as base64 text parts because the repo snapshot-push channel carries UTF-8 text only; the app fetches the parts, concatenates, base64-decodes and verifies length + SHA-256 before creating the ONNX session. PyTorch <-> ONNX parity on 24 EVAL ROIs: max abs diff 1.07e-06."
 }
