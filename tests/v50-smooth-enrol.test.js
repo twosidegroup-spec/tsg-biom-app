@@ -222,9 +222,16 @@ function walletChecks() {
 
 /* ---------------- 6. versions + migration ---------------------- */
 function versionChecks() {
-  check('VERSION app data version is v50', appSrc.indexOf("APP_DATA_VERSION = 'v50'") !== -1);
-  check('VERSION shell is v50', swSrc.indexOf('tsg-biom-shell-v50') !== -1);
-  check('MIGRATION v50 is the newest chain link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v50');
+  // v51: the three absolute pins below were converted to the
+  // version-coherence form (the v48/v49 pattern) when v51
+  // shipped — v50 remains IN the chain as an adoption step; the
+  // living current-version pins are in v38-migration + the v51
+  // suite. The v49->v50 adoption proof below is unchanged.
+  const appVer = (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1];
+  const shellVer = (swSrc.match(/tsg-biom-shell-(v\d+)/) || [])[1];
+  check('VERSIONS app data version and shell version agree', !!appVer && appVer === shellVer, appVer + ' vs ' + shellVer);
+  check('VERSIONS the agreed version is in the migration chain', B.BIOM_DATA_VERSIONS.indexOf(appVer) !== -1, appVer);
+  check('MIGRATION v50 remains in the chain as an adoption step', B.BIOM_DATA_VERSIONS.indexOf('v50') !== -1);
   const store = {
     people: [{ id: 'TSG-BIO-1', name: 'Rig', wallet: { balance: 450, statement: [{ kind: 'add', amount: 450 }], linkedAccounts: [{ id: 'a1' }] }, palmProfile: { v: 4, format: 'packed96', codes: ['QUJD'], neural: { v: 1, dim: 256, model: 'palmnet-v1', embeddings: ['QUJD'] } } }],
     logs: [{ ts: 1 }], transactions: [{ id: 'BIOM-PAY-1' }], meta: []

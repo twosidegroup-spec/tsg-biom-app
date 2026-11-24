@@ -2224,6 +2224,135 @@
     return 'No usable palmprint enrolled for this person - the stored palmprint data is missing or invalid.';
   }
 
+  /* ================= v51: hand separation =======================
+     Ordered 2026-11-24: the Chairman tests alone (his brother is
+     not always available), so his RIGHT hand must function as an
+     independent second identity ("Samir") for verification tests,
+     penetration tests and fine-tuning. Before v51 that was
+     impossible: every probe is also scored as its mirror twin
+     (the twin exists because front- and back-camera captures of
+     the SAME palm are mirror images — see palmprintProbePacked),
+     and a person's two hands are near-mirror images, so the
+     right palm matched the left palm's enrolment and the two
+     accounts collapsed into one identity.
+
+     v51 makes the hand part of the identity:
+       - enrolment and top-up record the palm's ANATOMICAL hand
+         on the profile (profile.hand: 'left' | 'right' | null);
+       - when the probe's hand and a profile's hand are BOTH
+         known and DIFFER, that profile is not a candidate at
+         all — excluded from 1:1 verify, from 1:N candidacy,
+         from the banking guard and from the impostor-max —
+         regardless of what the mirror twin would score;
+       - the twin itself is unchanged and keeps its purpose:
+         front/back camera tolerance for the SAME hand. It is
+         scored only inside a comparison the gate lets through
+         (same hand, or either hand unknown), which is exactly
+         the scoping the gate provides;
+       - a profile with hand = null (every pre-v51 profile) and
+         a probe whose hand cannot be determined both behave
+         EXACTLY as v50 — no exclusion, twin allowed. The first
+         guarded top-up that passes stamps a null-hand profile
+         with the capture's hand (app.js).
+
+     THE HANDEDNESS CONVENTION (palmAnatomicalHand). Landmarks
+     are MediaPipe's 21 points in image space (x right, y down,
+     normalised). Take the signed area of the knuckle triangle
+     wrist(0) -> index-MCP(5) -> pinky-MCP(17):
+
+       cross = (I - W) x (P - W)   (z-component)
+
+     For a PALM-FACING presentation (the palmar side toward the
+     camera — the only presentation this app enrols or matches:
+     the ROI, the encoder and the quality gates all read the
+     palm) in an UNMIRRORED image (a back-camera frame), the
+     anatomy reads directly:
+       cross < 0  ->  RIGHT hand   (index side sits image-right
+                                    of the pinky side: the thumb
+                                    of a right palm facing you
+                                    appears on your right)
+       cross > 0  ->  LEFT hand
+     A FRONT-camera frame is the mirror image of the back-camera
+     frame of the same presentation (the app's standing measured
+     fact — it is why the mirror twin exists), so for facing
+     'user' the reading flips. A DORSAL presentation (back of
+     the hand toward the camera) would also flip the reading;
+     it is out of scope by construction — a dorsal presentation
+     yields no palmprint ROI and can neither enrol nor match —
+     and the fixtures pin that property so it is known, not
+     discovered. In-plane rotation preserves the sign (rotation
+     preserves signed area); foreshortening shrinks |cross| but
+     cannot flip it short of folding the hand flat, so the
+     reading is stable across the presentations the app accepts.
+
+     CONFIDENCE: the reading is null (unknown — v50 behaviour)
+     when the landmarks are missing/degenerate, when the facing
+     is not reported, or when |cross| is within the noise band
+     of the knuckle span (HAND_CROSS_MIN_RATIO of span^2): a
+     frame too poor to read chirality from must not exclude
+     anyone. How often real scans land in that band is exactly
+     what the Field Test handGate records (app.js) will show. */
+  var HAND_CROSS_MIN_RATIO = 0.08; // |cross| below this x span^2 = chirality unreadable
+  function palmAnatomicalHand(landmarks, facing) {
+    if (facing !== 'user' && facing !== 'environment') return null;
+    if (!landmarks || landmarks.length !== 21) return null;
+    var w = landmarks[0], ix = landmarks[5], pk = landmarks[17];
+    if (!w || !ix || !pk) return null;
+    var wx = Number(w.x), wy = Number(w.y), ixX = Number(ix.x), ixY = Number(ix.y), pkX = Number(pk.x), pkY = Number(pk.y);
+    if (!isFinite(wx) || !isFinite(wy) || !isFinite(ixX) || !isFinite(ixY) || !isFinite(pkX) || !isFinite(pkY)) return null;
+    var span = Math.hypot(pkX - ixX, pkY - ixY);
+    if (!(span > 0.02)) return null;
+    var cross = (ixX - wx) * (pkY - wy) - (ixY - wy) * (pkX - wx);
+    if (Math.abs(cross) < HAND_CROSS_MIN_RATIO * span * span) return null;
+    var imageHand = cross < 0 ? 'right' : 'left';
+    if (facing === 'user') return imageHand === 'right' ? 'left' : 'right';
+    return imageHand;
+  }
+  /* MediaPipe's own handedness label as a CROSS-CHECK only (the
+     geometric reading above is the definition; this never gates
+     anything). MediaPipe computes its label assuming the input
+     image is a mirrored selfie view: a front-camera raw frame
+     is such an image, so for facing 'user' the label is already
+     anatomical; a back-camera frame is unmirrored, so the label
+     is the opposite of anatomical there. Anything unrecognised
+     reads null. */
+  function palmMpHandedness(label, facing) {
+    if (label !== 'Left' && label !== 'Right') return null;
+    if (facing !== 'user' && facing !== 'environment') return null;
+    var anatomical = label.toLowerCase();
+    if (facing === 'environment') anatomical = anatomical === 'left' ? 'right' : 'left';
+    return anatomical;
+  }
+  /* The hand a stored profile carries: 'left' | 'right', or
+     null when the profile predates v51 (or its capture could
+     not determine one) — null always means "no hand evidence",
+     never a third hand. */
+  function palmProfileHand(stored) {
+    if (!stored || typeof stored !== 'object') return null;
+    return (stored.hand === 'left' || stored.hand === 'right') ? stored.hand : null;
+  }
+  /* THE GATE: true exactly when both hands are known and they
+     differ. Any unknown side makes the comparison hand-blind,
+     which is the v50 behaviour. */
+  function handGateBlocks(probeHand, profileHand) {
+    var a = (probeHand === 'left' || probeHand === 'right') ? probeHand : null;
+    var b = (profileHand === 'left' || profileHand === 'right') ? profileHand : null;
+    return !!(a && b && a !== b);
+  }
+  /* A scan's probe hand from its frames' individual readings:
+     the strict majority of the KNOWN readings, or null when
+     there are none or the known readings tie — a scan that
+     cannot agree with itself about the hand excludes nobody. */
+  function palmConsensusHand(hands) {
+    var l = 0, r = 0;
+    (hands || []).forEach(function (h) {
+      if (h === 'left') l++;
+      else if (h === 'right') r++;
+    });
+    if (l === r) return null;
+    return l > r ? 'left' : 'right';
+  }
+
   /* The verify result for a completed comparison (shared by every
      palmprint verify path so the object shape never drifts). */
   function palmprintMatchResult(best) {
@@ -2272,6 +2401,26 @@
     };
     var profile = normalisePalmprintProfile(stored);
     if (!profile) return fail(palmprintProfileFailReason(stored), null);
+    // v51 HAND GATE: when the probe's hand (opts.probeHand) and
+    // this profile's recorded hand are both known and differ,
+    // the profile is not a candidate at all — the judgement is
+    // "excluded", returned before any template is scored, so
+    // the mirror twin never gets the chance to collapse the
+    // two hands into one identity. The result is a completed
+    // judgement (ok: true) that verifies nothing and carries
+    // no similarity: gated profiles contribute nothing to a
+    // best-score pick or an impostor-max. Either hand unknown
+    // => no gate, exactly the v50 behaviour.
+    if (opts && opts.probeHand) {
+      var profHand = palmProfileHand(stored);
+      if (handGateBlocks(opts.probeHand, profHand)) {
+        return {
+          ok: true, verified: false, similarity: null, threshold: PALMPRINT_THRESHOLD,
+          handGate: true, probeHand: opts.probeHand, profileHand: profHand,
+          reason: 'Hand gate: the scanned palm is the ' + opts.probeHand + ' hand, but this profile enrolled the ' + profHand + ' hand — the other hand is a different identity, so this profile was excluded without scoring.'
+        };
+      }
+    }
     var sane = [];
     (probes || []).forEach(function (w) { var words = palmprintPackedWords(w); if (words && palmprintPackedSane(words)) sane.push(words); });
     if (!sane.length) return fail('No real open palm with readable print detail was detected in this scan.', null);
@@ -3233,6 +3382,22 @@
     var out = { status: 'uncheckable', via: null, edccChecked: false, edccScore: null, neuralChecked: false, neuralScore: null };
     if (!profile || typeof profile !== 'object') return out;
     cand = cand || {};
+    // v51 HAND GATE (see the hand-separation section above):
+    // a capture whose hand is known and differs from the
+    // profile's recorded hand is definitively NOT this
+    // profile's palm — the guard fails it before any scoring,
+    // so the mirror twin cannot bank the other hand into this
+    // profile. out gains probeHand / profileHand / handGate so
+    // the caller can log the deciding evidence. Either hand
+    // unknown => the score-based guard below, exactly as v49.
+    out.probeHand = (cand.hand === 'left' || cand.hand === 'right') ? cand.hand : null;
+    out.profileHand = palmProfileHand(profile);
+    out.handGate = false;
+    if (handGateBlocks(out.probeHand, out.profileHand)) {
+      out.status = 'fail';
+      out.handGate = true;
+      return out;
+    }
     if (palmprintProfileFormat(profile) === 'packed96' && Array.isArray(cand.edccProbes)) {
       var sane = [];
       cand.edccProbes.forEach(function (w) {
@@ -3642,13 +3807,13 @@
     // toggle (no early exit; the answer carries the per-shift
     // log). The fast and multi-profile branches answer with their
     // stage-timing sink, as since v44.
-    var fns = [reflect101, resizeGrayBilinear, convolveSeparable, convolve2d, gaborKernelReal, palmprintKernels, palmprintEnhance, palmprintNormaliseRoi, palmprintEncode, palmprintCodeFromBase64, palmprintCodeBytes, palmprintCodeSane, popcount32, palmprintPackCode, palmprintPackedBytes, palmprintPackedWords, palmprintPackedFromBase64, palmprintUnpackCode, palmprintPackedSane, edccPackedScoreAtShift, palmprintPackedMatchWords, palmprintPackedMatch, palmprintPackedSimilarity, flipGrayHorizontal, palmprintProfileFormat, normalisePalmprintProfile, palmprintProfileFailReason, palmprintMatchResult, palmprintMatchPackedProfile, verifyPackedProbes, verifyPalmprintProfile, palmprintProbePacked, verifyPalmprintRois, verifyPalmprintRoisFast, verifyPalmprintProfilesRois];
+    var fns = [reflect101, resizeGrayBilinear, convolveSeparable, convolve2d, gaborKernelReal, palmprintKernels, palmprintEnhance, palmprintNormaliseRoi, palmprintEncode, palmprintCodeFromBase64, palmprintCodeBytes, palmprintCodeSane, popcount32, palmprintPackCode, palmprintPackedBytes, palmprintPackedWords, palmprintPackedFromBase64, palmprintUnpackCode, palmprintPackedSane, edccPackedScoreAtShift, palmprintPackedMatchWords, palmprintPackedMatch, palmprintPackedSimilarity, flipGrayHorizontal, palmprintProfileFormat, normalisePalmprintProfile, palmprintProfileFailReason, palmProfileHand, handGateBlocks, palmprintMatchResult, palmprintMatchPackedProfile, verifyPackedProbes, verifyPalmprintProfile, palmprintProbePacked, verifyPalmprintRois, verifyPalmprintRoisFast, verifyPalmprintProfilesRois];
     var body = fns.map(function (f) { return f.toString(); }).join('\n');
     var handler = 'onmessage=function(e){var d=e.data||{};var r=null;var rs=null;var tm=null;' +
       'try{' +
-      'if(d.profiles){tm={};rs=verifyPalmprintProfilesRois(d.profiles,d.liveRois,{exhaustive:!!d.exhaustive,timing:tm});}' +
-      'else if(d.fast){tm={};r=verifyPalmprintRoisFast(d.profile,d.liveRois,{exhaustive:!!d.exhaustive,timing:tm});}' +
-      'else{r=(d.liveRois?verifyPalmprintRois(d.profile,d.liveRois,{exhaustive:!!d.exhaustive}):verifyPalmprintProfile(d.profile,d.liveCodes,{exhaustive:!!d.exhaustive}));}' +
+      'if(d.profiles){tm={};rs=verifyPalmprintProfilesRois(d.profiles,d.liveRois,{exhaustive:!!d.exhaustive,timing:tm,probeHand:d.probeHand||null});}' +
+      'else if(d.fast){tm={};r=verifyPalmprintRoisFast(d.profile,d.liveRois,{exhaustive:!!d.exhaustive,timing:tm,probeHand:d.probeHand||null});}' +
+      'else{r=(d.liveRois?verifyPalmprintRois(d.profile,d.liveRois,{exhaustive:!!d.exhaustive,probeHand:d.probeHand||null}):verifyPalmprintProfile(d.profile,d.liveCodes,{exhaustive:!!d.exhaustive}));}' +
       '}catch(err){r=null;rs=null;tm=null;}' +
       'postMessage({id:d.id,result:r,results:rs,timing:tm});};';
     return consts + '\n' + body + '\n' + handler;
@@ -4268,8 +4433,18 @@
      fusion, guard or decision rule changes. The step is
      therefore the identity, and a v49 store — neural banks,
      wallet balance, statement and linked accounts included —
-     opens under v50 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50'];
+     opens under v50 byte-identical.
+
+     v50 -> v51 is an ADOPTION: v51 changes no stored field's
+     shape. It adds hand separation — a palm profile MAY gain an
+     optional hand field ('left' | 'right'), written only by
+     v51 enrolment and by the first guarded top-up that passes
+     on a profile that lacks one; readers treat a missing hand
+     as null (no hand evidence, v50 behaviour). Nothing needs
+     converting, so the step is the identity, and a v50 store —
+     neural banks, wallet balance, statement and linked
+     accounts included — opens under v51 byte-identical. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -4282,6 +4457,7 @@
     'v48': function (snap) { return snap; },
     'v49': function (snap) { return snap; },
     'v50': function (snap) { return snap; },
+    'v51': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
@@ -4524,6 +4700,12 @@
     palmnetScoreProfile: palmnetScoreProfile,
     fusePalmVerifyResults: fusePalmVerifyResults,
     palmprintPackedCandidates: palmprintPackedCandidates,
+    palmAnatomicalHand: palmAnatomicalHand,
+    palmMpHandedness: palmMpHandedness,
+    palmProfileHand: palmProfileHand,
+    handGateBlocks: handGateBlocks,
+    palmConsensusHand: palmConsensusHand,
+    HAND_CROSS_MIN_RATIO: HAND_CROSS_MIN_RATIO,
     MONEY_CONFIRM_FRAMES: MONEY_CONFIRM_FRAMES,
     MONEY_MARGIN_EDCC: MONEY_MARGIN_EDCC,
     MONEY_MARGIN_NEURAL: MONEY_MARGIN_NEURAL,

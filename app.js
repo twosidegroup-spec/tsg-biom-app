@@ -41,7 +41,7 @@
      is skipped, nothing is deleted, and the next launch retries —
      the app boots on the un-migrated data either way, because its
      readers fail closed per record. */
-  var APP_DATA_VERSION = 'v50';
+  var APP_DATA_VERSION = 'v51';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -638,7 +638,13 @@
   }
 
   var PalmProc = {
-    hands: null, pending: null,
+    hands: null, pending: null, _mpLabel: null,
+    /* v51: MediaPipe's own handedness label from the most recent
+       results event, exposed for the cross-check in
+       analysePalmFrame (B.palmMpHandedness). Diagnostic only —
+       the anatomical hand that gates is the geometric reading
+       (B.palmAnatomicalHand); this label never decides anything. */
+    lastHandedness: function () { return this._mpLabel || null; },
     init: function () {
       if (this.hands) return;
       var self = this;
@@ -648,6 +654,7 @@
       this.hands.setOptions({ maxNumHands: 1, modelComplexity: 0, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
       this.hands.onResults(function (res) {
         var p = self.pending; self.pending = null;
+        self._mpLabel = (res.multiHandedness && res.multiHandedness[0] && res.multiHandedness[0].label) || null;
         if (p) p((res.multiHandLandmarks && res.multiHandLandmarks[0]) ? res.multiHandLandmarks[0] : null);
       });
     },
@@ -940,10 +947,14 @@
       this.init();
       var fast = !!(opts && opts.fast);
       var exhaustive = !!(opts && opts.exhaustive);
+      // v51: the probe's hand rides the call so the hand gate
+      // (B.verifyPackedProbes) judges candidacy identically on
+      // the worker and on the main-thread fallback.
+      var probeHand = (opts && (opts.probeHand === 'left' || opts.probeHand === 'right')) ? opts.probeHand : null;
       var mainThread = function () {
-        if (!fast) return B.verifyPalmprintRois(profile, liveRois, { exhaustive: exhaustive });
+        if (!fast) return B.verifyPalmprintRois(profile, liveRois, { exhaustive: exhaustive, probeHand: probeHand });
         var sink = {};
-        var r = B.verifyPalmprintRoisFast(profile, liveRois, { exhaustive: exhaustive, timing: sink });
+        var r = B.verifyPalmprintRoisFast(profile, liveRois, { exhaustive: exhaustive, timing: sink, probeHand: probeHand });
         if (r) r.timing = sink;
         return r;
       };
@@ -964,7 +975,7 @@
           if (r && msg.timing) r.timing = msg.timing;
           finishWith(r);
         };
-        try { self.w.postMessage({ id: id, profile: profile, liveRois: liveRois, fast: fast, exhaustive: exhaustive }); }
+        try { self.w.postMessage({ id: id, profile: profile, liveRois: liveRois, fast: fast, exhaustive: exhaustive, probeHand: probeHand }); }
         catch (e) { clearTimeout(to); delete self.pending[id]; finishWith(null); }
       });
     },
@@ -980,10 +991,14 @@
       // both sides of the worker boundary. opts.exhaustive disables
       // the shift early exit and carries per-shift logs back. The
       // stage-timing sink rides back as results.timing.
+      // v51: opts.probeHand rides along — the gate is per-profile
+      // inside the composition (each profile's own recorded hand
+      // is judged against the one probe hand).
       var exhaustive = !!(opts && opts.exhaustive);
+      var probeHand = (opts && (opts.probeHand === 'left' || opts.probeHand === 'right')) ? opts.probeHand : null;
       var mainThread = function () {
         var sink = {};
-        var rs = B.verifyPalmprintProfilesRois(profiles, liveRois, { exhaustive: exhaustive, timing: sink });
+        var rs = B.verifyPalmprintProfilesRois(profiles, liveRois, { exhaustive: exhaustive, timing: sink, probeHand: probeHand });
         rs.timing = sink;
         return rs;
       };
@@ -1004,7 +1019,7 @@
           if (rs && msg.timing) rs.timing = msg.timing;
           finishWith(rs);
         };
-        try { self.w.postMessage({ id: id, profiles: profiles, liveRois: liveRois, exhaustive: exhaustive }); }
+        try { self.w.postMessage({ id: id, profiles: profiles, liveRois: liveRois, exhaustive: exhaustive, probeHand: probeHand }); }
         catch (e) { clearTimeout(to); delete self.pending[id]; finishWith(null); }
       });
     }
@@ -1381,9 +1396,33 @@
     } catch (e) {}
   }
 
+  /* The facing of the camera ACTUALLY delivering frames right
+     now, read from the live track (v51): the hand computation
+     needs the true facing, and Cam.start's constraint ladder can
+     land on a fallback camera, so the requested facing in
+     camFacing[] is not evidence — the track's own settings are.
+     Returns 'user' | 'environment' | null (unreported: the hand
+     then reads null and the scan behaves exactly as v50). */
+  function liveFacingMode() {
+    try {
+      var track = Cam.stream && Cam.stream.getVideoTracks()[0];
+      var f = track && track.getSettings && track.getSettings().facingMode;
+      if (f === 'user' || f === 'environment') return f;
+    } catch (e) {}
+    return null;
+  }
+
   /* One streamed frame, analysed: landmarks, openness, EDCC codes
      (aligned + mirror), texture/sharpness, and the palm pose used by
-     passive liveness. Same frame-result shape the clip pipeline used. */
+     passive liveness. Same frame-result shape the clip pipeline used.
+     v51: the frame also carries its hand evidence — hand, the
+     ANATOMICAL hand from the landmark chirality corrected by the
+     live camera's facing (B.palmAnatomicalHand; null when the
+     frame cannot support a reading), and mpHand, MediaPipe's own
+     label converted the same way (B.palmMpHandedness) as a
+     cross-check that never gates anything. Enrolment, top-up and
+     every scan path read the hand from HERE, so the convention
+     is computed one way everywhere. */
   function analysePalmFrame(frame) {
     // v44: per-stage timing rides the frame result (lmMs = landmark
     // inference, encMs = ROI warp + base EDCC encodes) so the scan
@@ -1392,7 +1431,10 @@
     var tLm = performance.now();
     return PalmProc.landmarks(frame).then(function (lm) {
       var lmMs = performance.now() - tLm;
-      if (!lm) return { openness: null, descriptor: null, code: null, codeM: null, roi: null, sharpness: 0, texture: null, spread: null, tilt: null, pose: null, framing: null, lm: null, lmMs: lmMs, encMs: 0 };
+      if (!lm) return { openness: null, descriptor: null, code: null, codeM: null, roi: null, sharpness: 0, texture: null, spread: null, tilt: null, pose: null, framing: null, lm: null, hand: null, mpHand: null, lmMs: lmMs, encMs: 0 };
+      var facing = liveFacingMode();
+      var hand = B.palmAnatomicalHand(lm, facing);
+      var mpHand = B.palmMpHandedness(PalmProc.lastHandedness(), facing);
       var openness = B.palmOpenness(lm);
       var descriptor = B.palmDescriptorFromLandmarks(lm);
       var meas = descriptor ? palmFrameMeasures(frame, frame.width, frame.height, lm) : { texture: null, sharpness: 0 };
@@ -1410,7 +1452,7 @@
       var tEnc = performance.now();
       var codes = (typeof openness === 'number' && openness >= B.PALM_LIVE_OPEN_MIN) ? palmCodesFromFrame(frame, lm) : null;
       var encMs = performance.now() - tEnc;
-      return { openness: openness, descriptor: descriptor, code: codes ? codes.code : null, codeM: codes ? codes.codeM : null, roi: codes ? codes.roi : null, sharpness: meas.sharpness, texture: meas.texture, spread: B.palmSpread(lm), tilt: B.palmTilt(lm), pose: B.palmFramePose(lm), framing: B.palmFramingHint(lm), lm: lm, lmMs: lmMs, encMs: encMs };
+      return { openness: openness, descriptor: descriptor, code: codes ? codes.code : null, codeM: codes ? codes.codeM : null, roi: codes ? codes.roi : null, sharpness: meas.sharpness, texture: meas.texture, spread: B.palmSpread(lm), tilt: B.palmTilt(lm), pose: B.palmFramePose(lm), framing: B.palmFramingHint(lm), lm: lm, hand: hand, mpHand: mpHand, lmMs: lmMs, encMs: encMs };
     });
   }
 
@@ -1784,6 +1826,25 @@
     var frameNeural = {}; // frameIdx -> neural cosine | null (absent = still pending)
     var frameRoiByIdx = {}; // frameIdx -> the frame's ROI array
     var bestNeural = null;
+    /* v51 HAND SEPARATION state: this profile's recorded hand
+       (null for every pre-v51 profile) and the scan's probe hand
+       — the consensus of the analysed frames' own readings
+       (B.palmConsensusHand; null when the frames cannot agree,
+       which excludes nobody). The EDCC gate itself lives inside
+       B.verifyPackedProbes (the probe's hand rides each match
+       call); the neural path is gated HERE by never scoring a
+       gated comparison, because PalmNet scoring is app-side.
+       Either side unknown => exactly the v50 scan. */
+    var profileHand = B.palmProfileHand(person.palmProfile);
+    function scanHand() { return B.palmConsensusHand(frames.map(function (f) { return f.hand; })); }
+    function handEvidenceStr(probeHand) {
+      if (probeHand && profileHand) {
+        return ' Probe hand: ' + probeHand + '; profile hand: ' + profileHand + (probeHand !== profileHand ? ' — the other hand is a different identity, so this profile was excluded by the hand gate.' : '.');
+      }
+      if (probeHand) return ' Probe hand: ' + probeHand + '; profile hand not recorded (pre-v51 enrolment) — matched exactly as before.';
+      if (profileHand) return ' Probe hand could not be determined; profile hand: ' + profileHand + ' — no hand exclusion applied.';
+      return '';
+    }
     function tryWin(frameIdx) {
       if (frameEdcc[frameIdx] === undefined) return;
       var ns = frameNeural[frameIdx] === undefined ? null : frameNeural[frameIdx];
@@ -1803,7 +1864,7 @@
         return;
       }
       if (fused.verified) {
-        win = { res: fused, rois: [frameRoiByIdx[frameIdx]], fast: false, frameIdx: frameIdx };
+        win = { res: fused, rois: [frameRoiByIdx[frameIdx]], fast: false, frameIdx: frameIdx, probeHand: frames[frameIdx] ? frames[frameIdx].hand : null };
       }
     }
     function neuralScoreForRois(rois) {
@@ -1814,9 +1875,12 @@
         return probes.length ? B.palmnetScoreEmbeddings(neuralBanked, probes) : null;
       }).catch(function () { return null; });
     }
-    function neuralImpostorMaxFor(rois) {
+    function neuralImpostorMaxFor(rois, probeHand) {
+      // v51: profiles the hand gate excludes are not candidates
+      // for the impostor-max either — a cross-hand profile's
+      // twin-driven score must not shrink the money margin.
       var others = (people || []).filter(function (p) {
-        return p.id !== person.id && B.palmnetProfileSane(p.palmProfile);
+        return p.id !== person.id && B.palmnetProfileSane(p.palmProfile) && !B.handGateBlocks(probeHand, B.palmProfileHand(p.palmProfile));
       });
       if (!others.length || !rois || !rois.length) return Promise.resolve(null);
       return Promise.all(rois.map(function (roi) { return PalmNet.embedPair(roi); })).then(function (pairs) {
@@ -1850,17 +1914,20 @@
     }
 
     function finish(out) { return out; }
-    function impostorMaxFor(rois) {
+    function impostorMaxFor(rois, probeHand) {
       // v35: one multi-profile call — the probe codes are encoded
       // once and scored against every other enrolled profile,
       // instead of a full 50-encode expansion per person. Each
       // per-profile result is the exact one the v34 chain computed;
       // the max taken over them is unchanged.
+      // v51: the probe hand rides the call — a profile the hand
+      // gate excludes returns no similarity and so contributes
+      // nothing to the max (it is not an impostor candidate).
       var others = (people || []).filter(function (p) {
         return p.id !== person.id && B.palmprintProfileSane(p.palmProfile);
       });
       if (!others.length) return Promise.resolve(null);
-      return Match.verifyRoisMulti(others.map(function (p) { return p.palmProfile; }), rois).then(function (results) {
+      return Match.verifyRoisMulti(others.map(function (p) { return p.palmProfile; }), rois, { probeHand: probeHand || null }).then(function (results) {
         var cur = null;
         (results || []).forEach(function (ro) {
           var s = ro && typeof ro.similarity === 'number' ? ro.similarity : null;
@@ -1871,22 +1938,26 @@
     }
     function spoofOut(sp) {
       logVerification(person, 'palm', 'Spoof score ' + sp.score.toFixed(2) + ' - ' + sp.reasons.join('; '), 'Spoof / Screen Replay Detected');
-      fieldRec(null, null, 'fail', 'rejected', sp.lightTag);
+      fieldRec(null, null, 'fail', 'rejected', sp.lightTag, { probeHand: scanHand(), profileHand: profileHand });
       Snd.buzz();
       return finish({ fail: 'Spoof / Screen Replay Detected — the scan showed a screen or a recording, not a live hand (' + sp.reasons.join('; ') + '). Nothing was verified. Present the real hand, live in front of the camera.' });
     }
     function livenessFailOut(lv) {
-      fieldRec(null, null, 'fail', 'rejected', tracker.state().lightTag);
+      fieldRec(null, null, 'fail', 'rejected', tracker.state().lightTag, { probeHand: scanHand(), profileHand: profileHand });
       Snd.buzz();
       return finish({ fail: lv.verdict === 'static'
         ? 'Liveness check failed: the palm did not move naturally at all — a still photo or a frozen image cannot be used. Nothing was verified. Present the real hand, held live in front of the camera.'
         : 'Liveness check failed: the view changed too abruptly for one held hand. Nothing was verified. Hold one open palm steady in front of the camera.' });
     }
     function verifiedOut() {
-      return impostorMaxFor(win.rois).then(function (impMax) {
-        return neuralImpostorMaxFor(win.rois).then(function (nImpMax) {
-          var extras = { neuralScore: typeof win.res.neuralScore === 'number' ? win.res.neuralScore : null, neuralImpostorMax: nImpMax, acceptedBy: win.res.acceptedBy || null };
-          var measured = 'Palmprint similarity ' + (typeof win.res.similarity === 'number' ? win.res.similarity.toFixed(3) : 'n/a') + ' (threshold ' + win.res.threshold + ', 1-snap packed match: the winning frame\'s bit-packed template scored by the 5-shift popcount matcher against ' + person.palmProfile.codes.length + ' enrolled packed templates), passive liveness passed (natural micro-shift across rapid frames), Show & Pay streaming scan.' + neuralMeasuredStr(win.res) + ' Scan latency: ' + (Date.now() - t0) + ' ms.' + shiftLogStr(win.res) + ' ' + diagStr();
+      // v51: the impostor-maxima are judged against the winning
+      // frame's hand (the scan consensus as fallback) — profiles
+      // the hand gate excludes contribute nothing to either max.
+      var winHand = win.probeHand || scanHand();
+      return impostorMaxFor(win.rois, winHand).then(function (impMax) {
+        return neuralImpostorMaxFor(win.rois, winHand).then(function (nImpMax) {
+          var extras = { neuralScore: typeof win.res.neuralScore === 'number' ? win.res.neuralScore : null, neuralImpostorMax: nImpMax, acceptedBy: win.res.acceptedBy || null, probeHand: winHand, profileHand: profileHand };
+          var measured = 'Palmprint similarity ' + (typeof win.res.similarity === 'number' ? win.res.similarity.toFixed(3) : 'n/a') + ' (threshold ' + win.res.threshold + ', 1-snap packed match: the winning frame\'s bit-packed template scored by the 5-shift popcount matcher against ' + person.palmProfile.codes.length + ' enrolled packed templates), passive liveness passed (natural micro-shift across rapid frames), Show & Pay streaming scan.' + neuralMeasuredStr(win.res) + handEvidenceStr(winHand) + ' Scan latency: ' + (Date.now() - t0) + ' ms.' + shiftLogStr(win.res) + ' ' + diagStr();
           if (strictMoney) {
             // v49 margin rule, judged on the accepting system(s)
             // against the impostor-maxima computed just above for
@@ -1916,16 +1987,22 @@
       if (sp.spoof) return spoofOut(sp);
       var lv = B.passiveLivenessCheck(poses);
       var liveRois = B.selectPalmprintLiveRois(frames);
-      if (!liveRois) { fieldRec(null, null, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag); return finish({ fail: 'No usable open palm with readable print detail found in the scan. Nothing was verified. Show one open palm to the camera, fingers spread, in good light, and run the scan again. (' + analysed + ' frames scanned, ' + coded + ' produced a readable palm code.' + (lastHint ? ' Last guidance shown: ' + lastHint : '') + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr() + ')' }); }
-      return Match.verifyRois(person.palmProfile, liveRois, { exhaustive: fieldExhaustiveOn() }).then(function (res) {
+      if (!liveRois) { fieldRec(null, null, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag, { probeHand: scanHand(), profileHand: profileHand }); return finish({ fail: 'No usable open palm with readable print detail found in the scan. Nothing was verified. Show one open palm to the camera, fingers spread, in good light, and run the scan again. (' + analysed + ' frames scanned, ' + coded + ' produced a readable palm code.' + (lastHint ? ' Last guidance shown: ' + lastHint : '') + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr() + ')' }); }
+      // v51: the collected-set judgement is judged under the
+      // scan's consensus hand — the EDCC call carries it into the
+      // gate, and a gated profile is never embedded by PalmNet
+      // either (its neural score is forced to "no evidence").
+      var probeHand = scanHand();
+      var gated = B.handGateBlocks(probeHand, profileHand);
+      return Match.verifyRois(person.palmProfile, liveRois, { exhaustive: fieldExhaustiveOn(), probeHand: probeHand }).then(function (res) {
         // v47: the exact collected-set judgement is FUSED — the
         // EDCC result at its 0.32 bar OR the PalmNet cosine over
         // the same ROIs at its threshold (null when the neural
         // path has no evidence, which leaves res untouched).
-        return neuralScoreForRois(liveRois).then(function (nScore) {
+        return (gated ? Promise.resolve(null) : neuralScoreForRois(liveRois)).then(function (nScore) {
           var fused = B.fusePalmVerifyResults(res, nScore);
-          return impostorMaxFor(liveRois).then(function (impMax) {
-            return neuralImpostorMaxFor(liveRois).then(function (nImpMax) {
+          return impostorMaxFor(liveRois, probeHand).then(function (impMax) {
+            return neuralImpostorMaxFor(liveRois, probeHand).then(function (nImpMax) {
               if (fused.verified && lv.pass) {
                 if (strictMoney) {
                   // v49: the collected-set judgement matched (the
@@ -1935,7 +2012,7 @@
                   // the top-3 ROIs is not that evidence, and no
                   // streaming frame verified (win is null here).
                   // The strict rule blocks; nothing is authorised.
-                  fieldRec(fused.similarity, impMax, 'pass', 'verified', sp.lightTag, { neuralScore: nScore, neuralImpostorMax: nImpMax, acceptedBy: fused.acceptedBy || null, strictMoney: true, strictPass: false, strictBlock: 'frames' });
+                  fieldRec(fused.similarity, impMax, 'pass', 'verified', sp.lightTag, { neuralScore: nScore, neuralImpostorMax: nImpMax, acceptedBy: fused.acceptedBy || null, strictMoney: true, strictPass: false, strictBlock: 'frames', probeHand: probeHand, profileHand: profileHand });
                   Snd.buzz();
                   return finish({ fail: MONEY_STRICT_FAIL_MSG, strictMoney: { applied: true, pass: false, block: 'frames' } });
                 }
@@ -1951,8 +2028,13 @@
                 out = { ok: true, verified: false, similarity: fused.similarity, threshold: fused.threshold, neuralScore: fused.neuralScore, neuralThreshold: fused.neuralThreshold, acceptedBy: null, reason: 'The palm matched, but liveness could not be confirmed — no natural micro-movement was observed. Nothing was verified. Present the real hand, held live in front of the camera.' };
                 if (fused.shiftLog) out.shiftLog = fused.shiftLog;
               }
-              fieldRec(fused.similarity, impMax, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag, { neuralScore: nScore, neuralImpostorMax: nImpMax, acceptedBy: fused.acceptedBy || null });
-              var measured = 'Palmprint similarity ' + (typeof fused.similarity === 'number' ? fused.similarity.toFixed(3) : 'n/a') + ' (threshold ' + B.PALMPRINT_THRESHOLD + ', 1-snap packed match: ' + liveRois.length + ' live frames\' bit-packed templates scored by the 5-shift popcount matcher against ' + person.palmProfile.codes.length + ' enrolled packed templates), passive liveness ' + lv.verdict + ', Show & Pay streaming scan.' + neuralMeasuredStr(fused) + ' Scan latency: ' + (Date.now() - t0) + ' ms.' + shiftLogStr(fused) + ' Diagnostics: ' + analysed + ' frames scanned, ' + coded + ' with a readable code, best single-frame score ' + (matchState.best !== null ? matchState.best.toFixed(3) : 'n/a') + (bestNeural !== null ? ', best PalmNet cosine ' + bestNeural.toFixed(3) : '') + '.' + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr();
+              // v51: when the hand gate blocked this profile, the
+              // rejection was DECIDED by the exclusion (both
+              // systems gated) — the record says so via handGate.
+              var rejExtras = { neuralScore: nScore, neuralImpostorMax: nImpMax, acceptedBy: fused.acceptedBy || null, probeHand: probeHand, profileHand: profileHand };
+              if (gated) rejExtras.handGate = true;
+              fieldRec(fused.similarity, impMax, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag, rejExtras);
+              var measured = 'Palmprint similarity ' + (typeof fused.similarity === 'number' ? fused.similarity.toFixed(3) : 'n/a') + ' (threshold ' + B.PALMPRINT_THRESHOLD + ', 1-snap packed match: ' + liveRois.length + ' live frames\' bit-packed templates scored by the 5-shift popcount matcher against ' + person.palmProfile.codes.length + ' enrolled packed templates), passive liveness ' + lv.verdict + ', Show & Pay streaming scan.' + neuralMeasuredStr(fused) + handEvidenceStr(probeHand) + ' Scan latency: ' + (Date.now() - t0) + ' ms.' + shiftLogStr(fused) + ' Diagnostics: ' + analysed + ' frames scanned, ' + coded + ' with a readable code, best single-frame score ' + (matchState.best !== null ? matchState.best.toFixed(3) : 'n/a') + (bestNeural !== null ? ', best PalmNet cosine ' + bestNeural.toFixed(3) : '') + '.' + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr();
               return finish({ r: out, measured: measured, latencyMs: Date.now() - t0 });
             });
           });
@@ -2055,20 +2137,30 @@
               // it against the enrolled packed templates. The call
               // overlaps the NEXT frame's analysis instead of
               // blocking this frame's step (v37 pipelining, kept).
-              prevMatch = { roi: r.roi, frameIdx: myIdx, promise: Match.verifyRois(person.palmProfile, [r.roi], { fast: true, exhaustive: fieldExhaustiveOn() }) };
+              prevMatch = { roi: r.roi, frameIdx: myIdx, promise: Match.verifyRois(person.palmProfile, [r.roi], { fast: true, exhaustive: fieldExhaustiveOn(), probeHand: r.hand }) };
               // v47: the same patch is ALSO embedded by PalmNet,
               // off-thread and unpipelined — the score lands in
               // frameNeural whenever it lands and tryWin re-takes
               // this frame's fused decision with it. It never
               // delays the EDCC pipeline above.
+              // v51: a frame whose hand is known and differs from
+              // this profile's recorded hand is never embedded —
+              // the frame's neural slot is settled null at once
+              // (the twin-scope for PalmNet: the embedPair mirror
+              // only ever scores same-hand or unknown-hand
+              // comparisons).
               if (neuralBanked) {
                 frameRoiByIdx[myIdx] = r.roi;
-                PalmNet.embedPair(r.roi).then(function (pair) {
-                  var s = pair ? B.palmnetScoreEmbeddings(neuralBanked, pair) : null;
-                  frameNeural[myIdx] = s;
-                  if (s !== null && (bestNeural === null || s > bestNeural)) bestNeural = s;
-                  tryWin(myIdx);
-                });
+                if (B.handGateBlocks(r.hand, profileHand)) {
+                  frameNeural[myIdx] = null;
+                } else {
+                  PalmNet.embedPair(r.roi).then(function (pair) {
+                    var s = pair ? B.palmnetScoreEmbeddings(neuralBanked, pair) : null;
+                    frameNeural[myIdx] = s;
+                    if (s !== null && (bestNeural === null || s > bestNeural)) bestNeural = s;
+                    tryWin(myIdx);
+                  });
+                }
               }
             } else {
               applyMatch(null, null, myIdx);
@@ -2122,12 +2214,12 @@
           // two distinct verified frames before the cap — a money
           // authorisation needs that confirmation. Strict block,
           // not a liveness failure: the message says which.
-          fieldRec(win.res.similarity, null, 'pass', 'verified', sp.lightTag, { neuralScore: typeof win.res.neuralScore === 'number' ? win.res.neuralScore : null, neuralImpostorMax: null, acceptedBy: win.res.acceptedBy || null, strictMoney: true, strictPass: false, strictBlock: 'frames' });
+          fieldRec(win.res.similarity, null, 'pass', 'verified', sp.lightTag, { neuralScore: typeof win.res.neuralScore === 'number' ? win.res.neuralScore : null, neuralImpostorMax: null, acceptedBy: win.res.acceptedBy || null, strictMoney: true, strictPass: false, strictBlock: 'frames', probeHand: scanHand(), profileHand: profileHand });
           Snd.buzz();
           return finish({ fail: MONEY_STRICT_FAIL_MSG, strictMoney: { applied: true, pass: false, block: 'frames' } });
         }
         if (win) {
-          fieldRec(win.res.similarity, null, 'fail', 'rejected', sp.lightTag, { neuralScore: typeof win.res.neuralScore === 'number' ? win.res.neuralScore : null, neuralImpostorMax: null, acceptedBy: win.res.acceptedBy || null });
+          fieldRec(win.res.similarity, null, 'fail', 'rejected', sp.lightTag, { neuralScore: typeof win.res.neuralScore === 'number' ? win.res.neuralScore : null, neuralImpostorMax: null, acceptedBy: win.res.acceptedBy || null, probeHand: scanHand(), profileHand: profileHand });
           Snd.buzz();
           return finish({ fail: 'Liveness could not be confirmed: the palm matched, but no natural micro-movement was observed. Nothing was verified. Present the real hand, held live — do not use a photo or a recording.' });
         }
@@ -2247,7 +2339,7 @@
         var p = candidates[i];
         var fused = B.fusePalmVerifyResults(results[i] || null, scores ? scores[p.id] : null);
         if (!fused.verified) continue;
-        if (!strictMoney) { win = { person: p, res: fused, fast: false }; return; }
+        if (!strictMoney) { win = { person: p, res: fused, fast: false, frameIdx: frameIdx }; return; }
         // v49 strict: record this frame for this candidate; only
         // the SECOND distinct verified frame can confirm, and on
         // that frame the margin is judged against the other
@@ -2264,12 +2356,12 @@
           if (typeof ns === 'number' && (neuralOthers === null || ns > neuralOthers)) neuralOthers = ns;
         }
         var mc = B.moneyMarginCheck(fused, edccOthers, neuralOthers);
-        if (mc.pass) win = { person: p, res: fused, fast: false, strictMargin: mc };
+        if (mc.pass) win = { person: p, res: fused, fast: false, strictMargin: mc, frameIdx: frameIdx };
         else strictFail = { block: 'margin' };
         return;
       }
     }
-    function neuralScoresForRois(rois) {
+    function neuralScoresForRois(rois, probeHand) {
       if (!anyNeuralBank || !rois || !rois.length) return Promise.resolve(null);
       return Promise.all(rois.map(function (roi) { return PalmNet.embedPair(roi); })).then(function (pairs) {
         var probes = [];
@@ -2277,7 +2369,10 @@
         if (!probes.length) return null;
         var out = {};
         candidates.forEach(function (p) {
-          if (banksById[p.id]) out[p.id] = B.palmnetScoreEmbeddings(banksById[p.id], probes);
+          // v51: a candidate the hand gate excludes is not
+          // scored at all — its entry stays absent, which the
+          // fusion reads as "no neural evidence".
+          if (banksById[p.id] && !B.handGateBlocks(probeHand, B.palmProfileHand(p.palmProfile))) out[p.id] = B.palmnetScoreEmbeddings(banksById[p.id], probes);
         });
         return out;
       }).catch(function () { return null; });
@@ -2309,7 +2404,15 @@
         : 'Liveness check failed: the view changed too abruptly for one held hand. Nothing was verified. Hold one open palm steady in front of the camera.' };
     }
     function identifiedOut() {
-      var measured = 'Palmprint similarity ' + (typeof win.res.similarity === 'number' ? win.res.similarity.toFixed(3) : 'n/a') + ' (threshold ' + win.res.threshold + ', 1-snap packed match: the winning frame\'s bit-packed template scored by the 5-shift popcount matcher against ' + win.person.palmProfile.codes.length + ' enrolled packed templates), passive liveness passed (natural micro-shift across rapid frames), wallet identification scan (1:N over ' + candidates.length + ' enrolled palms).' + neuralMeasuredStrId(win.res) + ' Scan latency: ' + (Date.now() - t0) + ' ms.' + shiftLogStr(win.res) + ' ' + diagStr();
+      // v51: the measured string states the hand evidence — the
+      // winning frame's hand and the identified profile's hand.
+      var winHand = (typeof win.frameIdx === 'number' && frames[win.frameIdx]) ? frames[win.frameIdx].hand : null;
+      var winnerHand = B.palmProfileHand(win.person.palmProfile);
+      var handStrId = '';
+      if (winHand && winnerHand) handStrId = ' Probe hand: ' + winHand + '; identified profile hand: ' + winnerHand + '.';
+      else if (winHand) handStrId = ' Probe hand: ' + winHand + '; identified profile hand not recorded (pre-v51 enrolment).';
+      else if (winnerHand) handStrId = ' Probe hand could not be determined; identified profile hand: ' + winnerHand + ' — no hand exclusion applied.';
+      var measured = 'Palmprint similarity ' + (typeof win.res.similarity === 'number' ? win.res.similarity.toFixed(3) : 'n/a') + ' (threshold ' + win.res.threshold + ', 1-snap packed match: the winning frame\'s bit-packed template scored by the 5-shift popcount matcher against ' + win.person.palmProfile.codes.length + ' enrolled packed templates), passive liveness passed (natural micro-shift across rapid frames), wallet identification scan (1:N over ' + candidates.length + ' enrolled palms).' + neuralMeasuredStrId(win.res) + handStrId + ' Scan latency: ' + (Date.now() - t0) + ' ms.' + shiftLogStr(win.res) + ' ' + diagStr();
       if (strictMoney) {
         measured += ' Money authorisation rule applied: the match was confirmed on ' + moneyGate.verifiedFrames(win.person.id) + ' distinct frames and beat every other enrolled palm by at least the money margin (EDCC ' + B.MONEY_MARGIN_EDCC + ' / PalmNet ' + B.MONEY_MARGIN_NEURAL + ') — authorised under the strict rule.';
         return { person: win.person, r: win.res, measured: measured, latencyMs: Date.now() - t0, strictMoney: { applied: true, pass: true } };
@@ -2324,13 +2427,17 @@
       if (!liveRois) {
         return { fail: 'No usable open palm with readable print detail found in the scan. Nothing was verified. Show one open palm to the camera, fingers spread, in good light, and run the scan again. (' + analysed + ' frames scanned, ' + coded + ' produced a readable palm code.' + (lastHint ? ' Last guidance shown: ' + lastHint : '') + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr() + ')' };
       }
-      return Match.verifyRoisMulti(candidates.map(function (p) { return p.palmProfile; }), liveRois, { exhaustive: fieldExhaustiveOn() }).then(function (results) {
+      // v51: the collected-set judgement runs under the scan's
+      // consensus hand — the EDCC composition gates per profile,
+      // and gated candidates are not PalmNet-scored either.
+      var probeHand = B.palmConsensusHand(frames.map(function (f) { return f.hand; }));
+      return Match.verifyRoisMulti(candidates.map(function (p) { return p.palmProfile; }), liveRois, { exhaustive: fieldExhaustiveOn(), probeHand: probeHand }).then(function (results) {
         // v47: fuse each candidate's exact result with its PalmNet
         // cosine over the same ROIs. A candidate verified by
         // EITHER system at its own bar wins over the EDCC-best
         // also-ran; with no neural evidence the fused list is the
         // EDCC list and the choice below is the v46 choice.
-        return neuralScoresForRois(liveRois).then(function (scoresById) {
+        return neuralScoresForRois(liveRois, probeHand).then(function (scoresById) {
           var fusedList = (results || []).map(function (ro, i) {
             return B.fusePalmVerifyResults(ro, scoresById ? scoresById[candidates[i].id] : null);
           });
@@ -2358,7 +2465,13 @@
           if (bestVerified && !lv.pass) {
             return { fail: 'That palm matched ' + bestVerifiedPerson.name + ', but liveness could not be confirmed — no natural micro-movement was observed. Nothing was opened. Present the real hand, held live in front of the camera.' };
           }
-          return { fail: 'This palm did not match any registered palm on this device, so nothing was opened and no one was identified. (' + analysed + ' frames scanned, ' + coded + ' with a readable code, best score ' + (best && typeof best.similarity === 'number' ? best.similarity.toFixed(3) : 'n/a') + ' against any enrolled palm.' + neuralMeasuredStrId(best) + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr() + ')' };
+          // v51: when the hand gate excluded candidates, the
+          // no-match copy says so briefly and factually — the
+          // scanned hand is the other hand of the excluded
+          // profiles, and the other hand is a different identity.
+          var excludedCount = probeHand ? candidates.filter(function (p) { return B.handGateBlocks(probeHand, B.palmProfileHand(p.palmProfile)); }).length : 0;
+          var handNote = excludedCount ? ' The scanned palm is the ' + probeHand + ' hand; ' + excludedCount + ' enrolled profile' + (excludedCount === 1 ? '' : 's') + ' recorded the other hand and ' + (excludedCount === 1 ? 'was' : 'were') + ' excluded.' : (probeHand ? ' Probe hand: ' + probeHand + '.' : '');
+          return { fail: 'This palm did not match any registered palm on this device, so nothing was opened and no one was identified. (' + analysed + ' frames scanned, ' + coded + ' with a readable code, best score ' + (best && typeof best.similarity === 'number' ? best.similarity.toFixed(3) : 'n/a') + ' against any enrolled palm.' + neuralMeasuredStrId(best) + handNote + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr() + ')' };
         });
       });
     }
@@ -2443,16 +2556,19 @@
               // v45: the per-frame identify call is the packed
               // composition — the probe is encoded once inside the
               // worker and scored against every candidate.
-              prevMatch = { roi: r.roi, frameIdx: myIdx, promise: Match.verifyRoisMulti(candidates.map(function (p) { return p.palmProfile; }), [r.roi], { exhaustive: fieldExhaustiveOn() }) };
+              prevMatch = { roi: r.roi, frameIdx: myIdx, promise: Match.verifyRoisMulti(candidates.map(function (p) { return p.palmProfile; }), [r.roi], { exhaustive: fieldExhaustiveOn(), probeHand: r.hand }) };
               // v47: the same frame is embedded ONCE by PalmNet
               // and scored against every banked candidate in pure
               // JS when it lands — off the EDCC pipeline's path.
+              // v51: candidates the hand gate excludes for THIS
+              // frame's hand are scored null (never embedded
+              // against) — the twin-scope for PalmNet candidacy.
               if (anyNeuralBank) {
                 PalmNet.embedPair(r.roi).then(function (pair) {
                   if (!pair) { frameNeuralScores[myIdx] = null; return; }
                   var scores = {};
                   candidates.forEach(function (p) {
-                    if (banksById[p.id]) scores[p.id] = B.palmnetScoreEmbeddings(banksById[p.id], pair);
+                    if (banksById[p.id]) scores[p.id] = B.handGateBlocks(r.hand, B.palmProfileHand(p.palmProfile)) ? null : B.palmnetScoreEmbeddings(banksById[p.id], pair);
                   });
                   frameNeuralScores[myIdx] = scores;
                   tryWinIdentify(myIdx);
@@ -2735,7 +2851,14 @@
         $('palmCapture').disabled = false;
         return;
       }
-      enroll.palm = { v: 4, format: B.PALMPRINT_FORMAT, codes: sel.codes };
+      // v51: the profile records the palm's ANATOMICAL hand —
+      // the consensus of this capture's own frames (each frame
+      // computed it the same way, in analysePalmFrame). null
+      // when the capture could not determine one: the profile
+      // then matches exactly as a pre-v51 profile until a later
+      // Add Angles capture stamps it.
+      var capHand = B.palmConsensusHand(res.results.map(function (r) { return r.hand; }));
+      enroll.palm = { v: 4, format: B.PALMPRINT_FORMAT, codes: sel.codes, hand: capHand };
       // v47: bank PalmNet neural embeddings from the SAME frames
       // the EDCC burst banked (sel.picks are their indices into
       // res.results), so a new profile carries both template
@@ -2756,7 +2879,13 @@
         }
         Cam.stop();
         $('palmStatus').textContent = 'Palm captured.';
-        $('palmMsg').innerHTML = '<div class="success">Palm enrolled hands-free in ' + (res.elapsedMs / 1000).toFixed(1) + ' s: one automatic 900 ms burst (' + res.burst.frames + ' frames) banked ' + sel.codes.length + ' palmprint templates (bit-packed EDCC — the palm\'s own print pattern), and passive liveness passed (natural micro-shift ' + (res.burst.liveness.microShift * 100).toFixed(1) + '% across the burst).' + esc(neuralNote) + '</div>';
+        // v51: the enrolment states which hand was recorded —
+        // from now on the OTHER hand is a different identity to
+        // this profile and will not match it.
+        var handNote = capHand
+          ? ' ' + (capHand === 'left' ? 'Left' : 'Right') + ' palm recorded — this profile is the ' + capHand + ' hand; the other hand will not match it.'
+          : ' The hand (left or right) could not be determined from this capture, so this profile is not hand-stamped yet — a later Add Angles capture will record it.';
+        $('palmMsg').innerHTML = '<div class="success">Palm enrolled hands-free in ' + (res.elapsedMs / 1000).toFixed(1) + ' s: one automatic 900 ms burst (' + res.burst.frames + ' frames) banked ' + sel.codes.length + ' palmprint templates (bit-packed EDCC — the palm\'s own print pattern), and passive liveness passed (natural micro-shift ' + (res.burst.liveness.microShift * 100).toFixed(1) + '% across the burst).' + esc(neuralNote) + esc(handNote) + '</div>';
         Snd.chime();
         Snd.speak('Palm captured');
         advanceFrom('palm');
@@ -2963,6 +3092,16 @@
             rec.strictPass = neural.strictPass === true;
             rec.strictBlock = neural.strictBlock || null;
           }
+          // v51: the hand evidence rides the record the same way
+          // (extra fields only — the pinned CSV columns are
+          // untouched): the probe's hand, the target profile's
+          // recorded hand, and handGate when a cross-hand
+          // exclusion decided the outcome. The pentest reads
+          // these to see how often chirality was readable and
+          // how often the gate did the rejecting.
+          if (neural.probeHand) rec.probeHand = neural.probeHand;
+          if (neural.profileHand) rec.profileHand = neural.profileHand;
+          if (neural.handGate) rec.handGate = true;
         }
         writeFieldRecord(rec);
       };
@@ -3454,7 +3593,7 @@
       }).map(function (p) {
         return '<tr><td><b>' + esc(p.name) + '</b><br><span style="color:var(--muted)">' + esc(p.phone || '') + '</span>' + (p.loyaltyPoints ? '<br><span style="color:var(--muted)">Loyalty: ' + p.loyaltyPoints + ' pts</span>' : '') + '</td>' +
           '<td>' + esc(p.id) + '</td><td>' + esc(p.type) + '<br><span style="color:var(--muted)">' + esc(p.store) + '</span></td>' +
-          '<td>' + (personHasMethod(p) ? '<span class="badge ok">Enrolled</span>' : (B.palmprintProfileFormat(p.palmProfile) === 'legacy' ? '<span class="badge bad">Palm re-scan needed</span>' : '<span class="badge bad">Not enrolled</span>')) + (B.palmnetNeedsScan(p.palmProfile) ? '<br><span class="badge warn">Neural scan needed</span>' : '') + '</td>' +
+          '<td>' + (personHasMethod(p) ? '<span class="badge ok">Enrolled</span>' : (B.palmprintProfileFormat(p.palmProfile) === 'legacy' ? '<span class="badge bad">Palm re-scan needed</span>' : '<span class="badge bad">Not enrolled</span>')) + (B.palmnetNeedsScan(p.palmProfile) ? '<br><span class="badge warn">Neural scan needed</span>' : '') + (personHasMethod(p) && B.palmProfileHand(p.palmProfile) ? '<br><span style="color:var(--muted)">' + (B.palmProfileHand(p.palmProfile) === 'left' ? 'Left' : 'Right') + ' palm</span>' : '') + '</td>' +
           '<td>' + (p.walletProvider ? esc(p.walletProvider) + '<br>' + esc(B.maskWalletNumber(p.walletNumber)) : '—') + '</td>' +
           '<td><button class="btn small" data-verify="' + esc(p.id) + '">Verify</button>' + (personHasMethod(p) ? ' <button class="btn small" data-topup="' + esc(p.id) + '">Add Angles</button>' : '') + (B.palmprintProfileFormat(p.palmProfile) === 'legacy' ? ' <button class="btn small" data-topup="' + esc(p.id) + '">Re-scan Palm</button>' : '') + (B.palmnetNeedsScan(p.palmProfile) ? ' <button class="btn small" data-neural="' + esc(p.id) + '">Neural Scan</button>' : '') + '</td></tr>';
       }).join('');
@@ -3582,13 +3721,25 @@
         var candProbes = B.palmprintPackedCandidates(res.results).list.map(function (c) { return c.words; });
         return PalmNet.embedRois(neuralCandidateRois(res.results)).then(function (embs) {
           var good = (embs || []).filter(function (e) { return !!e; });
-          var guard = B.bankingGuardCheck(person.palmProfile, { edccProbes: candProbes, neuralEmbeddings: good });
+          // v51: the capture's hand rides the guard — a known
+          // cross-hand capture fails the guard before any
+          // scoring (the twin cannot bank the other hand in).
+          var captureHand = B.palmConsensusHand(res.results.map(function (r) { return r.hand; }));
+          var guard = B.bankingGuardCheck(person.palmProfile, { edccProbes: candProbes, neuralEmbeddings: good, hand: captureHand });
           if (guard.status === 'fail') {
-            DB.put('logs', { ts: Date.now(), personId: person.id, personName: person.name, store: '', method: 'palm', measured: 'Banking refused by the v49 same-person guard: the captured palm did not verify against this profile (EDCC ' + (guard.edccChecked ? guard.edccScore.toFixed(3) : 'not checkable') + ', PalmNet ' + (guard.neuralChecked ? guard.neuralScore.toFixed(3) : 'not checkable') + '). Nothing was banked.', result: 'Banking Refused — Palm Mismatch' });
+            DB.put('logs', { ts: Date.now(), personId: person.id, personName: person.name, store: '', method: 'palm', measured: 'Banking refused by the v49 same-person guard: the captured palm did not verify against this profile (EDCC ' + (guard.edccChecked ? guard.edccScore.toFixed(3) : 'not checkable') + ', PalmNet ' + (guard.neuralChecked ? guard.neuralScore.toFixed(3) : 'not checkable') + '). Nothing was banked.' + (guard.handGate ? ' Hand gate: the captured palm is the ' + guard.probeHand + ' hand; this profile recorded the ' + guard.profileHand + ' hand — the other hand is a different identity.' : ''), result: 'Banking Refused — Palm Mismatch' });
             $('topMsg').innerHTML = '<div class="error">This palm does not match this profile — nothing was added</div>';
             Snd.buzz();
             return;
           }
+          // v51 HAND STAMP: the first guarded top-up that passes
+          // on a profile with no recorded hand stamps the
+          // profile with THIS capture's hand (when the capture
+          // determined one). From then on the profile's other
+          // hand is a different identity to every gate. A
+          // profile that already carries a hand keeps it.
+          var stampHand = B.palmProfileHand(person.palmProfile) ? null : captureHand;
+          var stampNote = stampHand ? ' This capture also recorded the profile\'s hand: ' + stampHand + ' — the other hand will no longer match this profile.' : '';
         // v47 Neural scan mode: bank PalmNet embeddings only —
         // the EDCC profile is carried over untouched.
         if (topupMode === 'neural') {
@@ -3603,9 +3754,10 @@
               return;
             }
             var nProfile = Object.assign({}, person.palmProfile, { neural: nMerge.neural });
+            if (stampHand) nProfile.hand = stampHand;
             var nUpdated = Object.assign({}, person, { palmProfile: nProfile });
             return DB.put('people', nUpdated).then(function () {
-              $('topMsg').innerHTML = '<div class="success">Neural embeddings banked for ' + esc(person.name) + ': ' + nMerge.added + ' new embedding(s), ' + nMerge.total + ' in the bank. This palm now matches through EDCC and PalmNet. EDCC templates, Biom ID, wallet, balance, statement, linked accounts and points are untouched.</div>';
+              $('topMsg').innerHTML = '<div class="success">Neural embeddings banked for ' + esc(person.name) + ': ' + nMerge.added + ' new embedding(s), ' + nMerge.total + ' in the bank. This palm now matches through EDCC and PalmNet. EDCC templates, Biom ID, wallet, balance, statement, linked accounts and points are untouched.' + esc(stampNote) + '</div>';
               Snd.chime();
               Snd.speak('Neural scan banked');
             });
@@ -3629,26 +3781,44 @@
           else if (!person.palmProfile.neural && !good.length) neuralNote = ' PalmNet neural embeddings were not banked (' + (PalmNet.state === 'failed' ? PalmNet.failReason : 'the neural runtime produced none') + ') — the Registry will offer a Neural Scan.';
           else if (good.length) neuralNote = ' Neural embeddings unchanged (' + nMerge.skipped + ' near-duplicate candidate(s) skipped).';
           if (merged.rebanked) {
-            var reProfile = { v: 4, format: B.PALMPRINT_FORMAT, codes: merged.codes };
+            // v51: the re-banked profile records the hand of the
+            // capture that re-banked it (the legacy bank it
+            // replaces carried no hand — its codes were
+            // unscorable, so this capture is the first hand
+            // evidence the profile has).
+            var reProfile = { v: 4, format: B.PALMPRINT_FORMAT, codes: merged.codes, hand: captureHand };
             if (person.palmProfile.legacyCodes) reProfile.legacyCodes = person.palmProfile.legacyCodes;
             if (merged.poses.some(function (d) { return !!d; })) reProfile.poses = merged.poses;
             if (nMerge.neural) reProfile.neural = nMerge.neural;
             var reUpdated = Object.assign({}, person, { palmProfile: reProfile });
             return DB.put('people', reUpdated).then(function () {
-              $('topMsg').innerHTML = '<div class="success">Palm re-banked for ' + esc(person.name) + ': ' + merged.codes.length + ' packed templates banked in the current format. The previous codes stay archived in this record. Biom ID, wallet, balance, statement, linked accounts and points are untouched.' + esc(neuralNote) + '</div>';
+              $('topMsg').innerHTML = '<div class="success">Palm re-banked for ' + esc(person.name) + ': ' + merged.codes.length + ' packed templates banked in the current format. The previous codes stay archived in this record. Biom ID, wallet, balance, statement, linked accounts and points are untouched.' + esc(neuralNote) + (captureHand ? ' This capture recorded the profile\'s hand: ' + captureHand + ' — the other hand will not match this profile.' : '') + '</div>';
               Snd.chime();
               Snd.speak('Palm re-banked');
             });
           }
           if (!merged.changed && !nMerge.changed) {
+            // v51: even when no template changes, a passing
+            // guarded capture on a hand-less profile still
+            // stamps the hand — otherwise a duplicate-only burst
+            // (the likely first Add Angles on a pre-v51 profile)
+            // would leave the profile unstamped forever.
+            if (stampHand) {
+              var stampOnlyProfile = Object.assign({}, person.palmProfile, { hand: stampHand });
+              var stampOnlyUpdated = Object.assign({}, person, { palmProfile: stampOnlyProfile });
+              return DB.put('people', stampOnlyUpdated).then(function () {
+                $('topMsg').innerHTML = '<div class="notice">No new templates were added: ' + merged.skipped + ' candidate template(s) were skipped as duplicates or poses already covered, and no banked template was redundant enough to replace. The stored templates are unchanged.' + esc(neuralNote) + esc(stampNote) + '</div>';
+              });
+            }
             $('topMsg').innerHTML = '<div class="notice">No new templates were added: ' + merged.skipped + ' candidate template(s) were skipped as duplicates or poses already covered, and no banked template was redundant enough to replace. The stored profile is unchanged.' + esc(neuralNote) + '</div>';
             return;
           }
           if (!merged.changed && nMerge.changed) {
             var keepProfile = Object.assign({}, person.palmProfile, { neural: nMerge.neural });
+            if (stampHand) keepProfile.hand = stampHand;
             var keepUpdated = Object.assign({}, person, { palmProfile: keepProfile });
             return DB.put('people', keepUpdated).then(function () {
-              $('topMsg').innerHTML = '<div class="success">Neural embeddings added for ' + esc(person.name) + ': ' + nMerge.added + ' new embedding(s), ' + nMerge.total + ' in the bank. The EDCC templates were already covered by this burst, so they are unchanged. Biom ID, wallet, balance, statement, linked accounts and points are untouched.</div>';
+              $('topMsg').innerHTML = '<div class="success">Neural embeddings added for ' + esc(person.name) + ': ' + nMerge.added + ' new embedding(s), ' + nMerge.total + ' in the bank. The EDCC templates were already covered by this burst, so they are unchanged. Biom ID, wallet, balance, statement, linked accounts and points are untouched.' + esc(stampNote) + '</div>';
               Snd.chime();
               Snd.speak('Neural embeddings added');
             });
@@ -3657,9 +3827,13 @@
           if (merged.poses.some(function (d) { return !!d; })) profile.poses = merged.poses;
           if (person.palmProfile.legacyCodes) profile.legacyCodes = person.palmProfile.legacyCodes;
           if (nMerge.neural) profile.neural = nMerge.neural;
+          // v51: the rebuilt profile carries the recorded hand —
+          // the profile's own when it has one, else this
+          // capture's (the stamp).
+          profile.hand = B.palmProfileHand(person.palmProfile) || captureHand;
           var updated = Object.assign({}, person, { palmProfile: profile });
           return DB.put('people', updated).then(function () {
-            $('topMsg').innerHTML = '<div class="success">Templates added for ' + esc(person.name) + ': ' + merged.added + ' new template(s) appended' + (merged.replaced ? ', ' + merged.replaced + ' redundant template(s) replaced at the cap' : '') + (merged.skipped ? ', ' + merged.skipped + ' skipped (duplicate or already covered)' : '') + '. The profile now holds ' + merged.codes.length + ' templates. Biom ID, wallet, balance, statement, linked accounts and points are untouched.' + esc(neuralNote) + '</div>';
+            $('topMsg').innerHTML = '<div class="success">Templates added for ' + esc(person.name) + ': ' + merged.added + ' new template(s) appended' + (merged.replaced ? ', ' + merged.replaced + ' redundant template(s) replaced at the cap' : '') + (merged.skipped ? ', ' + merged.skipped + ' skipped (duplicate or already covered)' : '') + '. The profile now holds ' + merged.codes.length + ' templates. Biom ID, wallet, balance, statement, linked accounts and points are untouched.' + esc(neuralNote) + esc(stampNote) + '</div>';
             Snd.chime();
             Snd.speak('Templates added');
           });
