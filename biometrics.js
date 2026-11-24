@@ -1482,6 +1482,15 @@
   var PALMPRINT_QUALITY_MIN_BRIGHTNESS = 45;
   var PALMPRINT_QUALITY_MAX_GLARE_FRAC = 0.15;
   var PALMPRINT_QUALITY_BLUR_MIN = 100;
+  /* v57: the "too dark" advice, per camera. On the back camera
+     the flash can light, so the standing line names it. On the
+     FRONT camera the torch cannot light at all (v48: the torch
+     exists only on the back camera), so telling a front-camera
+     user to turn on Flash is a dead end — the front line names
+     the two things that can actually help. ADVICE ONLY: every
+     gate number above is unchanged, on both cameras. */
+  var PALM_DARK_HINT_BACK = 'Too dark — turn on Flash';
+  var PALM_DARK_HINT_FRONT = 'Too dark — face a light, or switch to the back camera to use Flash';
   /* Spec section 1.1: the palm bounding box must span 20%-60% of
      the frame width (whole hand, localisation only). */
   var PALMPRINT_BBOX_MIN_FRAC = 0.20;
@@ -1717,8 +1726,13 @@
     if (out.glareFrac > PALMPRINT_QUALITY_MAX_GLARE_FRAC) out.reasons.push('Washed out: ' + Math.round(out.glareFrac * 100) + '% of pixels are blown past 245 (bar ' + Math.round(PALMPRINT_QUALITY_MAX_GLARE_FRAC * 100) + '%).');
     if (out.blur < PALMPRINT_QUALITY_BLUR_MIN) out.reasons.push('Blurry: sharpness ' + out.blur.toFixed(0) + ' is under the bar of ' + PALMPRINT_QUALITY_BLUR_MIN + '.');
     out.pass = out.reasons.length === 0;
+    // v57: the dark hint follows the camera the caller reports
+    // in framing.facing ('user' = front). Callers that report
+    // no facing get exactly the pre-v57 line.
     out.hint = !out.pass
-      ? (out.mean !== null && out.mean < PALMPRINT_QUALITY_MIN_BRIGHTNESS ? 'Too dark — turn on Flash' : 'Hold steady...')
+      ? (out.mean !== null && out.mean < PALMPRINT_QUALITY_MIN_BRIGHTNESS
+        ? (framing && framing.facing === 'user' ? PALM_DARK_HINT_FRONT : PALM_DARK_HINT_BACK)
+        : 'Hold steady...')
       : null;
     return out;
   }
@@ -2884,7 +2898,11 @@
       return f;
     }
     if (typeof info.meanLuma === 'number' && isFinite(info.meanLuma) && info.meanLuma < PALM_GUIDANCE_DARK_LUMA) {
-      return 'Too dark — turn on Flash';
+      // v57: on the front camera the flash cannot light (v48) —
+      // the advice names what can actually help there. Callers
+      // pass the live camera's facing as info.facing; no facing
+      // keeps the pre-v57 line.
+      return info.facing === 'user' ? PALM_DARK_HINT_FRONT : PALM_DARK_HINT_BACK;
     }
     if (typeof info.glareFrac === 'number' && isFinite(info.glareFrac) && info.glareFrac > PALM_GUIDANCE_GLARE_FRAC) {
       return 'Too much glare — angle the hand slightly';
@@ -4808,7 +4826,21 @@
      neural banks of either stamp, hand stamps, wallet
      balance, statement and linked accounts included —
      opens under v56 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56'];
+  /* v57 (2026-11-25) changes no stored shape at all: it is a
+     camera-layer release (Front/Back switch rework in app.js —
+     the outgoing stream is released only once its replacement
+     is live, a switch asks for the new facing as a preference
+     first, the in-flight-start join is facing-aware, the scan
+     loops accept a replaced stream's restarted clock — plus
+     facing-aware "too dark" guidance in this file: on the front
+     camera the torch cannot light, so the dark advice no longer
+     names Flash there). Thresholds, the model, the fusion rule,
+     the hand gate, the frame rule, the guard, the strict money
+     rule, flash behaviour, banking and the sync engine are all
+     untouched, so the step is the identity and a v56 store —
+     including one carrying a queued sync outbox row — opens
+     under v57 byte-identical. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -4827,6 +4859,7 @@
     'v54': function (snap) { return snap; },
     'v55': function (snap) { return snap; },
     'v56': function (snap) { return snap; },
+    'v57': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
@@ -5001,6 +5034,8 @@
     PALMPRINT_QUALITY_MIN_BRIGHTNESS: PALMPRINT_QUALITY_MIN_BRIGHTNESS,
     PALMPRINT_QUALITY_MAX_GLARE_FRAC: PALMPRINT_QUALITY_MAX_GLARE_FRAC,
     PALMPRINT_QUALITY_BLUR_MIN: PALMPRINT_QUALITY_BLUR_MIN,
+    PALM_DARK_HINT_BACK: PALM_DARK_HINT_BACK,
+    PALM_DARK_HINT_FRONT: PALM_DARK_HINT_FRONT,
     PALMPRINT_BBOX_MIN_FRAC: PALMPRINT_BBOX_MIN_FRAC,
     PALMPRINT_BBOX_MAX_FRAC: PALMPRINT_BBOX_MAX_FRAC,
     PALMPRINT_BURST_MS: PALMPRINT_BURST_MS,

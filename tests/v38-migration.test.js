@@ -307,8 +307,8 @@ check('MIGRATE a store with a missing logs array keeps the people', Array.isArra
    its migration step is an adoption like v38's. A store written by
    v38 (and one written by v37, through both steps) must open under
    v39 with the person, codes and points intact and still verify. */
-check('CHAIN v56 is the newest link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v56' &&
-  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40,v41,v42,v43,v44,v45,v46,v47,v48,v49,v50,v51,v52,v53,v54,v55,v56', B.BIOM_DATA_VERSIONS.join(','));
+check('CHAIN v57 is the newest link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v57' &&
+  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40,v41,v42,v43,v44,v45,v46,v47,v48,v49,v50,v51,v52,v53,v54,v55,v56,v57', B.BIOM_DATA_VERSIONS.join(','));
 const mig39 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v38', 'v39');
 check('MIGRATE v38->v39 runs the v39 step', mig39.appliedSteps.indexOf('v39') !== -1, mig39.appliedSteps.join(','));
 check('MIGRATE v38->v39 is an adoption: no store rewritten', mig39.changed === false && mig39.changedStores.length === 0,
@@ -840,6 +840,35 @@ const migAgain56 = B.migrateBiomData(mig56.snapshot, 'v56', 'v56');
 check('MIGRATE is idempotent at v56', migAgain56.appliedSteps.length === 0 && migAgain56.changed === false &&
   migAgain56.snapshot.people[0].wallet.balance === 450);
 
+/* ---------- v57: camera-layer release — a pure adoption ----------
+   v57 changes no stored field: it reworks the Front/Back switch
+   in the camera layer and makes the "too dark" guidance
+   facing-aware. The store below is the v56 store (the v55
+   two-stamp store PLUS a queued sync outbox row): the adoption
+   must leave every byte — both bank stamps, the wallet, the
+   hand stamps and the queued items — exactly as it found them. */
+const v57Store = JSON.parse(JSON.stringify(v56Store));
+const v57Before = JSON.stringify(v57Store);
+const mig57 = B.migrateBiomData(v57Store, 'v56', 'v57');
+check('MIGRATE v56->v57 runs the v57 step', mig57.appliedSteps.indexOf('v57') !== -1, mig57.appliedSteps.join(','));
+check('MIGRATE v56->v57 rewrites NOTHING (pure adoption — banks, wallet, hands and the queued outbox all survive byte-identical)',
+  mig57.changed === false && JSON.stringify(mig57.snapshot) === v57Before,
+  'changedStores=' + JSON.stringify(mig57.changedStores));
+check('SURVIVE v57 both bank stamps, the hands and the outbox row are intact',
+  mig57.snapshot.people[0].palmProfile.neural.model === 'palmnet-v1' &&
+  mig57.snapshot.people[1].palmProfile.neural.model === 'palmnet-r3-ep12' &&
+  B.palmProfileHand(mig57.snapshot.people[0].palmProfile) === 'left' &&
+  B.palmProfileHand(mig57.snapshot.people[1].palmProfile) === 'right' &&
+  mig57.snapshot.meta.some(function (r) { return r.key === 'syncOutbox' && r.value.length === 1 && r.value[0].record.id === 'q1'; }));
+const migChain57 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v37', 'v57');
+check('MIGRATE v37->v57 runs all twenty steps in order', migChain57.appliedSteps.join(',') === 'v38,v39,v40,v41,v42,v43,v44,v45,v46,v47,v48,v49,v50,v51,v52,v53,v54,v55,v56,v57', migChain57.appliedSteps.join(','));
+check('MIGRATE v37->v57 keeps the person, gains the wallet, flags the palm',
+  migChain57.snapshot.people.length === 1 && migChain57.snapshot.people[0].loyaltyPoints === 137 &&
+  migChain57.snapshot.people[0].wallet.balance === 0 && migChain57.snapshot.people[0].palmProfile.format === 'legacy');
+const migAgain57 = B.migrateBiomData(mig57.snapshot, 'v57', 'v57');
+check('MIGRATE is idempotent at v57', migAgain57.appliedSteps.length === 0 && migAgain57.changed === false &&
+  migAgain57.snapshot.people[0].wallet.balance === 450);
+
 /* ---------- the shipped app source carries no AUTOMATIC wipe -------
    v46 note: the only erase in the app is the owner's confirmed
    Delete All Data action (DB.clearAll + B.wipeBiomData, wired in
@@ -847,12 +876,12 @@ check('MIGRATE is idempotent at v56', migAgain56.appliedSteps.length === 0 && mi
    and is still pinned here: deleting the whole database and
    removing store keys, the retired update-time wipe mechanics. */
 const appSrc = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
-check('APP declares the current data version (v56)', appSrc.indexOf("APP_DATA_VERSION = 'v56'") !== -1);
+check('APP declares the current data version (v57)', appSrc.indexOf("APP_DATA_VERSION = 'v57'") !== -1);
 check('APP startup runs the migration', appSrc.indexOf('migrateBiomData') !== -1 && appSrc.indexOf('migrateDbStores') !== -1);
 check('APP contains no database deletion (the retired wipe)', appSrc.indexOf('deleteDatabase') === -1);
 check('APP contains no store-key removal (the retired wipe)', !/removeItem\(\s*'tsgbiom_/.test(appSrc));
 const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
-check('APP shell is v56', swSrc.indexOf('tsg-biom-shell-v56') !== -1);
+check('APP shell is v57', swSrc.indexOf('tsg-biom-shell-v57') !== -1);
 
 console.log(fail === 0 ? 'ALL MIGRATION TESTS PASSED (' + pass + ')' : fail + ' FAILURES, ' + pass + ' passed');
 process.exit(fail === 0 ? 0 : 1);

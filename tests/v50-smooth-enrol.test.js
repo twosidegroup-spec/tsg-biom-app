@@ -109,7 +109,10 @@ function enrolChecks() {
   const enrol = appSrc.slice(eStart, appSrc.indexOf('function fieldExhaustiveOn', eStart));
   check('PACE the enrol stream paces grabs to the camera clock (waitFreshFrame, ~100 ms of stream time)',
     enrol.indexOf('function waitFreshFrame()') !== -1 && enrol.indexOf('var target = lastGrabT + 0.1;') !== -1 &&
-    enrol.indexOf('if (video.currentTime >= target || Date.now() > deadline) return Promise.resolve();') !== -1);
+    // v57 pin update (named): the poll line gained the backward-clock
+    // acceptance (a replaced stream restarts currentTime) — the pacing
+    // discipline itself is unchanged. The v57 suite pins all three loops.
+    enrol.indexOf('if (video.currentTime >= target || video.currentTime < lastGrabT - 0.05 || Date.now() > deadline) return Promise.resolve();') !== -1);
   check('PACE watchStep routes every grab through the pacing wait',
     enrol.indexOf('return waitFreshFrame().then(function () {') !== -1 &&
     enrol.indexOf('lastGrabT = video.currentTime;') !== -1);

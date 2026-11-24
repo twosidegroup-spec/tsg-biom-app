@@ -48,8 +48,19 @@
      It is not a data-shape change — sync preferences are
      localStorage prefs and the outbox is one 'syncOutbox' meta
      row — so the v56 migration step is a pure adoption like
-     the others, and with sync off the app is v55 exactly. */
-  var APP_DATA_VERSION = 'v56';
+     the others, and with sync off the app is v55 exactly.
+
+     v57 (2026-11-25) is a camera-layer release: the Front/Back
+     switch no longer blanks the preview (the outgoing stream
+     is released only once its replacement is live), a switch
+     asks for the new facing as a preference first, the
+     in-flight-start join is facing-aware, the scan loops
+     accept a replaced stream's restarted clock, the preview
+     mirror follows the attached track's own facing, and the
+     "too dark" guidance stops naming Flash on the front
+     camera, where the torch cannot light. No data-shape
+     change — the v57 migration step is a pure adoption. */
+  var APP_DATA_VERSION = 'v57';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -478,23 +489,58 @@
   /* ---------------- Camera manager --------------------------------------- */
   var CAM_START_TIMEOUT_MS = 12000; // v49: bound on a whole camera start (see Cam.start)
   var Cam = {
-    stream: null, video: null, viewKey: null, _token: 0, _starting: null, _startVideo: null, _startKey: null,
+    stream: null, video: null, viewKey: null, _token: 0, _starting: null, _startVideo: null, _startKey: null, _startFacing: null,
     start: function (video, facingMode, viewKey) {
-      // A second start for the same view while one is already in flight
-      // (double tap, or a camera/flash toggle restarting the view) joins
-      // the in-flight start instead of racing it - racing starts are
-      // what produced "The play() request was interrupted by a new load
-      // request" on the phone (2026-11-20).
-      if (this._starting && this._startVideo === video && this._startKey === (viewKey || null)) return this._starting;
+      // A second start for the same view AND the same facing while
+      // one is already in flight (a double tap on the same toggle)
+      // joins the in-flight start instead of racing it - racing
+      // starts are what produced "The play() request was interrupted
+      // by a new load request" on the phone (2026-11-20). v57: the
+      // join is facing-aware — before, a quick Front->Back->Front
+      // tap joined the FIRST start and the camera landed on the
+      // opposite facing from the button state, which read as a
+      // stuck switch. A start for a different facing now
+      // supersedes; the token guard below stops the loser's
+      // stream when it lands.
+      if (this._starting && this._startVideo === video && this._startKey === (viewKey || null) && this._startFacing === facingMode) return this._starting;
       var token = ++this._token;
-      this.stop();
+      // v57 NO BLACK GAP: the outgoing stream is NOT stopped up
+      // front. It keeps rendering into the preview while the
+      // replacement is acquired, and its tracks stop only once
+      // the new stream is attached and playing — a Front/Back
+      // switch is a clean cut between two live previews, never a
+      // frozen black screen while the camera ladder runs. The
+      // outgoing stream is released early in exactly two cases:
+      // the ladder's NotReadableError retry (the old camera may
+      // still hold the device — the precondition the pre-v57
+      // entry stop() used to provide) and a start that fails
+      // before attaching (a failed start leaves no camera
+      // running, exactly as before v57).
+      var prevVideo = this.video;
+      var prevStream = this.stream;
+      var replacing = !!(prevStream && prevVideo === video);
+      var attached = false;
+      var outgoingReleased = false;
+      var self = this;
+      function releaseOutgoing() {
+        if (outgoingReleased) return;
+        outgoingReleased = true;
+        if (prevStream) prevStream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) {} });
+        if (self.stream === prevStream) self.stream = null;
+        if (prevVideo && prevVideo !== video && prevVideo.srcObject === prevStream) { try { prevVideo.srcObject = null; } catch (e) {} }
+      }
       this.video = video;
       this.viewKey = viewKey || null;
-      // Preview mirroring is DISPLAY ONLY and only for the front camera.
-      // Captures always use the raw video frame (drawImage / detectors read
-      // the untransformed pixels), so enrolling on one camera and verifying
-      // on the other still compares consistently.
-      video.classList.toggle('mirror', facingMode === 'user');
+      // Preview mirroring is DISPLAY ONLY and only for the front
+      // camera. Captures always use the raw video frame (drawImage
+      // / detectors read the untransformed pixels), so enrolling on
+      // one camera and verifying on the other still compares
+      // consistently. v57: the class is applied when the new stream
+      // ATTACHES (in the chain below), from the attached track's
+      // own reported facing when the device reports one — the
+      // constraint ladder can land on a fallback camera, and
+      // flipping the class at request time would mirror the
+      // still-running outgoing preview for the whole switch.
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         return Promise.reject(new Error('This browser does not expose a camera (getUserMedia unavailable). Open TSG Biom over HTTPS in Chrome or Safari.'));
       }
@@ -530,14 +576,27 @@
         return navigator.mediaDevices.getUserMedia({ video: v, audio: false });
       }
       function openCamera() {
-        return gum(facingMode, true).catch(function (e1) {
-          if (e1 && (e1.name === 'OverconstrainedError' || e1.name === 'NotFoundError')) return gum(facingMode, false);
+        // v57: when this start REPLACES a live stream on the same
+        // element (a Front/Back switch), the new facing is asked
+        // as a preference FIRST and the exact request second —
+        // the exact-first order pays the multi-lens Android
+        // OverconstrainedError round trip (the v17 note above) on
+        // every tap, before the camera that works is even asked.
+        // A cold start keeps the v17 order exactly. Either way
+        // the ladder then falls to any camera, and the
+        // NotReadableError retry releases the outgoing camera
+        // before waiting, restoring the precondition the pre-v57
+        // entry stop() provided.
+        var firstExact = !replacing;
+        return gum(facingMode, firstExact).catch(function (e1) {
+          if (e1 && (e1.name === 'OverconstrainedError' || e1.name === 'NotFoundError')) return gum(facingMode, !firstExact);
           throw e1;
         }).catch(function (e2) {
           if (e2 && (e2.name === 'OverconstrainedError' || e2.name === 'NotFoundError')) return gum(null, false);
           throw e2;
         }).catch(function (e3) {
           if (e3 && e3.name === 'NotReadableError') {
+            releaseOutgoing();
             return new Promise(function (res) { setTimeout(res, 700); }).then(function () { return gum(facingMode, false); });
           }
           throw e3;
@@ -570,13 +629,30 @@
         }
         Cam.stream = stream;
         video.srcObject = stream;
+        attached = true;
+        // v57: the mirror follows the camera that actually
+        // attached — the track's own reported facing when it
+        // reports one, else the requested facing. The ladder's
+        // fallback can land on the other side, and the preview
+        // must never sit mirrored for a camera that is not the
+        // front one (or unmirrored for the front one).
+        var track0 = stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
+        var trackFacing = null;
+        try { trackFacing = track0 && track0.getSettings ? track0.getSettings().facingMode : null; } catch (e) {}
+        video.classList.toggle('mirror', (trackFacing === 'user' || trackFacing === 'environment') ? trackFacing === 'user' : facingMode === 'user');
         return playWithRetry().then(function () {
+          // v57: the new stream is on screen — the outgoing
+          // stream's tracks stop now, and not a moment before.
+          releaseOutgoing();
           // Capture tuning FIRST (v48): it issues its own
           // applyConstraints call, and a later call that does not
           // mention torch can drop an already-lit torch back off —
           // so the flash application below runs LAST, on the final
           // track state.
           return applyCaptureTuning(stream);
+        }, function (err) {
+          releaseOutgoing();
+          throw err;
         }).then(function () {
           // Flash is MANUAL only - it is never turned on automatically.
           // The one exception to "only from the toggle": if the user had
@@ -614,6 +690,12 @@
          surface. 12 s is generous — a healthy start, including
          the NotReadableError retry ladder, lands in ~2 s. */
       var bounded = B.withTimeout(p, CAM_START_TIMEOUT_MS).catch(function (e) {
+        // v57: a start that failed BEFORE attaching leaves no
+        // camera running (the guarantee the pre-v57 entry stop()
+        // gave, restored on the failure path now that the entry
+        // no longer stops anything). A superseded start touches
+        // nothing — the newer start owns the outgoing stream.
+        if (!attached && token === Cam._token) releaseOutgoing();
         if (e && e.code === 'ETIMEOUT' && Cam._starting === bounded) {
           Cam._token++;
           Cam.stop();
@@ -624,7 +706,8 @@
       this._starting = bounded;
       this._startVideo = video;
       this._startKey = viewKey || null;
-      var clear = function () { if (Cam._starting === bounded) { Cam._starting = null; Cam._startVideo = null; Cam._startKey = null; } };
+      this._startFacing = facingMode;
+      var clear = function () { if (Cam._starting === bounded) { Cam._starting = null; Cam._startVideo = null; Cam._startKey = null; Cam._startFacing = null; } };
       bounded.then(clear, clear);
       return bounded;
     },
@@ -680,8 +763,14 @@
           // If this view's camera is live, restart it on the new camera.
           var restart = camRestarters[groupKey];
           var videoId = camVideoId(groupKey);
-          applyMirror(videoId, b.dataset.facing);
-          if (restart && Cam.stream && Cam.video === $(videoId)) restart();
+          var liveRestart = !!(restart && Cam.stream && Cam.video === $(videoId));
+          // v57: with a live restart the mirror is NOT flipped
+          // here — Cam.start applies it when the new stream
+          // attaches, from the attached track's own facing.
+          // Flipping it at tap time would mirror the still-running
+          // outgoing camera's preview for the whole switch.
+          if (!liveRestart) applyMirror(videoId, b.dataset.facing);
+          if (liveRestart) restart();
           // v48: with no live restart, the flash toggle's note for
           // the new facing is refreshed here; with a restart,
           // Cam.start refreshes it when the new track lands. Either
@@ -1821,7 +1910,7 @@
       if (lastGrabT < 0) return Promise.resolve();
       var target = lastGrabT + 0.1;
       function poll() {
-        if (video.currentTime >= target || Date.now() > deadline) return Promise.resolve();
+        if (video.currentTime >= target || video.currentTime < lastGrabT - 0.05 || Date.now() > deadline) return Promise.resolve();
         return waitMs(8).then(poll);
       }
       return poll();
@@ -1857,7 +1946,7 @@
           if (tracker.state().spoof) return 'spoof';
           var hasHand = typeof r.openness === 'number';
           if (hasHand) seenHand = true;
-          var gate = r.roi ? B.palmprintQualityGate(r.roi, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE, { hasHand: hasHand, bboxWidthFrac: B.palmBboxWidthFrac(r.lm) }) : null;
+          var gate = r.roi ? B.palmprintQualityGate(r.roi, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE, { hasHand: hasHand, bboxWidthFrac: B.palmBboxWidthFrac(r.lm), facing: liveFacingMode() }) : null;
           if (!hasHand) lastHint = 'Show open palm';
           else if (gate && !gate.pass) lastHint = gate.hint || 'Hold steady...';
           // v53: completeness coaching, in the same words the
@@ -2364,12 +2453,23 @@
        signal is read across them — and no instant is analysed twice.
        Analysis slower than the pace (the common case) never waits at
        all. Bounded by the scan deadline so a stalled stream falls
-       through to the MAXF/deadline guards instead of hanging. */
+       through to the MAXF/deadline guards instead of hanging.
+       v57: the poll also accepts a BACKWARD clock — a replaced
+       stream (a manual Front/Back toggle, which restarts the
+       camera under a running scan) restarts currentTime near
+       zero, and before v57 the loop then waited for the new
+       clock to climb back to the old stream's timestamp,
+       stalling the scan for exactly that long (bounded only by
+       the deadline). The mid-scan camera swap always reset
+       lastGrabT by hand; a manual switch has no handle on this
+       closure, so the poll itself now treats a backward clock
+       as a fresh frame. The same line lives in all three stream
+       loops (enrol, verify, identify). */
     function waitFreshFrame() {
       if (lastGrabT < 0) return Promise.resolve();
       var target = lastGrabT + 0.1;
       function poll() {
-        if (video.currentTime >= target || Date.now() > deadline) return Promise.resolve();
+        if (video.currentTime >= target || video.currentTime < lastGrabT - 0.05 || Date.now() > deadline) return Promise.resolve();
         return waitMs(8).then(poll);
       }
       return poll();
@@ -2535,7 +2635,7 @@
         var seenHandNow = frames.some(function (x) { return typeof x.openness === 'number'; });
         // v43: the live guidance pill — one concise line mapped
         // from the quality signals this frame already produced.
-        var guide = B.palmGuidance({ hasHand: seenHandNow, framing: lastHint, frameIssue: lastFrameIssue, openness: lastOpen, meanLuma: lastSampleB, glareFrac: lastGlare, sharpness: lastSharp, stable: false });
+        var guide = B.palmGuidance({ hasHand: seenHandNow, framing: lastHint, frameIssue: lastFrameIssue, openness: lastOpen, meanLuma: lastSampleB, glareFrac: lastGlare, sharpness: lastSharp, stable: false, facing: liveFacingMode() });
         setStatus(guide || (seenHandNow ? 'Hand detected — hold steady.' : 'Show & Pay scanning — show an open hand to the camera.'));
       }
       return step().then(loop);
@@ -2824,7 +2924,7 @@
       if (lastGrabT < 0) return Promise.resolve();
       var target = lastGrabT + 0.1;
       function poll() {
-        if (video.currentTime >= target || Date.now() > deadline) return Promise.resolve();
+        if (video.currentTime >= target || video.currentTime < lastGrabT - 0.05 || Date.now() > deadline) return Promise.resolve();
         return waitMs(8).then(poll);
       }
       return poll();
@@ -2937,7 +3037,7 @@
         var seenHandNow = frames.some(function (x) { return typeof x.openness === 'number'; });
         // v43: the live guidance pill — one concise line mapped
         // from the quality signals this frame already produced.
-        var guide = B.palmGuidance({ hasHand: seenHandNow, framing: lastHint, frameIssue: lastFrameIssue, openness: lastOpen, meanLuma: lastSampleB, glareFrac: lastGlare, sharpness: lastSharp, stable: false });
+        var guide = B.palmGuidance({ hasHand: seenHandNow, framing: lastHint, frameIssue: lastFrameIssue, openness: lastOpen, meanLuma: lastSampleB, glareFrac: lastGlare, sharpness: lastSharp, stable: false, facing: liveFacingMode() });
         setStatus(guide || (seenHandNow ? 'Hand detected — hold steady.' : 'Show an open hand to the camera.'));
       }
       return step().then(loop);

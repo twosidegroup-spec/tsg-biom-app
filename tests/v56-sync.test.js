@@ -257,9 +257,16 @@ async function e2eTest() {
     appSrc.indexOf("kind: amount > 0 ? 'money-auth' : 'verify'") !== -1);
   check('CALLSITE NO delete-all record is ever queued (the wipe sends nothing, by design)',
     appSrc.indexOf("kind: 'delete-all'") === -1);
-  check('VERSION app data version and shell version agree at v56',
-    appSrc.indexOf("APP_DATA_VERSION = 'v56'") !== -1 && swSrc.indexOf('tsg-biom-shell-v56') !== -1 &&
-    B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v56');
+  // v57 pin conversion (named, the v55 precedent): this was an
+  // absolute pin on 'v56'; it is now the coherence form — the app
+  // data version, the shell version and the newest migration link
+  // agree with each other, whatever the current version is.
+  check('VERSION app data version, shell version and newest migration link agree',
+    (function () {
+      const dv = (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1];
+      const sv = (swSrc.match(/tsg-biom-shell-(v\d+)/) || [])[1];
+      return !!dv && dv === sv && B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === dv;
+    })());
 })();
 
 (async function () {
