@@ -140,7 +140,7 @@
         <button type="button" data-flash="on">Flash On</button>
       </div>
       <p class="camnote flashnote" data-flash-note="walletAct"></p>
-      <div class="scanpill"><span class="scanpill-dot"></span>Scanning</div>
+      <div class="scanpill" id="wScanPill"><span class="scanpill-dot"></span><span id="wScanPillText">Ready</span></div>
       <div class="camwrap"><video id="wScanVideo" autoplay playsinline muted></video>
         <div class="corners" aria-hidden="true"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i></div>
         <div class="camstatus" id="wScanStatus">Camera not started.</div></div>
@@ -349,7 +349,7 @@
 
     <div id="enroll-palm" class="card hidden">
       <h2>Step 2 — Palm scan (real palmprint)</h2>
-      <p class="sub">The camera starts by itself when this step opens — no tap needed. Just show your open hand to the camera, anywhere in the frame, at a natural distance — there is nothing to line up: the app finds the hand by itself. The moment a sharp open palm is seen, a single 900&nbsp;ms capture burst runs by itself, and the app banks the three sharpest time-spaced templates from it. Liveness is checked across the burst: a real hand drifts naturally by a tiny amount and its landmarks carry real depth variance — a photo or a screen cannot, so a single photo is never accepted. A palm pressed right against the lens cannot be read, so keep a natural distance. The palm square is cut out and aligned from the hand landmarks, and an <b>EDCC palmprint encoder</b> reads the palm's own print pattern — the templates are stored bit-packed on this device. Labelled honestly: this is <b>Palm — Palmprint</b>, the print-pattern method real palmprint systems use. Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.</p>
+      <p class="sub">The camera opens when this step opens — nothing is captured until you tap <b>Scan Palm</b>. Position your open hand in the frame, anywhere in view, at a natural distance — there is nothing to line up: the app finds the hand by itself. On the tap, the app watches live, and the moment a sharp open palm is seen, a single 900&nbsp;ms capture burst runs, and the app banks the three sharpest time-spaced templates from it. Liveness is checked across the burst: a real hand drifts naturally by a tiny amount and its landmarks carry real depth variance — a photo or a screen cannot, so a single photo is never accepted. A palm pressed right against the lens cannot be read, so keep a natural distance. The palm square is cut out and aligned from the hand landmarks, and an <b>EDCC palmprint encoder</b> reads the palm's own print pattern — the templates are stored bit-packed on this device. Labelled honestly: this is <b>Palm — Palmprint</b>, the print-pattern method real palmprint systems use. Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.</p>
       <div class="camtoggle" data-cam-toggle="enrollPalm" role="group" aria-label="Palm camera choice">
         <button type="button" data-facing="user" class="on">Front camera</button>
         <button type="button" data-facing="environment">Back camera</button>
@@ -366,7 +366,7 @@
         <div id="palmBurstRing" class="burstring hidden"><span>0%</span></div></div>
       <div class="row" style="margin-top:12px">
         <div><button class="btn" id="palmStart">Start Camera</button></div>
-        <div><button class="btn primary" id="palmCapture" disabled>Auto-Capture Palm</button></div>
+        <div><button class="btn primary" id="palmCapture" disabled>Scan Palm</button></div>
       </div>
       <div id="palmMsg" style="margin-top:12px"></div>
     </div>
@@ -383,7 +383,7 @@
   <!-- TERMINAL -->
   <section class="page" id="page-terminal">
     <h1>takeBIOM — Merchant Terminal</h1>
-    <p class="sub">Find the person — the camera and the scan then start by themselves, and the customer simply holds an open palm toward the camera. After each verdict, Next Customer resets the terminal for the next person. Add an amount only when this is a payment. Palm Loyalty is LIVE; Palm Pay is Biometric Authorised — Pending Provider Settlement.</p>
+    <p class="sub">Find the person — the camera opens and the terminal arms. The customer positions an open palm in the frame, then tap SCAN: nothing is scanned until the tap. After each verdict, Next Customer resets and re-arms the terminal for the next person. Add an amount only when this is a payment. Palm Loyalty is LIVE; Palm Pay is Biometric Authorised — Pending Provider Settlement.</p>
     <div class="card">
       <label>Find person</label>
       <input id="termSearch" placeholder="Type a name, Biom ID or phone number" style="margin-bottom:10px">

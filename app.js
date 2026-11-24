@@ -59,8 +59,18 @@
      mirror follows the attached track's own facing, and the
      "too dark" guidance stops naming Flash on the front
      camera, where the torch cannot light. No data-shape
-     change — the v57 migration step is a pure adoption. */
-  var APP_DATA_VERSION = 'v57';
+     change — the v57 migration step is a pure adoption.
+
+     v58 (2026-11-25) is the MANUAL SCAN release (the
+     Chairman's order): scanning never starts by itself.
+     Entering any scan view — wallet scan card, terminal,
+     enrolment palm step, Add Angles top-up — opens the camera
+     preview and arms the view; analysis, verdicts and scan
+     records begin only when the Scan button is tapped, and
+     after a verdict the view re-arms instead of re-scanning.
+     The pipelines behind the tap are unchanged. No data-shape
+     change — the v58 migration step is a pure adoption. */
+  var APP_DATA_VERSION = 'v58';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -3066,8 +3076,8 @@
     if (page === 'dashboard') renderDashboard();
     if (page === 'registry') renderRegistry();
     if (page === 'logs') renderLogs();
-    if (page === 'terminal') { fillTerminalPeople().then(function () { maybeAutoStartTerminal(); }); Pipeline.enterScanView(); }
-    if (page === 'enroll') { Pipeline.enterScanView(); maybeAutoStartEnroll(); }
+    if (page === 'terminal') { fillTerminalPeople().then(function () { maybeArmTerminal(); }); Pipeline.enterScanView(); }
+    if (page === 'enroll') { Pipeline.enterScanView(); maybeArmEnroll(); }
     window.scrollTo(0, 0);
   }
   document.querySelectorAll('#mainNav button').forEach(function (b) {
@@ -3199,38 +3209,43 @@
       limitDaily: Number($('enLimitDaily').value) > 0 ? Number($('enLimitDaily').value) : null
     };
     setStep('palm');
-    // v43 hands-free: the palm step starts its camera and the
-    // guided capture by itself — no Start Camera or Capture tap.
-    startPalmCamera(true);
+    // v58 MANUAL SCAN: the palm step opens its camera and arms
+    // — the guided capture begins only on the Scan Palm tap.
+    // (v43-v57 started the camera AND the capture here by
+    // themselves; retired by the Chairman's 2026-11-25 order.)
+    startPalmCamera();
   });
 
-  /* Palm enroll (v45): the app watches the camera; the moment a
-     sharp open palm passes the quality gate, a single 900 ms
-     burst runs by itself and banks 3 packed templates (profile
-     v4). Passive liveness is read across the burst — a photo
-     cannot produce natural micro-motion or depth variance. */
+  /* Palm enroll (v45): once a capture is started, the app
+     watches the camera; the moment a sharp open palm passes
+     the quality gate, a single 900 ms burst runs and banks 3
+     packed templates (profile v4). Passive liveness is read
+     across the burst — a photo cannot produce natural
+     micro-motion or depth variance. */
   function resetPalmEnroll() { /* burst enrolment keeps no partial state */ }
-  /* Hands-free enrolment entry (v43, kept): entering the palm
-     step starts the camera AND the capture automatically. The
-     Start Camera and Auto-Capture buttons remain as
-     fallback/re-trigger only. runPalmCapture's busy guard makes
-     a re-trigger during a running capture a no-op. */
+  /* Manual enrolment entry (v58): entering the palm step opens
+     the camera and ARMS the step only — the guided capture
+     begins on the Scan Palm tap (runPalmCapture, whose busy
+     guard makes a re-tap during a running capture a no-op).
+     Start Camera re-opens the camera, still armed. At v43-v57
+     entry started the camera AND the capture automatically;
+     the Chairman's 2026-11-25 order retired that — a sudden
+     capture catches the hand unpositioned. */
   var enrollControl = null;
-  function startPalmCamera(autoCapture) {
+  function startPalmCamera() {
     return Cam.start($('palmVideo'), camFacing.enrollPalm, 'enrollPalm').then(function () {
       Pipeline.enterScanView();
       $('palmCapture').disabled = false;
-      if (autoCapture) { runPalmCapture(); return; }
-      $('palmStatus').textContent = 'Camera on — show your open hand to the camera, anywhere in the frame, or tap Auto-Capture Palm. The app watches live: the moment a sharp open palm is seen, a 900 ms capture burst runs by itself and the palm is banked.';
+      $('palmStatus').textContent = 'Camera on — show your open hand in the frame, anywhere in view, at a natural distance, then tap Scan Palm. Nothing is captured until you tap: on the tap the app watches live, and the moment a sharp open palm is seen a 900 ms capture burst runs and the palm is banked.';
     }).catch(function (e) { $('palmMsg').innerHTML = cameraErrorHTML(e); $('palmStatus').textContent = 'Camera blocked.'; });
   }
-  function maybeAutoStartEnroll() {
+  function maybeArmEnroll() {
     if (!enroll.details) return;
     if ($('enroll-palm').classList.contains('hidden')) return;
-    startPalmCamera(true);
+    startPalmCamera();
   }
-  $('palmStart').addEventListener('click', function () { startPalmCamera(true); });
-  camRestarters.enrollPalm = function () { startPalmCamera(true); };
+  $('palmStart').addEventListener('click', function () { startPalmCamera(); });
+  camRestarters.enrollPalm = function () { startPalmCamera(); };
   function runPalmCapture() {
     if (palmScanBusy) return;
     if (!enroll.details) return;
@@ -3255,7 +3270,7 @@
         return;
       }
       if (!res.burst) {
-        $('palmMsg').innerHTML = '<div class="error">No sharp open palm was captured' + (res.hint ? ' — last guidance shown: ' + esc(res.hint) : '') + '. Nothing was stored. Show one open palm to the camera, fingers spread, in good light, and hold it steady — the burst starts by itself the moment a sharp palm is seen.</div>';
+        $('palmMsg').innerHTML = '<div class="error">No sharp open palm was captured' + (res.hint ? ' — last guidance shown: ' + esc(res.hint) : '') + '. Nothing was stored. Show one open palm to the camera, fingers spread, in good light, and hold it steady, then tap Scan Palm again — on the tap, the burst runs the moment a sharp palm is seen.</div>';
         $('palmCapture').disabled = false;
         Snd.buzz();
         return;
@@ -3308,7 +3323,7 @@
         var handNote = capHand
           ? ' ' + (capHand === 'left' ? 'Left' : 'Right') + ' palm recorded — this profile is the ' + capHand + ' hand; the other hand will not match it.'
           : ' The hand (left or right) could not be determined from this capture, so this profile is not hand-stamped yet — a later Add Angles capture will record it.';
-        $('palmMsg').innerHTML = '<div class="success">Palm enrolled hands-free in ' + (res.elapsedMs / 1000).toFixed(1) + ' s: one automatic 900 ms burst (' + res.burst.frames + ' frames) banked ' + sel.codes.length + ' palmprint templates (bit-packed EDCC — the palm\'s own print pattern), and passive liveness passed (natural micro-shift ' + (res.burst.liveness.microShift * 100).toFixed(1) + '% across the burst).' + esc(neuralNote) + esc(handNote) + '</div>';
+        $('palmMsg').innerHTML = '<div class="success">Palm enrolled in ' + (res.elapsedMs / 1000).toFixed(1) + ' s: one 900 ms burst (' + res.burst.frames + ' frames) banked ' + sel.codes.length + ' palmprint templates (bit-packed EDCC — the palm\'s own print pattern), and passive liveness passed (natural micro-shift ' + (res.burst.liveness.microShift * 100).toFixed(1) + '% across the burst).' + esc(neuralNote) + esc(handNote) + '</div>';
         Snd.chime();
         Snd.speak('Palm captured');
         advanceFrom('palm');
@@ -3377,7 +3392,14 @@
   var termSession = B.createScanSession();
   var termControl = null;
   function cancelTermScan() { if (termControl) termControl.cancelled = true; }
-  function maybeAutoStartTerminal() {
+  /* v58 MANUAL SCAN: entering the terminal ARMS it — the
+     session is entered and the camera opens on the selected
+     customer, but no scan runs until SCAN is tapped. (At v57
+     this function auto-started the scan itself; the Chairman's
+     2026-11-25 order retired that: a sudden scan catches the
+     palm half-positioned and reads as a spoof / not-verified
+     failure.) */
+  function maybeArmTerminal() {
     if (!$('page-terminal').classList.contains('active')) return;
     termSession.enter();
     var person = termPeopleCache.find(function (p) { return p.id === $('termPerson').value; }) || null;
@@ -3387,7 +3409,8 @@
   }
   $('termPerson').addEventListener('change', function () {
     // A different customer: cancel any running scan silently,
-    // re-arm the session, and start the new customer's scan.
+    // re-arm the session, and open the camera for the new
+    // customer — armed, not scanning (v58).
     cancelTermScan();
     termSession.reset();
     $('termNext').classList.add('hidden');
@@ -3409,9 +3432,13 @@
       Cam.start($('termVideo'), camFacing[termFacingKey()], termFacingKey()).then(function () {
         Pipeline.enterScanView();
         $('termScan').disabled = false;
-        status.textContent = 'Camera on — scanning. The customer simply holds an open palm toward the camera, anywhere in the frame — like tapping a card. No tap needed and no movement routine at checkout: Show & Pay reads the palm as it streams.';
-        // v43: the scan starts by itself; SCAN stays as fallback.
-        runTermScan();
+        // v58 MANUAL SCAN: the camera opening never starts the
+        // scan. The terminal is armed — the customer positions
+        // an open palm in the frame, then SCAN is tapped and
+        // Show & Pay reads the palm as it streams, exactly as
+        // before. (v43-v57 auto-started here; retired by the
+        // Chairman's 2026-11-25 order.)
+        status.textContent = 'Camera on — the customer positions an open palm in the frame, anywhere in view, then tap SCAN.';
       }).catch(function (e) { $('termResult').innerHTML = cameraErrorHTML(e); status.textContent = 'Camera blocked.'; });
     });
   }
@@ -3419,13 +3446,14 @@
   camRestarters.terminal = startTermCamera;
   $('termNext').addEventListener('click', function () {
     // Next Customer: instant clean reset — verdict card cleared,
-    // cooldown cleared, scanning again for the next presentation.
+    // cooldown cleared, and the terminal re-ARMED for the next
+    // presentation. v58: it does not start the next scan — the
+    // customer positions their palm, then SCAN is tapped.
     termSession.reset();
     $('termNext').classList.add('hidden');
     $('termResult').innerHTML = '';
-    $('termStatus').textContent = 'Ready — scanning for the next customer.';
-    if (Cam.stream && Cam.video === $('termVideo')) runTermScan();
-    else startTermCamera();
+    $('termStatus').textContent = 'Ready — tap SCAN when the next customer has positioned their palm.';
+    if (!(Cam.stream && Cam.video === $('termVideo'))) startTermCamera();
   });
 
   function logVerification(person, method, measured, result) {
@@ -3765,9 +3793,10 @@
 
   /* Shared wallet scan card: one camera surface, the caller's run()
      performs the scan and its outcome handling.
-     v43 hands-free: showing the card starts the camera AND the
-     scan by itself — Start Camera and Scan remain as fallback /
-     re-trigger only. A scan session tracks stability and the
+     v58 manual: showing the card starts the camera and ARMS
+     the card — the caller's run() performs the scan only when
+     Scan is tapped. (At v43-v57 showing the card started the
+     scan by itself.) A scan session tracks stability and the
      post-verdict cooldown; closing the card cancels the running
      scan silently. */
   var walletSession = B.createScanSession();
@@ -3818,10 +3847,18 @@
     setScanInd('wIndLight', 'wait', 'Light —');
     setScanInd('wIndSteady', 'wait', 'Hold steady');
   }
+  /* v58: the wallet card's state pill — 'Ready' while the view
+     is armed (preview live, waiting for the Scan tap) and
+     'Scanning' only while a tapped scan is actually running. */
+  function setScanPill(text) {
+    var t = $('wScanPillText');
+    if (t) t.textContent = text;
+  }
   function showWalletScan(ctx) {
     walletScanCtx = ctx;
     walletSession.enter();
     resetScanIndicators();
+    setScanPill('Ready');
     $('walletScanCard').classList.remove('hidden');
     $('wScanTitle').textContent = ctx.title;
     $('wScanPrompt').textContent = ctx.prompt;
@@ -3838,20 +3875,31 @@
     return Cam.start($('wScanVideo'), camFacing.walletAct, 'walletAct').then(function () {
       Pipeline.enterScanView();
       $('wScanRun').disabled = false;
-      $('wScanStatus').textContent = 'Camera on — scanning. Show the open palm to the camera, anywhere in the frame.';
-      runWalletScan();
+      // v58 MANUAL SCAN (the Chairman's order, 2026-11-25):
+      // opening the camera NEVER starts a scan. The card is
+      // armed — preview live, guide frame up, Scan enabled —
+      // and analysis begins only on the Scan tap
+      // (runWalletScan). An untapped preview analyses nothing,
+      // can produce no verdict and queues no scan record.
+      $('wScanStatus').textContent = 'Camera on — position the open palm in the frame, then tap Scan.';
     }).catch(function (e) { $('wScanMsg').innerHTML = cameraErrorHTML(e); $('wScanStatus').textContent = 'Camera blocked.'; });
   }
   function runWalletScan() {
     if (!walletScanCtx || palmScanBusy) return;
     palmScanBusy = true;
     $('wScanRun').disabled = true;
+    setScanPill('Scanning');
     var ctx = walletScanCtx;
     walletControl = { cancelled: false, onFrame: function (info) { var fr = walletSession.frame({ hasHand: info.hasHand, pose: info.pose }); updateScanIndicators(info, fr); } };
     Promise.resolve()
       .then(function () { return ctx.run(); })
       .catch(function (e) { walletScanFailed({ fail: 'Scan failed: ' + (e && e.message ? e.message : e) }); })
-      .then(function () { palmScanBusy = false; walletSession.verdict(); });
+      .then(function () {
+        palmScanBusy = false; walletSession.verdict();
+        // v58: a judged scan leaves the card ARMED, not
+        // re-scanning — the next scan needs a fresh tap.
+        if (!$('walletScanCard').classList.contains('hidden')) setScanPill('Ready');
+      });
   }
   function hideWalletScan() {
     if (walletControl) walletControl.cancelled = true;
@@ -3937,7 +3985,16 @@
     // rejection path — a failed restart vanished silently and the
     // scan card sat dead. It now surfaces the same camera error
     // as startWalletCamera.
-    Cam.start($('wScanVideo'), camFacing.walletAct, 'walletAct').then(function () { runWalletScan(); }).catch(function (e) { $('wScanMsg').innerHTML = cameraErrorHTML(e); $('wScanStatus').textContent = 'Camera blocked.'; });
+    // v58: a camera switch re-arms the card — it never starts a
+    // scan. (Mid-scan, the running stream simply continues on
+    // the new camera, exactly as the v57 switch behaves; the
+    // busy branch below leaves its status line alone.)
+    Cam.start($('wScanVideo'), camFacing.walletAct, 'walletAct').then(function () {
+      if (!palmScanBusy && walletScanCtx) {
+        $('wScanRun').disabled = false;
+        $('wScanStatus').textContent = 'Camera on — position the open palm in the frame, then tap Scan.';
+      }
+    }).catch(function (e) { $('wScanMsg').innerHTML = cameraErrorHTML(e); $('wScanStatus').textContent = 'Camera blocked.'; });
   };
   $('wScanRun').addEventListener('click', runWalletScan);
   $('wScanCancel').addEventListener('click', function () {
@@ -4444,7 +4501,12 @@
       syncCamToggle('topup');
       syncFlashToggle('topup');
       $('topCapture').disabled = false;
-      runTopupCapture();
+      // v58 MANUAL SCAN: opening the top-up camera ARMS the
+      // capture only — the guided burst begins on the Run
+      // Guided Capture tap (runTopupCapture). At v43-v57 the
+      // capture started by itself here; the Chairman's
+      // 2026-11-25 order retired that.
+      $('topStatus').textContent = 'Camera on — position the open palm in the frame, then tap Run Guided Capture.';
     }).catch(function (e) { $('topMsg').innerHTML = cameraErrorHTML(e); $('topStatus').textContent = 'Camera blocked.'; });
   }
   function runTopupCapture() {

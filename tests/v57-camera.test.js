@@ -334,9 +334,15 @@ check('CLOCK all three stream loops accept a replaced stream\'s restarted clock'
 /* ============ 5. frozen surfaces + version coherence ========= */
 check('FROZEN the bars are untouched (EDCC 0.32, PalmNet 0.5895, model palmnet-r3-ep12)',
   B.PALMPRINT_THRESHOLD === 0.32 && B.PALMNET_THRESHOLD === 0.5895 && B.PALMNET_MODEL_ID === 'palmnet-r3-ep12');
-check('VERSION app data version, shell and newest migration link agree at v57',
-  appSrc.indexOf("APP_DATA_VERSION = 'v57'") !== -1 && swSrc.indexOf('tsg-biom-shell-v57') !== -1 &&
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v57');
+/* v58 pin conversion (named, per the v55/v56 precedent): this
+   check pinned v57 absolutely; from v58 it is a COHERENCE
+   check — app version, shell version and the newest chain
+   link must agree, whatever the current version is. */
+const v57AppVer = (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1];
+const v57ShellVer = (swSrc.match(/tsg-biom-shell-(v\d+)/) || [])[1];
+check('VERSION app data version, shell and newest migration link agree (coherence form since v58)',
+  !!v57AppVer && v57AppVer === v57ShellVer &&
+  v57AppVer === B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1]);
 
 camChecks().then(function () {
   info('rig only: synthetic fixture palms, synthetic embeddings and stub camera devices. The phone verdict — front recognition in his light, the switch feel on his handset — is the real-world proof, and it has not been claimed here.');

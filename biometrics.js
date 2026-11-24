@@ -4840,7 +4840,31 @@
      untouched, so the step is the identity and a v56 store —
      including one carrying a queued sync outbox row — opens
      under v57 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57'];
+  /* v58 (2026-11-25) changes no stored shape at all: it is an
+     app-flow release (the Chairman's order, 2026-11-25 —
+     scanning must NOT start by itself). At v57 every scan view
+     began analysing the moment its camera opened, so a palm
+     caught half-positioned produced spoof / not-verified
+     verdicts before the customer was ready. v58 gates every
+     scan entry point behind its Scan button: entering a scan
+     view opens the camera preview and ARMS the view (guide
+     frame visible, Front/Back choice live, Scan button
+     enabled); no frame is analysed for matching, no verdict
+     can occur and no scan record is produced until the tap.
+     After the tap the capture/judgement pipelines run exactly
+     as before (same frame rule, deadlines, spoof tracking,
+     guard, strict rule sites), and after a verdict the view
+     returns to the armed state instead of re-scanning in a
+     loop. The designed mid-scan camera fallback — swapping
+     camera inside an already-tapped scan — is untouched, as
+     are all thresholds, the model, the fusion rule, the hand
+     gate, banking, flash behaviour and the sync engine (an
+     untapped preview queues no record, because records are
+     written by judged scans only). No stored field changes,
+     so the step is the identity and a v57 store — banks of
+     either stamp, hand stamps, wallet, and a queued sync
+     outbox row included — opens under v58 byte-identical. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -4860,6 +4884,7 @@
     'v55': function (snap) { return snap; },
     'v56': function (snap) { return snap; },
     'v57': function (snap) { return snap; },
+    'v58': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
