@@ -41,7 +41,7 @@
      is skipped, nothing is deleted, and the next launch retries —
      the app boots on the un-migrated data either way, because its
      readers fail closed per record. */
-  var APP_DATA_VERSION = 'v54';
+  var APP_DATA_VERSION = 'v55';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -1063,11 +1063,22 @@
       for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
       return bytes;
     }
-    function loadModel(manifestUrl) {
+    function loadModel(manifestUrl, expectedModelId) {
       return fetch(manifestUrl).then(function (r) {
         if (!r.ok) throw new Error('model manifest HTTP ' + r.status);
         return r.json();
       }).then(function (man) {
+        // v55 (AUDIT-v54.md, Defect 3): a manifest that NAMES a
+        // different model than this build runs is refused here,
+        // before any part is fetched — the session is never
+        // created, the rejection lands in PalmNet's fail-soft
+        // state with this reason, and the app runs EDCC-only
+        // with the mismatch stated in the status note. A
+        // manifest with NO modelId keeps the pre-v55 behaviour
+        // (older manifests stay loadable).
+        if (man.modelId && expectedModelId && man.modelId !== expectedModelId) {
+          throw new Error('PalmNet model mismatch: this build runs ' + expectedModelId + ' but the served model is ' + man.modelId + ' — neural matching is disabled for this load rather than run a model under the wrong bar');
+        }
         var base = manifestUrl.replace(/[^/]*$/, '');
         return Promise.all(man.parts.map(function (p) {
           return fetch(base + p).then(function (r) {
@@ -1101,7 +1112,7 @@
     onmessage = function (e) {
       var d = e.data || {};
       if (d.type === 'init') {
-        loadModel(d.manifestUrl).then(function (s) {
+        loadModel(d.manifestUrl, d.expectedModelId).then(function (s) {
           session = s;
           postMessage({ type: 'ready' });
         }, function (err) {
@@ -1120,6 +1131,16 @@
       }
     };
   }
+  /* v55 (AUDIT-v54.md, Defect 3): the model id this build
+     runs — the same named constant that stamps every bank
+     (B.PALMNET_MODEL_ID, defined beside PALMNET_THRESHOLD in
+     biometrics.js). Both load paths check the served
+     manifest against it: a manifest naming any other model
+     is refused (fail-soft to EDCC with the mismatch in the
+     status note), so a mixed update can never run a model
+     under the wrong bar or write banks under the wrong
+     stamp. A manifest with no modelId loads as before. */
+  var PALMNET_EXPECTED_MODEL_ID = B.PALMNET_MODEL_ID;
   var PalmNet = {
     state: 'idle', // idle | loading | ready | failed
     failReason: '',
@@ -1197,7 +1218,7 @@
               if (self.state === 'ready') { self.state = 'failed'; self.failReason = 'neural worker error'; }
             }
           };
-          self.w.postMessage({ type: 'init', manifestUrl: new URL(self.modelManifest, window.location.href).href });
+          self.w.postMessage({ type: 'init', manifestUrl: new URL(self.modelManifest, window.location.href).href, expectedModelId: PALMNET_EXPECTED_MODEL_ID });
         } catch (e) {
           if (!settled) { settled = true; clearTimeout(to); reject(e); }
         }
@@ -1223,6 +1244,13 @@
         if (!r.ok) throw new Error('model manifest HTTP ' + r.status);
         return r.json();
       }).then(function (man) {
+        // v55: the same model-id check as the worker loader —
+        // a manifest naming a different model than this build
+        // runs is refused before any part is fetched, and the
+        // rejection surfaces through PalmNet's fail-soft state.
+        if (man.modelId && man.modelId !== PALMNET_EXPECTED_MODEL_ID) {
+          throw new Error('PalmNet model mismatch: this build runs ' + PALMNET_EXPECTED_MODEL_ID + ' but the served model is ' + man.modelId + ' — neural matching is disabled for this load rather than run a model under the wrong bar');
+        }
         var base = self.modelManifest.replace(/[^/]*$/, '');
         return Promise.all(man.parts.map(function (p) {
           return fetch(base + p).then(function (r) {
@@ -3968,15 +3996,34 @@
      when a re-registration completes. While it names a profile,
      a banking-guard refusal in that profile's capture offers
      the confirmation-gated re-registration; reregPerson is the
-     record that refusal was judged against. */
+     record that refusal was judged against.
+     v55 (AUDIT-v54.md, Defect 1): a SECOND grant exists.
+     v54's model swap left every pre-v54 profile with a stale
+     neural bank, and the Neural Scan the app prescribes for
+     exactly those profiles could be refused by the guard —
+     its neural leg uncheckable by construction — with no way
+     forward. So a Neural Scan launched for a profile whose
+     bank is stale at launch (B.palmnetNeedsScan true) is ALSO
+     recovery-eligible for that profile, granted inside
+     openTopup once the record is loaded; recoveryVia records
+     which grant is live ('wallet' | 'neural') so the refusal
+     offer and the re-registration log say the true reason.
+     The guard itself does not change, and a Neural Scan on a
+     CURRENT-stamp bank — like every Add Angles / Re-scan —
+     grants nothing: a refusal there stays a plain refusal. */
   var recoveryPersonId = null;
+  var recoveryVia = null;
   var reregPerson = null;
   function openRecoveryTopup(personId) { openTopup(personId, 'angles', true); }
   function openTopup(personId, mode, viaRecovery) {
     // v53: every ordinary entry (Registry, My Account, Neural
     // Scan) clears the recovery state — the re-registration
     // offer can only ever follow a recovery-launched capture.
+    // v55: the clear still happens here for every entry; the
+    // stale-bank Neural Scan grant is applied afterwards,
+    // inside the record load below, and nowhere else.
     recoveryPersonId = viaRecovery ? personId : null;
+    recoveryVia = viaRecovery ? 'wallet' : null;
     reregPerson = null;
     if ($('topRereg')) $('topRereg').classList.add('hidden');
     DB.all('people').then(function (people) {
@@ -3987,12 +4034,29 @@
       if (mode === 'neural' && fmt !== 'packed96') return; // a legacy palm needs the full re-scan first
       topupPersonId = personId;
       topupMode = mode === 'neural' ? 'neural' : 'angles';
+      // v55 (AUDIT-v54.md, Defect 1): the stale-bank Neural
+      // Scan grant. palmnetNeedsScan is true for this profile
+      // exactly when its neural bank cannot be scored by the
+      // running model — for a bank that EXISTS in storage
+      // (B.palmnetBankStale) that means the guard's neural leg
+      // is uncheckable by construction, so a refusal inside
+      // this capture must offer the owner the same confirmed
+      // re-registration the wallet-open path offers, or the
+      // prescribed remedy dead-ends. A never-banked profile
+      // also has needsScan true, and the grant is harmless
+      // there in the same way: the offer still requires a
+      // guard refusal first and a typed REPLACE after. A
+      // CURRENT-stamp bank (needsScan false) grants nothing.
+      var neuralStaleGrant = topupMode === 'neural' && B.palmnetNeedsScan(person.palmProfile);
+      if (neuralStaleGrant) { recoveryPersonId = personId; recoveryVia = 'neural'; }
       go('topup');
       if ($('topTitle')) $('topTitle').textContent = topupMode === 'neural' ? 'Neural Scan — add PalmNet embeddings' : 'Add Angles — widen a palm profile';
       if ($('topSub')) $('topSub').textContent = topupMode === 'neural'
         ? 'Runs the same burst capture as enrolment and banks PalmNet neural embeddings for this person\'s palm, so it can match through the neural matcher as well as EDCC. Their EDCC templates, Biom ID, wallet, balance, statement, linked accounts and loyalty points do not change.'
         : 'Runs the same burst capture as enrolment and adds diverse sharp templates to this person\'s stored profile — or re-banks the palm in the current format when it was enrolled in the previous one. Their Biom ID, wallet, balance, statement, linked accounts and loyalty points do not change — only the palm profile gains templates.';
-      if (topupMode === 'neural') {
+      if (topupMode === 'neural' && B.palmnetBankStale(person.palmProfile)) {
+        $('topWho').innerHTML = '<b>' + esc(person.name) + '</b> — ' + esc(person.id) + '<br><span style="color:var(--muted)">Neural scan: this palm is enrolled for the EDCC matcher, and it does hold PalmNet neural embeddings — but they were banked by the previous model (' + esc(B.palmnetProfileModelId(person.palmProfile) || 'unstamped') + '), and embeddings from different models cannot be compared, so this profile currently verifies EDCC-only. One burst banks fresh neural embeddings under the current model (' + esc(B.PALMNET_MODEL_ID) + ') for the same palm; the EDCC templates, Biom ID, wallet and points do not change. Before anything is banked, the burst is checked against the palm already banked for this profile — the EDCC side of that check can run, the neural side cannot (the stored bank belongs to the previous model). A different palm is refused and nothing is added.</span>';
+      } else if (topupMode === 'neural') {
         $('topWho').innerHTML = '<b>' + esc(person.name) + '</b> — ' + esc(person.id) + '<br><span style="color:var(--muted)">Neural scan: this palm is enrolled for the EDCC matcher but has no PalmNet neural embeddings yet, so it verifies EDCC-only. One burst banks neural embeddings for the same palm; the EDCC templates, Biom ID, wallet and points do not change. Before anything is banked, the burst is checked against the palm already banked for this profile — a different palm is refused and nothing is added.</span>';
       } else if (fmt === 'legacy') {
         $('topWho').innerHTML = '<b>' + esc(person.name) + '</b> — ' + esc(person.id) + '<br><span style="color:var(--muted)">Palm re-scan needed: this palm was enrolled in the previous template format, which the current packed matcher cannot read. One burst re-banks it in the current format; the old codes stay archived in this record, and nothing else about this person changes. Honest limit: because the old templates cannot be read, this re-scan cannot check the presented palm against them — it banks the palm that is presented, so only run it with this person\'s own palm.</span>';
@@ -4001,6 +4065,7 @@
       }
       $('topMsg').innerHTML = '';
       if (viaRecovery) $('topMsg').innerHTML = '<div class="notice">You came here from a failed wallet-open scan. This guided capture tries to add angles to ' + esc(person.name) + '\'s stored palm under the usual safety check. If the check refuses — because the stored templates are the ones failing — you will be offered a confirmed re-registration instead.</div>';
+      if (neuralStaleGrant && B.palmnetBankStale(person.palmProfile)) $('topMsg').innerHTML = '<div class="notice">This profile\'s stored PalmNet bank belongs to the previous model, so the safety check cannot compare this capture against it — the check judges on the EDCC templates alone. If the check refuses for that reason, you will be offered a confirmed re-registration instead: a fresh enrolment under the current model restores full EDCC + PalmNet verify.</div>';
       $('topStatus').textContent = 'Starting the camera...';
       startTopupCamera();
     });
@@ -4073,7 +4138,25 @@
           var guard = B.bankingGuardCheck(person.palmProfile, { edccProbes: candProbes, neuralEmbeddings: good, hand: captureHand });
           if (guard.status === 'fail') {
             DB.put('logs', { ts: Date.now(), personId: person.id, personName: person.name, store: '', method: 'palm', measured: 'Banking refused by the v49 same-person guard: the captured palm did not verify against this profile (EDCC ' + (guard.edccChecked ? guard.edccScore.toFixed(3) : 'not checkable') + ', PalmNet ' + (guard.neuralChecked ? guard.neuralScore.toFixed(3) : 'not checkable') + '). Nothing was banked.' + (guard.handGate ? ' Hand gate: the captured palm is the ' + guard.probeHand + ' hand; this profile recorded the ' + guard.profileHand + ' hand — the other hand is a different identity.' : ''), result: 'Banking Refused — Palm Mismatch' });
-            $('topMsg').innerHTML = '<div class="error">This palm does not match this profile — nothing was added</div>';
+            // v55 (AUDIT-v54.md, Defect 1): the refusal wording
+            // must not claim a checked mismatch when the neural
+            // leg never ran. When the profile's stored neural
+            // bank is stale (banked by a previous model) the
+            // guard's neural leg is uncheckable by construction,
+            // so the refusal says exactly that — what WAS
+            // checked (the EDCC score against its bar) and what
+            // could NOT be checked — instead of the flat
+            // mismatch claim. Every other refusal (a checked
+            // EDCC mismatch, a checked neural mismatch, the
+            // v51 hand gate) keeps the exact v49 string.
+            var refusalStaleUncheckable = !guard.handGate && !guard.neuralChecked && B.palmnetBankStale(person.palmProfile);
+            if (refusalStaleUncheckable) {
+              $('topMsg').innerHTML = '<div class="error">This capture could not be confirmed for this profile — nothing was added. The EDCC check did not pass' +
+                (guard.edccChecked && typeof guard.edccScore === 'number' ? ' (best score ' + guard.edccScore.toFixed(3) + ' against the ' + B.PALMPRINT_THRESHOLD + ' bar)' : '') +
+                ', and the PalmNet check could not run: the neural bank stored for this profile was banked by the previous model (' + esc(B.palmnetProfileModelId(person.palmProfile) || 'unstamped') + ') and cannot be compared with the current one.</div>';
+            } else {
+              $('topMsg').innerHTML = '<div class="error">This palm does not match this profile — nothing was added</div>';
+            }
             // v53: when this capture was launched from the
             // wallet-open recovery path, the refusal is the
             // lockout case — the stored bank is what is failing,
@@ -4083,10 +4166,17 @@
             // profile) shows nothing more: re-registration is
             // reachable ONLY from here, only for the recovery
             // profile, only after this refusal.
+            // v55: the same offer follows a refusal inside a
+            // stale-bank Neural Scan capture (recoveryVia
+            // 'neural') — there the stored bank is not failing,
+            // it is UNCHECKABLE, and the offer text says so.
             if (recoveryPersonId && recoveryPersonId === person.id) {
               reregPerson = person;
+              var reregWhy = recoveryVia === 'neural'
+                ? 'The safety check could not pass this capture: this profile\'s stored PalmNet bank was banked by the previous model, so the neural check cannot run on it at all, and the EDCC templates alone did not pass. If you are ' + esc(person.name) + ' and this is your own palm, you can re-register it: a fresh guided enrolment replaces this profile\'s palm bank — EDCC and PalmNet together — under the current model, which restores full verify. Nothing else about the profile changes.'
+                : 'The safety check compares the captured palm against the templates already stored — and those stored templates are the ones that are failing. If you are ' + esc(person.name) + ' and this is your own palm, you can re-register it: a fresh guided enrolment replaces this profile\'s palm bank. Nothing else about the profile changes.';
               $('topMsg').innerHTML += '<div class="diagpanel"><div class="diagtitle">This profile cannot be strengthened this way</div>' +
-                '<div class="diagrow">The safety check compares the captured palm against the templates already stored — and those stored templates are the ones that are failing. If you are ' + esc(person.name) + ' and this is your own palm, you can re-register it: a fresh guided enrolment replaces this profile\'s palm bank. Nothing else about the profile changes.</div>' +
+                '<div class="diagrow">' + reregWhy + '</div>' +
                 '<button class="btn danger" id="topReregOpen" style="margin-top:10px">Re-register this palm</button></div>';
               $('topReregOpen').addEventListener('click', function () { openReregConfirm(); });
             }
@@ -4231,7 +4321,12 @@
       var fresh = people.find(function (p) { return p.id === reregPerson.id; }) || reregPerson;
       reregPerson = fresh;
       var edcc = fresh.palmProfile && Array.isArray(fresh.palmProfile.codes) ? fresh.palmProfile.codes.length : 0;
-      var neural = (B.palmnetProfileEmbeddings(fresh.palmProfile) || []).length;
+      // v55 (AUDIT-v54.md, Defect 2): the panel must state the
+      // bank that will actually be discarded — the STORED
+      // embeddings (B.storedPalmnetCount), not the
+      // staleness-judging reader, which reads a stale bank as
+      // zero and silently understated it.
+      var neural = B.storedPalmnetCount(fresh.palmProfile);
       $('topReregCounts').textContent = 'Profile: ' + fresh.name + ' (' + fresh.id + '). Its stored palm bank — ' +
         edcc + ' EDCC template' + (edcc === 1 ? '' : 's') + (neural ? ' and ' + neural + ' PalmNet embedding' + (neural === 1 ? '' : 's') : '') +
         ' — will be replaced by the new capture. The Biom ID, wallet, balance, statement, linked accounts, limits and loyalty points do not change.';
@@ -4303,7 +4398,11 @@
     var poses = kept.map(function (c) { return c.desc; });
     var hand = B.palmConsensusHand(complete.map(function (r) { return r.hand; }));
     var oldEdcc = person.palmProfile && Array.isArray(person.palmProfile.codes) ? person.palmProfile.codes.length : 0;
-    var oldNeural = (B.palmnetProfileEmbeddings(person.palmProfile) || []).length;
+    // v55 (AUDIT-v54.md, Defect 2): the accountability record
+    // counts the STORED bank (B.storedPalmnetCount) — a stale
+    // bank's embeddings are really discarded here, and the log
+    // must say how many there were.
+    var oldNeural = B.storedPalmnetCount(person.palmProfile);
     PalmNet.embedRois(neuralCandidateRois(complete)).then(function (embs) {
       var good = (embs || []).filter(function (e) { return !!e; });
       var bank = good.length ? B.palmnetBankFromEmbeddings(good) : null;
@@ -4313,11 +4412,18 @@
       if (person.palmProfile && person.palmProfile.legacyCodes) profile.legacyCodes = person.palmProfile.legacyCodes;
       var updated = Object.assign({}, person, { palmProfile: profile });
       return DB.put('people', updated).then(function () {
+        // v55: the record names the path that actually led
+        // here — the wallet-open recovery (v53) or the
+        // stale-bank Neural Scan (v55, AUDIT-v54.md Defect 1).
+        var pathNote = recoveryVia === 'neural'
+          ? 'a Neural Scan top-up — the stored PalmNet bank was banked by the previous model, so the guard\'s neural leg could not check the capture and its EDCC leg refused it'
+          : 'an Add Angles top-up in the wallet recovery path';
         return DB.put('logs', { ts: Date.now(), personId: person.id, personName: person.name, store: '', method: 'palm',
-          measured: 'Owner re-registration: after the banking guard refused an Add Angles top-up in the wallet recovery path, the owner confirmed (typed REPLACE) replacement of this profile\'s palm bank. Old bank: ' + oldEdcc + ' EDCC template(s), ' + oldNeural + ' PalmNet embedding(s). New bank: ' + codes.length + ' EDCC template(s), ' + (bank ? bank.embeddings.length : 0) + ' PalmNet embedding(s), hand recorded: ' + (hand || 'not determined') + '. Biom ID, wallet, balance, statement, linked accounts, limits and points unchanged.',
+          measured: 'Owner re-registration: after the banking guard refused ' + pathNote + ', the owner confirmed (typed REPLACE) replacement of this profile\'s palm bank. Old bank: ' + oldEdcc + ' EDCC template(s), ' + oldNeural + ' PalmNet embedding(s). New bank: ' + codes.length + ' EDCC template(s), ' + (bank ? bank.embeddings.length : 0) + ' PalmNet embedding(s), hand recorded: ' + (hand || 'not determined') + '. Biom ID, wallet, balance, statement, linked accounts, limits and points unchanged.',
           result: 'Owner Re-registration' });
       }).then(function () {
         recoveryPersonId = null;
+        recoveryVia = null;
         reregPerson = null;
         topupBusy = false; palmScanBusy = false;
         $('topCapture').disabled = false;
@@ -4354,7 +4460,7 @@
 
   $('topStart').addEventListener('click', function () { startTopupCamera(); });
   $('topCapture').addEventListener('click', runTopupCapture);
-  $('topBack').addEventListener('click', function () { recoveryPersonId = null; reregPerson = null; if ($('topRereg')) $('topRereg').classList.add('hidden'); go('registry'); });
+  $('topBack').addEventListener('click', function () { recoveryPersonId = null; recoveryVia = null; reregPerson = null; if ($('topRereg')) $('topRereg').classList.add('hidden'); go('registry'); });
   camRestarters.topup = function () { startTopupCamera(); };
 
   function renderFieldPanel() {

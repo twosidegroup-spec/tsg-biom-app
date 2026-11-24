@@ -3169,6 +3169,38 @@
     var embs = palmnetProfileEmbeddings(stored);
     return !!(embs && embs.length);
   }
+  /* v55: is there a neural bank IN STORAGE that the running
+     model cannot score? True exactly when a bank object with
+     embeddings is stored but palmnetProfileEmbeddings reads
+     it as no bank at all — i.e. its stamp is another model's
+     (or missing). This is a STORAGE fact, not a score: the
+     audit (AUDIT-v54.md, Defect 1) showed flows must be able
+     to say "the neural check could not run on this bank"
+     instead of claiming a checked mismatch, and the v53
+     re-registration paperwork must count what is actually
+     stored (Defect 2). Scoring never uses this — scoring
+     reads palmnetProfileEmbeddings, as always. */
+  function palmnetBankStale(stored) {
+    if (!stored || typeof stored !== 'object') return false;
+    var bank = stored.neural;
+    if (!bank || typeof bank !== 'object' || !Array.isArray(bank.embeddings) || !bank.embeddings.length) return false;
+    return palmnetProfileEmbeddings(stored) === null;
+  }
+  /* v55: how many neural embeddings the STORED bank holds,
+     whatever model stamped them — the count the owner is
+     told before a re-registration discards them, and the
+     count the re-registration log records. Deliberately NOT
+     palmnetProfileEmbeddings: that reader judges staleness
+     for scoring and returns null for a stale bank, which
+     silently understated the stored bank in the v53
+     paperwork (AUDIT-v54.md, Defect 2). Display and
+     accountability only; never a score input. */
+  function storedPalmnetCount(stored) {
+    if (!stored || typeof stored !== 'object') return 0;
+    var bank = stored.neural;
+    if (!bank || typeof bank !== 'object' || !Array.isArray(bank.embeddings)) return 0;
+    return bank.embeddings.length;
+  }
   /* A current-format (packed96) EDCC profile with sane codes but
      no sane neural bank: it verifies EDCC-only, and the Registry
      shows the "Neural scan needed" state for it. Legacy profiles
@@ -4681,8 +4713,30 @@
      The step is therefore the identity, and a v53 store —
      neural banks of either stamp, hand stamps, wallet
      balance, statement and linked accounts included — opens
-     under v54 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54'];
+     under v54 byte-identical.
+
+     v54 -> v55 is an ADOPTION: v55 changes no stored field,
+     no threshold, bar, fusion, guard leg or gate, and no
+     model byte. It repairs the remedy path AROUND the v54
+     model swap (AUDIT-v54.md): a Neural Scan launched for a
+     profile whose stored bank the running model cannot
+     score (a stale bank) is now recovery-eligible, so a
+     banking-guard refusal inside it offers the same
+     owner-confirmed re-registration the wallet-open path
+     has offered since v53, instead of dead-ending; the
+     refusal wording no longer claims a checked mismatch
+     when the neural leg could not run; the re-registration
+     confirmation and log count the STORED neural bank
+     (storedPalmnetCount), not the staleness-judging reader;
+     and the model loader refuses a manifest whose modelId
+     is not the running model's id, failing soft to EDCC
+     instead of ever running a model under the wrong bar
+     and stamps. All of it is app-flow and read-time logic —
+     the step is therefore the identity, and a v54 store —
+     neural banks of either stamp, hand stamps, wallet
+     balance, statement and linked accounts included —
+     opens under v55 byte-identical. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -4699,6 +4753,7 @@
     'v52': function (snap) { return snap; },
     'v53': function (snap) { return snap; },
     'v54': function (snap) { return snap; },
+    'v55': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
@@ -4941,6 +4996,8 @@
     palmnetEmbeddingFromBase64: palmnetEmbeddingFromBase64,
     palmnetProfileEmbeddings: palmnetProfileEmbeddings,
     palmnetProfileSane: palmnetProfileSane,
+    palmnetBankStale: palmnetBankStale,
+    storedPalmnetCount: storedPalmnetCount,
     palmnetNeedsScan: palmnetNeedsScan,
     palmnetBankFromEmbeddings: palmnetBankFromEmbeddings,
     mergePalmnetEmbeddings: mergePalmnetEmbeddings,

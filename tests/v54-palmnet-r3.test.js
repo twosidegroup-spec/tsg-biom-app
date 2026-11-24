@@ -270,10 +270,17 @@ check('FIELDTEST the terminal record builder stamps the running model id (source
 })();
 
 /* ---------------- versions -------------------------------------- */
-check('VERSION app data version is v54', appSrc.indexOf("APP_DATA_VERSION = 'v54'") !== -1);
-check('VERSION shell is v54', swSrc.indexOf('tsg-biom-shell-v54') !== -1);
-check('VERSION v54 is the newest link in the chain',
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v54');
+// v55: the three absolute pins below were converted to the
+// version-coherence form (the v48/v49/v50/v51/v52/v53 pattern)
+// when v55 shipped — v54 remains IN the chain as an adoption
+// step; the living current-version pins are in v38-migration
+// + the v55 suite. The v54 proofs in this suite are unchanged.
+check('VERSION app data version and shell version agree', (function () {
+  const dv = (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1];
+  const sv = (swSrc.match(/tsg-biom-shell-(v\d+)/) || [])[1];
+  return !!dv && dv === sv;
+})());
+check('VERSION v54 remains in the chain as an adoption step', B.BIOM_DATA_VERSIONS.indexOf('v54') !== -1);
 
 console.log(fail === 0 ? 'ALL v54 PALMNET-R3 TESTS PASSED (' + pass + ')' : fail + ' FAILURES, ' + pass + ' passed');
 process.exit(fail === 0 ? 0 : 1);
