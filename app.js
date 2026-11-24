@@ -41,7 +41,7 @@
      is skipped, nothing is deleted, and the next launch retries —
      the app boots on the un-migrated data either way, because its
      readers fail closed per record. */
-  var APP_DATA_VERSION = 'v49';
+  var APP_DATA_VERSION = 'v50';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -715,6 +715,7 @@
   /* Palm texture + sharpness from any image source (a recorded frame
      here; the same maths the live captureTexture used), cropped around
      the detected hand so it is the palm's own texture. */
+  var measuresScratch = null;
   function palmFrameMeasures(source, sw, sh, lm) {
     try {
       if (!lm || !sw || !sh) return { texture: null, sharpness: 0 };
@@ -730,7 +731,15 @@
       var sx = Math.max(0, Math.min(sw - side, cx - side / 2));
       var sy = Math.max(0, Math.min(sh - side, cy - side / 2));
       var size = 128;
-      var canvas = document.createElement('canvas'); canvas.width = size; canvas.height = size;
+      // v50: reuse one scratch canvas (the discipline roiScratch
+      // and spoofScratch already follow) instead of allocating a
+      // fresh canvas on every analysed frame. The draw and the
+      // pixel read below are identical and complete synchronously
+      // before any other frame is measured, so the numbers a
+      // frame produces are unchanged.
+      if (!measuresScratch) measuresScratch = document.createElement('canvas');
+      measuresScratch.width = size; measuresScratch.height = size;
+      var canvas = measuresScratch;
       var ctx = canvas.getContext('2d');
       ctx.drawImage(source, sx, sy, side, side, 0, 0, size, size);
       var img = ctx.getImageData(0, 0, size, size).data;
@@ -1451,7 +1460,12 @@
      since v34: no guide overlay, the landmark ROI follows the
      hand anywhere in the frame. Returns { results, burst:
      { frames, liveness } | null, spoof, lightTag, elapsedMs,
-     stopped?, timedOut?, hint? }. */
+     stopped?, timedOut?, hint? }.
+     v50: the watch loop is paced to the camera clock and yields
+     to the UI every analysed frame, and burst analysis yields
+     for a paint between frames — performance only; every gate,
+     threshold and selection rule above is unchanged (the full
+     measurement story is at the pacing note inside the stream). */
   function streamEnrolPalm(video, statusEl, sequence, swapCamera, control) {
     var t0 = Date.now();
     var tracker = makeSpoofTracker();
@@ -1462,6 +1476,49 @@
     var poseRef = null;
     var lastHint = 'Show open palm';
     var frameCanvas = null;
+    /* v50 smoothness: the watch loop below is PACED and YIELDING.
+       Before v50 it re-entered analysis the microtask the previous
+       frame's landmarks landed — a self-chaining promise loop
+       whose only await was the inference itself. Measured on the
+       rig (tests/e2e/perf-enrol.js, no-hand watch): 95.4% of the
+       wall clock inside landmark inference, ONE unbroken main-
+       thread task of ~159 s, and requestAnimationFrame starved
+       outright (zero completed 500 ms rAF buckets in 24 s) — the
+       page could not paint, taps queued behind the loop, and a
+       cancel could not even be observed for over 15 s. That is
+       the Chairman's 2026-11-24 phone report ("registering it
+       was stuck lag and got hang") in mechanism form. Two
+       disciplines, both borrowed from the verify stream's v37
+       pacing and hardened for a loop with no worker round-trip
+       to hide behind:
+       - waitFreshFrame(): grabs are paced to the camera clock
+         (~100 ms of stream time between analysed frames), so no
+         instant is analysed twice and a fast pipeline idles
+         between frames instead of queueing stale work;
+       - yieldToUi(): one real macrotask yield per analysed
+         frame, so the browser gets a task boundary — and with
+         it a chance to paint, composite the camera preview and
+         deliver taps — even when analysis is SLOWER than the
+         pace and the clock wait returns immediately.
+       Neither changes what is analysed or judged: the same
+       frames pass through the same analysePalmFrame, the same
+       quality gate, the same 2-consecutive-qualify rule, the
+       same spoof sampling; only the loop's manners change. */
+    var lastGrabT = -1;
+    var shownHint = null;
+    function waitFreshFrame() {
+      if (lastGrabT < 0) return Promise.resolve();
+      var target = lastGrabT + 0.1;
+      function poll() {
+        if (video.currentTime >= target || Date.now() > deadline) return Promise.resolve();
+        return waitMs(8).then(poll);
+      }
+      return poll();
+    }
+    function yieldToUi() { return waitMs(0); }
+    function showHint() {
+      if (statusEl && lastHint !== shownHint) { shownHint = lastHint; statusEl.textContent = lastHint; }
+    }
 
     function setRing(pct) {
       var ring = $('palmBurstRing');
@@ -1478,23 +1535,30 @@
        the session, or null otherwise. The hint line is composed
        from the spec's own strings wherever the gate produced one. */
     function watchStep() {
-      if (!frameCanvas) frameCanvas = document.createElement('canvas');
-      var frame = grabVideoFrameInto(video, frameCanvas);
-      if (!frame) return waitMs(60).then(function () { return null; });
-      return analysePalmFrame(frame).then(function (r) {
-        watchFrames++;
-        if (watchFrames % 2 === 1) tracker.add(frame, r.lm);
-        if (tracker.state().spoof) return 'spoof';
-        var hasHand = typeof r.openness === 'number';
-        if (hasHand) seenHand = true;
-        var gate = r.roi ? B.palmprintQualityGate(r.roi, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE, { hasHand: hasHand, bboxWidthFrac: B.palmBboxWidthFrac(r.lm) }) : null;
-        if (!hasHand) lastHint = 'Show open palm';
-        else if (gate && !gate.pass) lastHint = gate.hint || 'Hold steady...';
-        else if (r.framing) lastHint = r.framing;
-        else lastHint = 'Hold steady...';
-        if (statusEl) statusEl.textContent = lastHint;
-        var qualifies = !!(r.roi && hasHand && r.openness >= B.PALM_OPEN_MIN && gate && gate.pass && r.code && B.palmprintCodeSane(r.code));
-        return qualifies ? 'qualify' : null;
+      return waitFreshFrame().then(function () {
+        if (!frameCanvas) frameCanvas = document.createElement('canvas');
+        var frame = grabVideoFrameInto(video, frameCanvas);
+        if (!frame) return waitMs(60).then(function () { return null; });
+        lastGrabT = video.currentTime;
+        return analysePalmFrame(frame).then(function (r) {
+          watchFrames++;
+          if (watchFrames % 2 === 1) tracker.add(frame, r.lm);
+          if (tracker.state().spoof) return 'spoof';
+          var hasHand = typeof r.openness === 'number';
+          if (hasHand) seenHand = true;
+          var gate = r.roi ? B.palmprintQualityGate(r.roi, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE, { hasHand: hasHand, bboxWidthFrac: B.palmBboxWidthFrac(r.lm) }) : null;
+          if (!hasHand) lastHint = 'Show open palm';
+          else if (gate && !gate.pass) lastHint = gate.hint || 'Hold steady...';
+          else if (r.framing) lastHint = r.framing;
+          else lastHint = 'Hold steady...';
+          showHint();
+          var qualifies = !!(r.roi && hasHand && r.openness >= B.PALM_OPEN_MIN && gate && gate.pass && r.code && B.palmprintCodeSane(r.code));
+          // v50: the yield is part of the step, so EVERY analysed
+          // watch frame ends at a task boundary (see the note at
+          // the top of this stream) — including the qualifying
+          // ones; the streak logic in watch() is untouched.
+          return yieldToUi().then(function () { return qualifies ? 'qualify' : null; });
+        });
       });
     }
     function watch() {
@@ -1505,7 +1569,9 @@
         if (Date.now() > deadline) return Promise.resolve('timeout');
         if (!swapped && swapCamera && watchFrames >= 18 && !seenHand) {
           swapped = true;
+          lastGrabT = -1; // v50: the new stream's clock restarts (as in the verify stream)
           if (statusEl) statusEl.textContent = 'No hand was seen by this camera - switching to the other camera and trying once more.';
+          shownHint = null; // the next analysed frame's hint replaces the swap note
           return swapCamera().then(step, step);
         }
         return watchStep().then(function (res) {
@@ -1536,7 +1602,22 @@
         setTimeout(finish, B.PALMPRINT_BURST_MS);
       });
     }
+    /* v50: a paint yield for the burst analysis — wait for the
+       next animation frame (raced against 60 ms so a throttled
+       rAF can never stall the analysis) so the browser actually
+       paints between burst frames. Before v50 the burst chain
+       ran 12-18 full analyses back to back in one starved
+       cascade (rig: one 12.7 s long task for 14 frames, zero
+       rAF buckets) with the UI frozen on the capture message. */
+    function yieldForPaint() {
+      if (typeof requestAnimationFrame !== 'function') return waitMs(0);
+      return Promise.race([
+        new Promise(function (resolve) { requestAnimationFrame(function () { setTimeout(resolve, 0); }); }),
+        waitMs(60)
+      ]);
+    }
     function analyseBurst(frames) {
+      if (statusEl) statusEl.textContent = 'Palm captured — analysing the burst, hold on...';
       var results = [];
       var lmSets = [];
       var chain = Promise.resolve();
@@ -1558,7 +1639,7 @@
               r.poseDesc = pdesc;
               r.poseTag = B.palmPoseTag(r.lm, poseRef);
             }
-          });
+          }).then(function () { return yieldForPaint(); }); // v50: paint between burst frames
         });
       });
       return chain.then(function () { return { results: results, lmSets: lmSets }; });
@@ -1574,9 +1655,16 @@
       if (w === 'spoof') return out();
       if (w !== 'burst') return out({ timedOut: true, hint: lastHint });
       if (statusEl) statusEl.textContent = 'Palm found — capturing, hold steady...';
-      return recordBurst().then(analyseBurst).then(function (a) {
-        var lv = B.palmprintBurstLiveness(a.lmSets);
-        return out({ results: a.results, burst: { frames: a.results.length, liveness: lv } });
+      return recordBurst().then(function (burstFrames) {
+        // v50: a cancel that landed during the 900 ms burst or
+        // the burst analysis ends the capture as 'stopped' here,
+        // instead of banking a palm for a view nobody is on.
+        if (control && control.cancelled) { var o = out(); o.stopped = true; return o; }
+        return analyseBurst(burstFrames).then(function (a) {
+          if (control && control.cancelled) { var o2 = out(); o2.stopped = true; return o2; }
+          var lv = B.palmprintBurstLiveness(a.lmSets);
+          return out({ results: a.results, burst: { frames: a.results.length, liveness: lv } });
+        });
       });
     });
   }
@@ -1674,6 +1762,12 @@
     var frameCanvas = null;
     var lastGrabT = -1;
     var prevMatch = null;
+    // v50: status text is written only when it changes — the
+    // loop re-derives the same guidance line on most frames, and
+    // re-assigning an identical textContent still replaces the
+    // text node and invalidates layout on every frame.
+    var shownStatus = null;
+    function setStatus(txt) { if (statusEl && txt !== shownStatus) { shownStatus = txt; statusEl.textContent = txt; } }
 
     /* v47 PalmNet fusion state. The neural path runs ALONGSIDE
        the EDCC pipeline, never inside its critical path: each
@@ -2003,11 +2097,11 @@
       // convicted the scan on the frames examined so far, no win
       // is honoured.
       if (win && lv.pass && sp.framesChecked >= 3 && (!strictMoney || moneyGate.confirmed('target'))) return verifiedOut();
-      if (win && lv.pass && statusEl) statusEl.textContent = 'Palm matched — confirming this is a live hand, not a screen…';
+      if (win && lv.pass && statusEl) setStatus('Palm matched — confirming this is a live hand, not a screen…');
       // v49: in a money scan, a latched win that still lacks its
       // second confirming frame says so — the scan keeps running
       // and the palm simply stays in view a moment longer.
-      if (strictMoney && win && lv.pass && sp.framesChecked >= 3 && statusEl) statusEl.textContent = 'Palm matched — money authorisation needs the match confirmed on a second frame. Keep the palm there…';
+      if (strictMoney && win && lv.pass && sp.framesChecked >= 3 && statusEl) setStatus('Palm matched — money authorisation needs the match confirmed on a second frame. Keep the palm there…');
       // v37: the burst-era "two bursts" static guard is the same
       // evidence in continuous terms — six analysed frames.
       if (lv.verdict === 'static' && analysed >= 6) return livenessFailOut(lv);
@@ -2045,7 +2139,8 @@
       if (!swapped && swapCamera && analysed >= 18 && frames.every(function (x) { return typeof x.openness !== 'number'; })) {
         swapped = true;
         lastGrabT = -1; // the new stream's clock restarts
-        if (statusEl) statusEl.textContent = 'No hand was seen by this camera - switching to the other camera and trying once more.';
+        if (statusEl) setStatus('No hand was seen by this camera - switching to the other camera and trying once more.');
+        shownStatus = null; // v50: the next guidance line always replaces the swap note
         return swapCamera().then(function () { return loop(); }, function () { return loop(); });
       }
       if (statusEl) {
@@ -2053,7 +2148,7 @@
         // v43: the live guidance pill — one concise line mapped
         // from the quality signals this frame already produced.
         var guide = B.palmGuidance({ hasHand: seenHandNow, framing: lastHint, openness: lastOpen, meanLuma: lastSampleB, glareFrac: lastGlare, sharpness: lastSharp, stable: false });
-        statusEl.textContent = guide || (seenHandNow ? 'Hand detected — hold steady.' : 'Show & Pay scanning — show an open hand to the camera.');
+        setStatus(guide || (seenHandNow ? 'Hand detected — hold steady.' : 'Show & Pay scanning — show an open hand to the camera.'));
       }
       return step().then(loop);
     }
@@ -2087,15 +2182,21 @@
     var appliedBy = {};
     candidates.forEach(function (p) { states[p.id] = { streak: 0, best: null }; appliedBy[p.id] = []; });
     var win = null; // { person, res, fast }
-    // v49: with opts.strictMoney (wallet open is a money
-    // authorisation) the identification must ALSO satisfy the
-    // strict rule before loop() honours it: the same candidate's
-    // fused win on two distinct analysed frames (moneyGate, one
-    // key per candidate) and, on the confirming frame, the
-    // margin over every other candidate's same-frame score
-    // (judged in tryWinIdentify, where that frame's per-candidate
-    // results are in hand). A margin failure is terminal for the
-    // scan (strictFail): an ambiguous palm does not move money.
+    // v49 built this stream's opts.strictMoney for wallet open:
+    // the identification must ALSO satisfy the strict rule before
+    // loop() honours it — the same candidate's fused win on two
+    // distinct analysed frames (moneyGate, one key per candidate)
+    // and, on the confirming frame, the margin over every other
+    // candidate's same-frame score (judged in tryWinIdentify,
+    // where that frame's per-candidate results are in hand); a
+    // margin failure is terminal for the scan (strictFail).
+    // v50 (the Chairman's correction, 2026-11-24): wallet open is
+    // a login, not a money movement, so NO caller passes the
+    // option any more — the strict rule lives only on the three
+    // money-moving verify authorisations. The machinery stays in
+    // place, unused by this stream, rather than being ripped out
+    // of a shipped stream; with the option absent every path
+    // below is exactly the plain v48 identification.
     var strictMoney = !!(opts && opts.strictMoney);
     var moneyGate = B.createMoneyScanGate();
     var strictFail = null; // { block: 'margin' }
@@ -2118,6 +2219,11 @@
     var frameCanvas = null;
     var lastGrabT = -1;
     var prevMatch = null;
+    // v50: status text is written only when it changes (same
+    // discipline as the 1:1 stream — identical re-writes still
+    // replace the text node and invalidate layout every frame).
+    var shownStatus = null;
+    function setStatus(txt) { if (statusEl && txt !== shownStatus) { shownStatus = txt; statusEl.textContent = txt; } }
 
     /* v47 PalmNet fusion state (same discipline as the 1:1
        stream): each frame's probe is embedded ONCE off-thread and
@@ -2371,10 +2477,10 @@
       if (strictFail) { Snd.buzz(); return { fail: MONEY_STRICT_FAIL_MSG, strictMoney: { applied: true, pass: false, block: strictFail.block } }; }
       var lv = B.passiveLivenessCheck(poses);
       if (win && lv.pass && sp.framesChecked >= 3) return identifiedOut();
-      if (win && lv.pass && statusEl) statusEl.textContent = 'Palm identified — confirming this is a live hand, not a screen…';
+      if (win && lv.pass && statusEl) setStatus('Palm identified — confirming this is a live hand, not a screen…');
       // v49: one candidate has a first verified frame but not yet
       // its confirming second — say so while the scan runs on.
-      if (strictMoney && !win && lv.pass && statusEl && candidates.some(function (p) { return moneyGate.verifiedFrames(p.id) === 1; })) statusEl.textContent = 'Palm matched — money authorisation needs the match confirmed on a second frame. Keep the palm there…';
+      if (strictMoney && !win && lv.pass && statusEl && candidates.some(function (p) { return moneyGate.verifiedFrames(p.id) === 1; })) setStatus('Palm matched — money authorisation needs the match confirmed on a second frame. Keep the palm there…');
       if (lv.verdict === 'static' && analysed >= 6) return livenessFailOut(lv);
       if (lv.verdict === 'erratic') return livenessFailOut(lv);
       if (analysed >= MAXF || Date.now() > deadline) {
@@ -2391,7 +2497,8 @@
       if (!swapped && swapCamera && analysed >= 18 && frames.every(function (x) { return typeof x.openness !== 'number'; })) {
         swapped = true;
         lastGrabT = -1;
-        if (statusEl) statusEl.textContent = 'No hand was seen by this camera - switching to the other camera and trying once more.';
+        if (statusEl) setStatus('No hand was seen by this camera - switching to the other camera and trying once more.');
+        shownStatus = null; // v50: the next guidance line always replaces the swap note
         return swapCamera().then(function () { return loop(); }, function () { return loop(); });
       }
       if (statusEl) {
@@ -2399,7 +2506,7 @@
         // v43: the live guidance pill — one concise line mapped
         // from the quality signals this frame already produced.
         var guide = B.palmGuidance({ hasHand: seenHandNow, framing: lastHint, openness: lastOpen, meanLuma: lastSampleB, glareFrac: lastGlare, sharpness: lastSharp, stable: false });
-        statusEl.textContent = guide || (seenHandNow ? 'Hand detected — hold steady.' : 'Show an open hand to the camera.');
+        setStatus(guide || (seenHandNow ? 'Hand detected — hold steady.' : 'Show an open hand to the camera.'));
       }
       return step().then(loop);
     }
@@ -3125,14 +3232,22 @@
 
   /* Open a wallet: the scan is the key, always. The generic route
      identifies the palm (1:N); a profile card names the person and
-     the scan must verify as THAT person (1:1). */
+     the scan must verify as THAT person (1:1).
+     v50 (the Chairman's correction, 2026-11-24): opening a wallet
+     is a LOGIN, not a money movement — v49's strict money rule
+     ran here too and blocked the owner opening his own wallet
+     ("Matched, but not clearly enough to authorise money" at
+     wallet entry). Both routes below therefore run the PLAIN
+     fused verify, exactly as before v49. The strict rule stays
+     on the three money-moving authorisations only: Add Money,
+     Send Money sender authorisation, terminal Biom Pay. */
   $('walletOpenScan').addEventListener('click', function () {
     showWalletScan({
       title: 'Open your wallet — palm scan',
       prompt: 'Show your open palm to the camera. If it matches a registered palm, that person\'s wallet opens. A palm that is not registered opens nothing.',
       run: function () {
         return DB.all('people').then(function (people) {
-          return streamIdentifyPalm($('wScanVideo'), $('wScanStatus'), people, walletSwapCamera, walletControl, { strictMoney: true }).then(function (out) {
+          return streamIdentifyPalm($('wScanVideo'), $('wScanStatus'), people, walletSwapCamera, walletControl).then(function (out) {
             if (!out || out.fail || !out.person) { walletScanFailed(out); return; }
             walletSessionId = out.person.id;
             hideWalletScan();
@@ -3156,7 +3271,7 @@
       run: function () {
         return DB.all('people').then(function (people) {
           var fresh = people.find(function (p) { return p.id === personId; }) || person;
-          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, walletSwapCamera, function () {}, walletControl, { strictMoney: true }).then(function (out) {
+          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, walletSwapCamera, function () {}, walletControl).then(function (out) {
             var auth = authFromVerify(out, personId);
             if (!auth.verified) { walletScanFailed(out); return; }
             walletSessionId = personId;

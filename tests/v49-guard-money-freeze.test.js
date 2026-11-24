@@ -35,11 +35,20 @@
      PalmNet worker 45 s, embed race 6 s, DB.open 2.5 s) remain.
    - WIRING pins on the shipped sources: the guard runs before
      both merges in runTopupCapture with the exact refusal
-     message; the strict option reaches exactly the five money
-     call sites and NOT the Send receiver identification; the
+     message; the strict option reaches the money-moving call
+     sites and NOT the Send receiver identification; the
      terminal field record carries the strict outcome as extra
      fields; versions are v49 / shell v49; 'v49' is a pure
      adoption step in the migration chain.
+   v50 amendment (2026-11-24, the Chairman's correction): the
+   strict option's call sites went from five to THREE — wallet
+   open (both routes) no longer carries it, because opening a
+   wallet is a login, not a money movement, and the rule blocked
+   the owner opening his own wallet. The pins below now assert
+   exactly three strict sites and that both wallet-open routes
+   are plain; the version pins take the coherence form (the
+   living current-version pins live in v38-migration and the
+   v50 suite), as the v48 suite's did at the v49 bump.
    All numbers here are RIG numbers; the phone is the verdict. */
 'use strict';
 const fs = require('fs');
@@ -277,17 +286,27 @@ function wiringChecks() {
   check('WIRING the legacy re-bank limitation is stated in the flow copy',
     appSrc.indexOf('this re-scan cannot check the presented palm against them') !== -1);
 
-  /* Strict wiring: exactly the five money call sites carry the
-     option; the Send receiver identification stays plain. */
+  /* Strict wiring: exactly the THREE money-moving call sites
+     carry the option (v50 correction — wallet open is a login
+     and runs plain, both routes); the Send receiver
+     identification stays plain. */
   check('WIRING the strict refusal message is the exact ordered wording',
     appSrc.indexOf("var MONEY_STRICT_FAIL_MSG = 'Matched, but not clearly enough to authorise money — please scan again';") !== -1);
   const strictSites = (appSrc.match(/\{ strictMoney: true \}\)/g) || []).length;
-  check('WIRING exactly five money call sites pass the strict option (terminal, wallet open x2 routes, Add Money, Send authorise)',
-    strictSites === 5, 'found ' + strictSites);
+  check('WIRING exactly three money-moving call sites pass the strict option (terminal Biom Pay, Add Money, Send authorise)',
+    strictSites === 3, 'found ' + strictSites);
   const recvStart = appSrc.indexOf("$('wSendScanReceiver')");
   const recvSlice = appSrc.slice(recvStart, appSrc.indexOf('function renderSendConfirm()', recvStart));
   check('WIRING the Send RECEIVER identification stays a plain scan (identifying a person moves no money)',
     recvSlice.indexOf('streamIdentifyPalm') !== -1 && recvSlice.indexOf('strictMoney') === -1);
+  const woStart = appSrc.indexOf("$('walletOpenScan')");
+  const woSlice = appSrc.slice(woStart, appSrc.indexOf('function openWalletForPerson', woStart));
+  check('WIRING wallet open (1:N route) carries NO strict flag — a login, not a money movement (v50 correction)',
+    woSlice.indexOf('streamIdentifyPalm') !== -1 && woSlice.indexOf('strictMoney') === -1);
+  const owStart = appSrc.indexOf('function openWalletForPerson');
+  const owSlice = appSrc.slice(owStart, appSrc.indexOf("$('wCloseWallet')", owStart));
+  check('WIRING wallet open (1:1 route) carries NO strict flag — a login, not a money movement (v50 correction)',
+    owSlice.indexOf('streamVerifyPalm') !== -1 && owSlice.indexOf('strictMoney') === -1);
   check('WIRING both streams accept the strict option and consult the gate',
     appSrc.indexOf('function streamVerifyPalm(video, statusEl, person, people, swapCamera, fieldRec, control, opts)') !== -1 &&
     appSrc.indexOf('function streamIdentifyPalm(video, statusEl, people, swapCamera, control, opts)') !== -1 &&
@@ -300,9 +319,13 @@ function wiringChecks() {
     appSrc.indexOf('Money authorisation rule applied: the match was confirmed on ') !== -1 &&
     appSrc.indexOf('did NOT beat every other enrolled palm by the money margin') !== -1);
 
-  check('VERSION app data version is v49', appSrc.indexOf("APP_DATA_VERSION = 'v49'") !== -1);
-  check('VERSION shell is v49', swSrc.indexOf('tsg-biom-shell-v49') !== -1);
-  check('MIGRATION v49 is the newest chain link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v49');
+  check('VERSION versions: app data version and shell version agree and sit in the chain (v50-era form of this pin)',
+    (function () {
+      const dv = (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1];
+      const sv = (swSrc.match(/tsg-biom-shell-(v\d+)/) || [])[1];
+      return !!dv && dv === sv && B.BIOM_DATA_VERSIONS.indexOf(dv) !== -1 && B.BIOM_DATA_VERSIONS.indexOf('v49') !== -1;
+    })());
+  check('MIGRATION v49 remains in the chain as an adoption step', B.BIOM_DATA_VERSIONS.indexOf('v49') !== -1);
   const store49 = {
     people: [{ id: 'TSG-BIO-1', name: 'Rig', wallet: { balance: 450, statement: [{ kind: 'add', amount: 450 }], linkedAccounts: [{ id: 'a1' }] }, palmProfile: { v: 4, format: 'packed96', codes: ['QUJD'], neural: { v: 1, dim: 256, model: 'palmnet-v1', embeddings: ['QUJD'] } } }],
     logs: [{ ts: 1 }], transactions: [{ id: 'BIOM-PAY-1' }], meta: []

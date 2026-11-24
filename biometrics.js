@@ -4254,8 +4254,22 @@
      records simply lack them and every reader treats them as
      absent. The step is therefore the identity, and a v48
      store — neural banks, wallet balance, statement and linked
-     accounts included — opens under v49 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49'];
+     accounts included — opens under v49 byte-identical.
+
+     v49 -> v50 is an ADOPTION: v50 changes no stored field. It
+     is a performance-only release (the enrolment watch loop is
+     paced to the camera clock with explicit UI yields, burst
+     analysis yields between frames, status text is written only
+     on change, the measures scratch canvas is reused) plus one
+     user-ordered correction: wallet OPEN no longer runs the
+     strict money rule (opening a wallet is a login, not a money
+     movement — the rule stays on Add Money, Send Money sender
+     authorisation and terminal Biom Pay). No threshold, margin,
+     fusion, guard or decision rule changes. The step is
+     therefore the identity, and a v49 store — neural banks,
+     wallet balance, statement and linked accounts included —
+     opens under v50 byte-identical. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -4267,6 +4281,7 @@
     'v47': function (snap) { return snap; },
     'v48': function (snap) { return snap; },
     'v49': function (snap) { return snap; },
+    'v50': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
