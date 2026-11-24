@@ -154,6 +154,7 @@
         <div><button class="btn primary" id="wScanRun" disabled>Scan</button></div>
       </div>
       <div id="wScanMsg" style="margin-top:12px"></div>
+      <div id="wScanDiag"></div>
       <button class="btn" id="wScanCancel" style="margin-top:12px">Cancel</button>
     </div>
   </section>
@@ -464,6 +465,15 @@
         <div><button class="btn primary" id="topCapture" disabled>Run Guided Capture</button></div>
       </div>
       <div id="topMsg" style="margin-top:12px"></div>
+      <div id="topRereg" class="hidden" style="margin-top:12px">
+        <div class="error"><b>Re-register this palm — this replaces the stored palm bank for this profile.</b><br><span id="topReregCounts"></span><br>It cannot be undone. Only continue with this person's own palm, live in front of the camera.</div>
+        <label style="margin-top:12px">To confirm, type REPLACE in the box:</label>
+        <input id="topReregInput" placeholder="REPLACE" autocomplete="off" autocapitalize="characters">
+        <div class="row" style="margin-top:10px">
+          <div><button class="btn danger solid" id="topReregConfirm" disabled>Re-register this palm</button></div>
+          <div><button class="btn" id="topReregCancel">Cancel</button></div>
+        </div>
+      </div>
       <button class="btn" id="topBack" style="margin-top:12px">Back to Registry</button>
     </div>
   </section>

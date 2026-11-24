@@ -41,7 +41,7 @@
      is skipped, nothing is deleted, and the next launch retries —
      the app boots on the un-migrated data either way, because its
      readers fail closed per record. */
-  var APP_DATA_VERSION = 'v52';
+  var APP_DATA_VERSION = 'v53';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -1431,9 +1431,16 @@
     var tLm = performance.now();
     return PalmProc.landmarks(frame).then(function (lm) {
       var lmMs = performance.now() - tLm;
-      if (!lm) return { openness: null, descriptor: null, code: null, codeM: null, roi: null, sharpness: 0, texture: null, spread: null, tilt: null, pose: null, framing: null, lm: null, hand: null, mpHand: null, lmMs: lmMs, encMs: 0 };
+      if (!lm) return { openness: null, descriptor: null, code: null, codeM: null, roi: null, sharpness: 0, texture: null, spread: null, tilt: null, pose: null, framing: null, lm: null, hand: null, mpHand: null, frameComplete: false, frameIssue: null, lmMs: lmMs, encMs: 0 };
       var facing = liveFacingMode();
       var hand = B.palmAnatomicalHand(lm, facing);
+      // v53: the full-hand completeness judgement for this frame
+      // (B.palmFrameCompleteness — fingertips in frame, knuckle
+      // span under the too-close ceiling). The scan streams let
+      // only complete frames count toward matching; the guidance
+      // and the v52 indicators read the same judgement, so the
+      // three can never disagree about a cropped hand.
+      var comp = B.palmFrameCompleteness(lm);
       var mpHand = B.palmMpHandedness(PalmProc.lastHandedness(), facing);
       var openness = B.palmOpenness(lm);
       var descriptor = B.palmDescriptorFromLandmarks(lm);
@@ -1452,7 +1459,7 @@
       var tEnc = performance.now();
       var codes = (typeof openness === 'number' && openness >= B.PALM_LIVE_OPEN_MIN) ? palmCodesFromFrame(frame, lm) : null;
       var encMs = performance.now() - tEnc;
-      return { openness: openness, descriptor: descriptor, code: codes ? codes.code : null, codeM: codes ? codes.codeM : null, roi: codes ? codes.roi : null, sharpness: meas.sharpness, texture: meas.texture, spread: B.palmSpread(lm), tilt: B.palmTilt(lm), pose: B.palmFramePose(lm), framing: B.palmFramingHint(lm), lm: lm, hand: hand, mpHand: mpHand, lmMs: lmMs, encMs: encMs };
+      return { openness: openness, descriptor: descriptor, code: codes ? codes.code : null, codeM: codes ? codes.codeM : null, roi: codes ? codes.roi : null, sharpness: meas.sharpness, texture: meas.texture, spread: B.palmSpread(lm), tilt: B.palmTilt(lm), pose: B.palmFramePose(lm), framing: B.palmFramingHint(lm), lm: lm, hand: hand, mpHand: mpHand, frameComplete: comp ? comp.complete : false, frameIssue: comp ? comp.issue : null, lmMs: lmMs, encMs: encMs };
     });
   }
 
@@ -1591,6 +1598,12 @@
           var gate = r.roi ? B.palmprintQualityGate(r.roi, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE, { hasHand: hasHand, bboxWidthFrac: B.palmBboxWidthFrac(r.lm) }) : null;
           if (!hasHand) lastHint = 'Show open palm';
           else if (gate && !gate.pass) lastHint = gate.hint || 'Hold steady...';
+          // v53: completeness coaching, in the same words the
+          // scan guidance uses — a cropped or too-close palm is
+          // told to move back before the framing hint's longer
+          // sentence is considered.
+          else if (r.frameIssue === 'cropped' || r.frameIssue === 'tooClose') lastHint = 'Move back — fit your whole palm in the frame';
+          else if (r.frameIssue === 'tooFar') lastHint = 'Move a little closer';
           else if (r.framing) lastHint = r.framing;
           else lastHint = 'Hold steady...';
           showHint();
@@ -1770,6 +1783,9 @@
     // v43: the latest frame's quality signals, feeding the live
     // guidance pill (B.palmGuidance) and the caller's scan session.
     var lastOpen = null, lastSampleB = null, lastGlare = null, lastSharp = null;
+    // v53: the latest frame's completeness issue, feeding the
+    // guidance pill alongside the framing hint.
+    var lastFrameIssue = null;
     // v44: the no-match grind is bounded by the wall clock, not
     // only by the frame count — MAXF stays as the backstop (it
     // binds first on fast devices), the budget binds first on a
@@ -1836,7 +1852,12 @@
        gated comparison, because PalmNet scoring is app-side.
        Either side unknown => exactly the v50 scan. */
     var profileHand = B.palmProfileHand(person.palmProfile);
-    function scanHand() { return B.palmConsensusHand(frames.map(function (f) { return f.hand; })); }
+    // v53: the consensus reads only COMPLETE frames' hands — a
+    // cropped close-up's chirality is exactly the misread the
+    // frame rule keeps out of the gate. When no complete frame
+    // exists, nothing was scored anyway and the consensus is
+    // null, which excludes nobody (the v51 rule, unchanged).
+    function scanHand() { return B.palmConsensusHand(frames.filter(function (f) { return f.frameComplete === true; }).map(function (f) { return f.hand; })); }
     function handEvidenceStr(probeHand) {
       if (probeHand && profileHand) {
         return ' Probe hand: ' + probeHand + '; profile hand: ' + profileHand + (probeHand !== profileHand ? ' — the other hand is a different identity, so this profile was excluded by the hand gate.' : '.');
@@ -1972,7 +1993,7 @@
             if (!mc.pass) {
               Snd.buzz();
               measured += ' Money authorisation rule applied: the match was confirmed on ' + moneyGate.verifiedFrames('target') + ' distinct frames but did NOT beat every other enrolled palm by the money margin (EDCC ' + B.MONEY_MARGIN_EDCC + ' / PalmNet ' + B.MONEY_MARGIN_NEURAL + '), so nothing was authorised.';
-              return finish({ fail: MONEY_STRICT_FAIL_MSG, measured: measured, strictMoney: { applied: true, pass: false, block: 'margin' } });
+              return finish({ fail: MONEY_STRICT_FAIL_MSG, measured: measured, strictMoney: { applied: true, pass: false, block: 'margin' }, diag: { edcc: win.res.similarity, neural: typeof win.res.neuralScore === 'number' ? win.res.neuralScore : null, probeHand: winHand, profileHand: profileHand, handGate: false, strictBlock: 'margin' } });
             }
             measured += ' Money authorisation rule applied: the match was confirmed on ' + moneyGate.verifiedFrames('target') + ' distinct frames and beat every other enrolled palm by at least the money margin (EDCC ' + B.MONEY_MARGIN_EDCC + ' / PalmNet ' + B.MONEY_MARGIN_NEURAL + ') — authorised under the strict rule.';
             return finish({ r: win.res, measured: measured, latencyMs: Date.now() - t0, strictMoney: { applied: true, pass: true } });
@@ -2014,7 +2035,7 @@
                   // The strict rule blocks; nothing is authorised.
                   fieldRec(fused.similarity, impMax, 'pass', 'verified', sp.lightTag, { neuralScore: nScore, neuralImpostorMax: nImpMax, acceptedBy: fused.acceptedBy || null, strictMoney: true, strictPass: false, strictBlock: 'frames', probeHand: probeHand, profileHand: profileHand });
                   Snd.buzz();
-                  return finish({ fail: MONEY_STRICT_FAIL_MSG, strictMoney: { applied: true, pass: false, block: 'frames' } });
+                  return finish({ fail: MONEY_STRICT_FAIL_MSG, strictMoney: { applied: true, pass: false, block: 'frames' }, diag: { edcc: fused.similarity, neural: nScore, probeHand: probeHand, profileHand: profileHand, handGate: false, strictBlock: 'frames' } });
                 }
                 // The collected set matched and liveness passed — the
                 // win the streaming rule would have honoured.
@@ -2034,8 +2055,13 @@
               var rejExtras = { neuralScore: nScore, neuralImpostorMax: nImpMax, acceptedBy: fused.acceptedBy || null, probeHand: probeHand, profileHand: profileHand };
               if (gated) rejExtras.handGate = true;
               fieldRec(fused.similarity, impMax, lv.pass ? 'pass' : 'fail', 'rejected', sp.lightTag, rejExtras);
+              // v53: the failure card's diagnosis — built from
+              // the very values fieldRec just recorded (the
+              // fused similarity, this set's PalmNet score, the
+              // same hand evidence), so card and log agree.
+              var rejDiag = { edcc: fused.similarity, neural: nScore, probeHand: probeHand, profileHand: profileHand, handGate: gated === true };
               var measured = 'Palmprint similarity ' + (typeof fused.similarity === 'number' ? fused.similarity.toFixed(3) : 'n/a') + ' (threshold ' + B.PALMPRINT_THRESHOLD + ', 1-snap packed match: ' + liveRois.length + ' live frames\' bit-packed templates scored by the 5-shift popcount matcher against ' + person.palmProfile.codes.length + ' enrolled packed templates), passive liveness ' + lv.verdict + ', Show & Pay streaming scan.' + neuralMeasuredStr(fused) + handEvidenceStr(probeHand) + ' Scan latency: ' + (Date.now() - t0) + ' ms.' + shiftLogStr(fused) + ' Diagnostics: ' + analysed + ' frames scanned, ' + coded + ' with a readable code, best single-frame score ' + (matchState.best !== null ? matchState.best.toFixed(3) : 'n/a') + (bestNeural !== null ? ', best PalmNet cosine ' + bestNeural.toFixed(3) : '') + '.' + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr();
-              return finish({ r: out, measured: measured, latencyMs: Date.now() - t0 });
+              return finish({ r: out, measured: measured, latencyMs: Date.now() - t0, diag: rejDiag });
             });
           });
         });
@@ -2111,6 +2137,7 @@
           frameSpoof.push(sample ? !!sample.spoof : null);
           var myIdx = frames.length - 1;
           if (typeof r.openness === 'number') lastHint = r.framing || null;
+          lastFrameIssue = r.frameIssue || null;
           // v43: publish the frame's quality signals — the scan
           // session reads stability from the pose, the guidance
           // pill from the rest. Guidance only; no gate reads these.
@@ -2119,7 +2146,7 @@
           lastSampleB = sample && typeof sample.meanBrightness === 'number' ? sample.meanBrightness : null;
           lastGlare = sample && typeof sample.glare === 'number' ? sample.glare : null;
           if (control && control.onFrame) {
-            try { control.onFrame({ hasHand: typeof r.openness === 'number', pose: r.pose || null, openness: lastOpen, framing: lastHint, sharpness: lastSharp, meanLuma: lastSampleB, glareFrac: lastGlare }); } catch (e) {}
+            try { control.onFrame({ hasHand: typeof r.openness === 'number', pose: r.pose || null, openness: lastOpen, framing: lastHint, sharpness: lastSharp, meanLuma: lastSampleB, glareFrac: lastGlare, frameComplete: r.frameComplete === true, frameIssue: r.frameIssue || null }); } catch (e) {}
           }
           if (r.pose) { poses.push(r.pose); if (poses.length > 6) poses.shift(); }
           var sane = !!(r.code && B.palmprintCodeSane(r.code));
@@ -2130,7 +2157,14 @@
             ? prev.promise.then(function (res) { applyMatch(res, prev.roi, prev.frameIdx); })
             : Promise.resolve();
           return drained.then(function () {
-            if (sane && r.roi) {
+            // v53 FULL-HAND FRAME RULE: an incomplete frame
+            // (cropped fingertips / too close) is never matched
+            // or embedded — it falls into the else below and
+            // applies a null score, exactly like a code-less
+            // frame. It still fed the spoof tracker, the poses
+            // and the guidance above: liveness and coaching read
+            // every frame, matching reads only whole palms.
+            if (sane && r.roi && r.frameComplete) {
               // v45: the frame's 96x96 patch is the probe — the
               // worker encodes it once (plus its mirror twin),
               // packs it, and the 5-shift popcount matcher judges
@@ -2216,12 +2250,12 @@
           // not a liveness failure: the message says which.
           fieldRec(win.res.similarity, null, 'pass', 'verified', sp.lightTag, { neuralScore: typeof win.res.neuralScore === 'number' ? win.res.neuralScore : null, neuralImpostorMax: null, acceptedBy: win.res.acceptedBy || null, strictMoney: true, strictPass: false, strictBlock: 'frames', probeHand: scanHand(), profileHand: profileHand });
           Snd.buzz();
-          return finish({ fail: MONEY_STRICT_FAIL_MSG, strictMoney: { applied: true, pass: false, block: 'frames' } });
+          return finish({ fail: MONEY_STRICT_FAIL_MSG, strictMoney: { applied: true, pass: false, block: 'frames' }, diag: { edcc: win.res.similarity, neural: typeof win.res.neuralScore === 'number' ? win.res.neuralScore : null, probeHand: scanHand(), profileHand: profileHand, handGate: false, strictBlock: 'frames' } });
         }
         if (win) {
           fieldRec(win.res.similarity, null, 'fail', 'rejected', sp.lightTag, { neuralScore: typeof win.res.neuralScore === 'number' ? win.res.neuralScore : null, neuralImpostorMax: null, acceptedBy: win.res.acceptedBy || null, probeHand: scanHand(), profileHand: profileHand });
           Snd.buzz();
-          return finish({ fail: 'Liveness could not be confirmed: the palm matched, but no natural micro-movement was observed. Nothing was verified. Present the real hand, held live — do not use a photo or a recording.' });
+          return finish({ fail: 'Liveness could not be confirmed: the palm matched, but no natural micro-movement was observed. Nothing was verified. Present the real hand, held live — do not use a photo or a recording.', diag: { edcc: win.res.similarity, neural: typeof win.res.neuralScore === 'number' ? win.res.neuralScore : null, probeHand: scanHand(), profileHand: profileHand, handGate: false } });
         }
         return finalOut(Date.now() > deadline);
       }
@@ -2239,7 +2273,7 @@
         var seenHandNow = frames.some(function (x) { return typeof x.openness === 'number'; });
         // v43: the live guidance pill — one concise line mapped
         // from the quality signals this frame already produced.
-        var guide = B.palmGuidance({ hasHand: seenHandNow, framing: lastHint, openness: lastOpen, meanLuma: lastSampleB, glareFrac: lastGlare, sharpness: lastSharp, stable: false });
+        var guide = B.palmGuidance({ hasHand: seenHandNow, framing: lastHint, frameIssue: lastFrameIssue, openness: lastOpen, meanLuma: lastSampleB, glareFrac: lastGlare, sharpness: lastSharp, stable: false });
         setStatus(guide || (seenHandNow ? 'Hand detected — hold steady.' : 'Show & Pay scanning — show an open hand to the camera.'));
       }
       return step().then(loop);
@@ -2297,6 +2331,9 @@
     // v43: the latest frame's quality signals, feeding the live
     // guidance pill (B.palmGuidance) and the caller's scan session.
     var lastOpen = null, lastSampleB = null, lastGlare = null, lastSharp = null;
+    // v53: the latest frame's completeness issue, feeding the
+    // guidance pill alongside the framing hint.
+    var lastFrameIssue = null;
     // v44: same wall-clock budget as the verify stream (MAXF is
     // the backstop), and the same per-stage diagnostics sinks.
     var MAXF = 24, deadline = t0 + B.SCAN_TIME_BUDGET_MS;
@@ -2430,7 +2467,10 @@
       // v51: the collected-set judgement runs under the scan's
       // consensus hand — the EDCC composition gates per profile,
       // and gated candidates are not PalmNet-scored either.
-      var probeHand = B.palmConsensusHand(frames.map(function (f) { return f.hand; }));
+      // v53: the consensus reads only COMPLETE frames' hands —
+      // a cropped close-up's chirality is the misread the frame
+      // rule keeps out of the gate.
+      var probeHand = B.palmConsensusHand(frames.filter(function (f) { return f.frameComplete === true; }).map(function (f) { return f.hand; }));
       return Match.verifyRoisMulti(candidates.map(function (p) { return p.palmProfile; }), liveRois, { exhaustive: fieldExhaustiveOn(), probeHand: probeHand }).then(function (results) {
         // v47: fuse each candidate's exact result with its PalmNet
         // cosine over the same ROIs. A candidate verified by
@@ -2471,7 +2511,14 @@
           // profiles, and the other hand is a different identity.
           var excludedCount = probeHand ? candidates.filter(function (p) { return B.handGateBlocks(probeHand, B.palmProfileHand(p.palmProfile)); }).length : 0;
           var handNote = excludedCount ? ' The scanned palm is the ' + probeHand + ' hand; ' + excludedCount + ' enrolled profile' + (excludedCount === 1 ? '' : 's') + ' recorded the other hand and ' + (excludedCount === 1 ? 'was' : 'were') + ' excluded.' : (probeHand ? ' Probe hand: ' + probeHand + '.' : '');
-          return { fail: 'This palm did not match any registered palm on this device, so nothing was opened and no one was identified. (' + analysed + ' frames scanned, ' + coded + ' with a readable code, best score ' + (best && typeof best.similarity === 'number' ? best.similarity.toFixed(3) : 'n/a') + ' against any enrolled palm.' + neuralMeasuredStrId(best) + handNote + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr() + ')' };
+          // v53: the structured diagnosis for the failure card —
+          // the same best score the sentence above reports, the
+          // best PalmNet cosine across candidates, and the same
+          // hand evidence, so the panel and this record agree.
+          var bestNeuralAny = null;
+          fusedList.forEach(function (ro) { if (ro && typeof ro.neuralScore === 'number' && (bestNeuralAny === null || ro.neuralScore > bestNeuralAny)) bestNeuralAny = ro.neuralScore; });
+          return { fail: 'This palm did not match any registered palm on this device, so nothing was opened and no one was identified. (' + analysed + ' frames scanned, ' + coded + ' with a readable code, best score ' + (best && typeof best.similarity === 'number' ? best.similarity.toFixed(3) : 'n/a') + ' against any enrolled palm.' + neuralMeasuredStrId(best) + handNote + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr() + ')',
+            diag: { edcc: best && typeof best.similarity === 'number' ? best.similarity : null, neural: bestNeuralAny, probeHand: probeHand, profileHand: null, handGate: excludedCount > 0, excludedCount: excludedCount } };
         });
       });
     }
@@ -2533,6 +2580,7 @@
           frameSpoof.push(sample ? !!sample.spoof : null);
           var myIdx = frames.length - 1;
           if (typeof r.openness === 'number') lastHint = r.framing || null;
+          lastFrameIssue = r.frameIssue || null;
           // v43: publish the frame's quality signals — the scan
           // session reads stability from the pose, the guidance
           // pill from the rest. Guidance only; no gate reads these.
@@ -2541,7 +2589,7 @@
           lastSampleB = sample && typeof sample.meanBrightness === 'number' ? sample.meanBrightness : null;
           lastGlare = sample && typeof sample.glare === 'number' ? sample.glare : null;
           if (control && control.onFrame) {
-            try { control.onFrame({ hasHand: typeof r.openness === 'number', pose: r.pose || null, openness: lastOpen, framing: lastHint, sharpness: lastSharp, meanLuma: lastSampleB, glareFrac: lastGlare }); } catch (e) {}
+            try { control.onFrame({ hasHand: typeof r.openness === 'number', pose: r.pose || null, openness: lastOpen, framing: lastHint, sharpness: lastSharp, meanLuma: lastSampleB, glareFrac: lastGlare, frameComplete: r.frameComplete === true, frameIssue: r.frameIssue || null }); } catch (e) {}
           }
           if (r.pose) { poses.push(r.pose); if (poses.length > 6) poses.shift(); }
           var sane = !!(r.code && B.palmprintCodeSane(r.code));
@@ -2552,7 +2600,12 @@
             ? prev.promise.then(function (results) { applyMatch(results, prev.roi, prev.frameIdx); })
             : Promise.resolve();
           return drained.then(function () {
-            if (sane && r.roi) {
+            // v53 FULL-HAND FRAME RULE: an incomplete frame
+            // (cropped fingertips / too close) is never matched
+            // or embedded — it applies a null score below,
+            // exactly like a code-less frame. It still fed the
+            // spoof tracker, the poses and the guidance above.
+            if (sane && r.roi && r.frameComplete) {
               // v45: the per-frame identify call is the packed
               // composition — the probe is encoded once inside the
               // worker and scored against every candidate.
@@ -2621,7 +2674,7 @@
         var seenHandNow = frames.some(function (x) { return typeof x.openness === 'number'; });
         // v43: the live guidance pill — one concise line mapped
         // from the quality signals this frame already produced.
-        var guide = B.palmGuidance({ hasHand: seenHandNow, framing: lastHint, openness: lastOpen, meanLuma: lastSampleB, glareFrac: lastGlare, sharpness: lastSharp, stable: false });
+        var guide = B.palmGuidance({ hasHand: seenHandNow, framing: lastHint, frameIssue: lastFrameIssue, openness: lastOpen, meanLuma: lastSampleB, glareFrac: lastGlare, sharpness: lastSharp, stable: false });
         setStatus(guide || (seenHandNow ? 'Hand detected — hold steady.' : 'Show an open hand to the camera.'));
       }
       return step().then(loop);
@@ -3134,7 +3187,7 @@
         // cooldown and the terminal offers Next Customer.
         termSession.verdict();
         $('termNext').classList.remove('hidden');
-        if (out.fail) { Snd.buzz(); $('termResult').innerHTML = '<div class="error">' + esc(out.fail) + '</div>'; return; }
+        if (out.fail) { Snd.buzz(); $('termResult').innerHTML = '<div class="error">' + esc(out.fail) + '</div>' + scanDiagHTML(out.diag); return; }
         var r = out.r;
         var verified = r.ok === true && r.verified === true; // fail closed: only an explicit pass verifies
         return logVerification(person, method, out.measured, verified ? 'Verified' : 'Denied').then(function () {
@@ -3146,7 +3199,7 @@
             : '';
           if (!verified) {
             html = '<div class="resultbig bad"><div class="verdict">NOT VERIFIED</div><div class="who">' + esc(person.name) + ' — Palm scan did not match</div>' + latencyLine + '<div class="meas">' + esc(r.reason) + '<br>Measured: ' + esc(out.measured) + '</div></div>';
-            $('termResult').innerHTML = html;
+            $('termResult').innerHTML = html + scanDiagHTML(out.diag);
             Snd.buzz();
             return;
           }
@@ -3354,6 +3407,15 @@
   }
   function updateScanIndicators(info, frameRes) {
     var hand = !!(info && info.hasHand);
+    // v53: the hand indicator is tied to the completeness
+    // judgement — a cropped or too-close hand is present but
+    // cannot be scored, so it must not show green. It warns and
+    // says what to do instead, in the guidance's own terms.
+    var handState = 'wait', handText = 'No hand yet';
+    if (hand && info.frameComplete === false) {
+      handState = 'warn';
+      handText = info.frameIssue === 'tooClose' ? 'Too close — move back' : 'Hand cropped — move back';
+    } else if (hand) { handState = 'ok'; handText = 'Hand detected'; }
     var lightState = 'wait', lightText = 'Light —';
     if (info && typeof info.meanLuma === 'number' && isFinite(info.meanLuma)) {
       if (info.meanLuma < 45) { lightState = 'warn'; lightText = 'Too dark'; }
@@ -3361,10 +3423,10 @@
       else { lightState = 'ok'; lightText = 'Good light'; }
     }
     var steady = !!(frameRes && frameRes.armed);
-    var key = (hand ? '1' : '0') + '|' + lightState + '|' + (steady ? '1' : '0');
+    var key = handState + handText + '|' + lightState + '|' + (steady ? '1' : '0');
     if (key === scanIndKey) return;
     scanIndKey = key;
-    setScanInd('wIndHand', hand ? 'ok' : 'wait', hand ? 'Hand detected' : 'No hand yet');
+    setScanInd('wIndHand', handState, handText);
     setScanInd('wIndLight', lightState, lightText);
     setScanInd('wIndSteady', steady ? 'ok' : 'wait', steady ? 'Holding steady' : 'Hold steady');
   }
@@ -3382,6 +3444,7 @@
     $('wScanTitle').textContent = ctx.title;
     $('wScanPrompt').textContent = ctx.prompt;
     $('wScanMsg').innerHTML = '';
+    $('wScanDiag').innerHTML = '';
     $('wScanStatus').textContent = 'Starting the camera...';
     $('wScanRun').disabled = true;
     $('walletScanCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -3415,14 +3478,70 @@
     walletScanCtx = null;
     Cam.stop();
   }
+  /* v53: the measured diagnosis panel rendered under a failed
+     scan's message — on the wallet card and at the terminal.
+     The lines come from B.scanDiagnosisLines over the outcome's
+     diag, which the streams build from the same values the
+     scan's log record carries. No diag (a spoof verdict, a
+     camera failure, a scan with no scored frame) -> no panel. */
+  function scanDiagHTML(diag) {
+    var lines = B.scanDiagnosisLines(diag);
+    if (!lines.length) return '';
+    return '<div class="diagpanel"><div class="diagtitle">Why this scan failed</div>' +
+      lines.map(function (l) { return '<div class="diagrow">' + esc(l) + '</div>'; }).join('') + '</div>';
+  }
   function walletScanFailed(out) {
     // v43: a scan cancelled by navigation/close ends silently —
     // the card closes instead of showing a failure for a scan
     // nobody is looking at any more.
     if (out && out.stopped) { hideWalletScan(); renderWallet(); return; }
     $('wScanMsg').innerHTML = '<div class="error">' + esc(out && out.fail ? out.fail : 'The scan did not verify. Nothing was authorised.') + '</div>';
+    // v53: under the message, the measured panel — and, on the
+    // wallet-OPEN scans, the owner recovery entry. A money
+    // authorisation failure gets the panel only: recovery from
+    // a failed payment scan is the wallet-open path, not a
+    // button beside the amount.
+    var diagHtml = scanDiagHTML(out && out.diag);
+    var ctx = walletScanCtx;
+    if (ctx && ctx.recoverable) diagHtml += renderWalletRecovery(ctx);
+    $('wScanDiag').innerHTML = diagHtml;
+    wireWalletRecovery(ctx);
     $('wScanRun').disabled = false;
     Snd.buzz();
+  }
+  /* v53 OWNER RECOVERY (wallet-open failures only): the
+     lockout this breaks — a genuine owner whose thin bank
+     scores just under the bar is refused by the same bars at
+     Add Angles (the v49 banking guard), so the bank that is
+     failing him can never grow. "Strengthen my palm" runs the
+     existing guided Add Angles capture for his profile under
+     that same guard; only a guard refusal there unlocks the
+     confirmation-gated re-registration (see runTopupCapture).
+     The 1:1 open names its person; the 1:N open cannot (the
+     palm matched nobody), so it offers the profile picker —
+     name + Biom ID, the owner's own knowledge doing the
+     identifying the scan could not. */
+  function renderWalletRecovery(ctx) {
+    if (ctx.recoverPersonId) {
+      return '<div class="diagpanel"><div class="diagtitle">Is this your palm?</div>' +
+        '<div class="diagrow">If this is your own palm and it keeps failing, you can strengthen its stored profile — the guided capture adds angles under the same safety check as always.</div>' +
+        '<button class="btn primary" id="wStrengthen" style="margin-top:10px">Strengthen my palm</button></div>';
+    }
+    var people = walletPeopleCache.filter(function (p) { return B.palmprintProfileSane(p.palmProfile); });
+    if (!people.length) return '';
+    return '<div class="diagpanel"><div class="diagtitle">Is this your palm?</div>' +
+      '<div class="diagrow">If this is your own palm and it keeps failing, choose your profile to strengthen its stored palm — the guided capture adds angles under the same safety check as always.</div>' +
+      people.map(function (p) {
+        return '<button class="btn" data-strengthen="' + esc(p.id) + '" style="margin-top:8px">' + esc(p.name) + ' — ' + esc(p.id) + '</button>';
+      }).join('') + '</div>';
+  }
+  function wireWalletRecovery(ctx) {
+    if (!ctx || !ctx.recoverable) return;
+    var one = $('wStrengthen');
+    if (one) one.addEventListener('click', function () { var id = ctx.recoverPersonId; hideWalletScan(); openRecoveryTopup(id); });
+    document.querySelectorAll('[data-strengthen]').forEach(function (b) {
+      b.addEventListener('click', function () { var id = b.dataset.strengthen; hideWalletScan(); openRecoveryTopup(id); });
+    });
   }
   $('wScanStart').addEventListener('click', startWalletCamera);
   camRestarters.walletAct = function () {
@@ -3453,6 +3572,7 @@
   $('walletOpenScan').addEventListener('click', function () {
     showWalletScan({
       title: 'Open your wallet — palm scan',
+      recoverable: true, // v53: a failed open offers the owner recovery (profile picker — the palm matched nobody)
       prompt: 'Show your open palm to the camera. If it matches a registered palm, that person\'s wallet opens. A palm that is not registered opens nothing.',
       run: function () {
         return DB.all('people').then(function (people) {
@@ -3476,6 +3596,7 @@
     if (!person) return;
     showWalletScan({
       title: 'Open ' + person.name + '\'s wallet',
+      recoverable: true, recoverPersonId: personId, // v53: a failed open offers the owner recovery for this named profile
       prompt: 'Scan ' + person.name + '\'s palm. The wallet opens only if the palm verifies as ' + person.name + ' (' + person.id + ') — nobody else\'s palm can open it.',
       run: function () {
         return DB.all('people').then(function (people) {
@@ -3834,7 +3955,23 @@
   var topupPersonId = null;
   var topupBusy = false;
   var topupMode = 'angles'; // 'angles' (EDCC + neural) | 'neural' (neural only, v47)
-  function openTopup(personId, mode) {
+  /* v53 owner recovery state: recoveryPersonId is set ONLY by
+     openRecoveryTopup (reached from a failed wallet-open scan)
+     and cleared by every ordinary openTopup call, by Back, and
+     when a re-registration completes. While it names a profile,
+     a banking-guard refusal in that profile's capture offers
+     the confirmation-gated re-registration; reregPerson is the
+     record that refusal was judged against. */
+  var recoveryPersonId = null;
+  var reregPerson = null;
+  function openRecoveryTopup(personId) { openTopup(personId, 'angles', true); }
+  function openTopup(personId, mode, viaRecovery) {
+    // v53: every ordinary entry (Registry, My Account, Neural
+    // Scan) clears the recovery state — the re-registration
+    // offer can only ever follow a recovery-launched capture.
+    recoveryPersonId = viaRecovery ? personId : null;
+    reregPerson = null;
+    if ($('topRereg')) $('topRereg').classList.add('hidden');
     DB.all('people').then(function (people) {
       var person = people.find(function (p) { return p.id === personId; }) || null;
       if (!person) return;
@@ -3856,6 +3993,7 @@
         $('topWho').innerHTML = '<b>' + esc(person.name) + '</b> — ' + esc(person.id) + '<br><span style="color:var(--muted)">Currently banked: ' + person.palmProfile.codes.length + ' packed palm templates' + (Array.isArray(person.palmProfile.poses) ? ' with pose data.' : ' from a single-posture enrolment — no pose data yet.') + ' The burst adds diverse sharp templates; nothing else about this person changes. Before anything is added, the burst is checked against the palm already banked — a different palm is refused and nothing is added.</span>';
       }
       $('topMsg').innerHTML = '';
+      if (viaRecovery) $('topMsg').innerHTML = '<div class="notice">You came here from a failed wallet-open scan. This guided capture tries to add angles to ' + esc(person.name) + '\'s stored palm under the usual safety check. If the check refuses — because the stored templates are the ones failing — you will be offered a confirmed re-registration instead.</div>';
       $('topStatus').textContent = 'Starting the camera...';
       startTopupCamera();
     });
@@ -3929,6 +4067,22 @@
           if (guard.status === 'fail') {
             DB.put('logs', { ts: Date.now(), personId: person.id, personName: person.name, store: '', method: 'palm', measured: 'Banking refused by the v49 same-person guard: the captured palm did not verify against this profile (EDCC ' + (guard.edccChecked ? guard.edccScore.toFixed(3) : 'not checkable') + ', PalmNet ' + (guard.neuralChecked ? guard.neuralScore.toFixed(3) : 'not checkable') + '). Nothing was banked.' + (guard.handGate ? ' Hand gate: the captured palm is the ' + guard.probeHand + ' hand; this profile recorded the ' + guard.profileHand + ' hand — the other hand is a different identity.' : ''), result: 'Banking Refused — Palm Mismatch' });
             $('topMsg').innerHTML = '<div class="error">This palm does not match this profile — nothing was added</div>';
+            // v53: when this capture was launched from the
+            // wallet-open recovery path, the refusal is the
+            // lockout case — the stored bank is what is failing,
+            // so no guarded top-up can ever fix it. Offer the
+            // owner-confirmed remedy. An ordinary Add Angles
+            // refusal (recoveryPersonId unset or naming another
+            // profile) shows nothing more: re-registration is
+            // reachable ONLY from here, only for the recovery
+            // profile, only after this refusal.
+            if (recoveryPersonId && recoveryPersonId === person.id) {
+              reregPerson = person;
+              $('topMsg').innerHTML += '<div class="diagpanel"><div class="diagtitle">This profile cannot be strengthened this way</div>' +
+                '<div class="diagrow">The safety check compares the captured palm against the templates already stored — and those stored templates are the ones that are failing. If you are ' + esc(person.name) + ' and this is your own palm, you can re-register it: a fresh guided enrolment replaces this profile\'s palm bank. Nothing else about the profile changes.</div>' +
+                '<button class="btn danger" id="topReregOpen" style="margin-top:10px">Re-register this palm</button></div>';
+              $('topReregOpen').addEventListener('click', function () { openReregConfirm(); });
+            }
             Snd.buzz();
             return;
           }
@@ -4045,9 +4199,155 @@
       $('topMsg').innerHTML = '<div class="error">Add-angles capture failed: ' + esc(e && e.message ? e.message : e) + ' Nothing was changed.</div>';
     });
   }
+  /* ---------------- v53 owner re-registration ------------------
+     The remedy for the lockout, behind the same style of gate
+     as Delete All Data: the offer exists only after a banking-
+     guard refusal inside a recovery-launched capture; the
+     confirmation panel names the profile, states the stored
+     bank's size, and the owner must type REPLACE before the
+     distinct confirm button enables. The capture itself is
+     enrolment-grade and guided: two bursts — natural distance,
+     then a little farther back — and the new bank is built
+     from the COMPLETE frames of both (the frame rule applies
+     to banking here: a re-registration founded on cropped
+     frames would rebuild the same failure). The bank build
+     mirrors enrolment exactly (pose-diverse packed candidates,
+     PalmNet bank from the same frames, consensus hand stamp)
+     and replaces ONLY this profile's palmProfile — the save
+     writes back the same person record with that one field
+     changed, so Biom ID, wallet, balance, statement, linked
+     accounts, limits and points are byte-identical. The event
+     is logged with the old bank's template counts. */
+  function openReregConfirm() {
+    if (!reregPerson) return;
+    DB.all('people').then(function (people) {
+      var fresh = people.find(function (p) { return p.id === reregPerson.id; }) || reregPerson;
+      reregPerson = fresh;
+      var edcc = fresh.palmProfile && Array.isArray(fresh.palmProfile.codes) ? fresh.palmProfile.codes.length : 0;
+      var neural = (B.palmnetProfileEmbeddings(fresh.palmProfile) || []).length;
+      $('topReregCounts').textContent = 'Profile: ' + fresh.name + ' (' + fresh.id + '). Its stored palm bank — ' +
+        edcc + ' EDCC template' + (edcc === 1 ? '' : 's') + (neural ? ' and ' + neural + ' PalmNet embedding' + (neural === 1 ? '' : 's') : '') +
+        ' — will be replaced by the new capture. The Biom ID, wallet, balance, statement, linked accounts, limits and loyalty points do not change.';
+      $('topRereg').classList.remove('hidden');
+      $('topReregInput').value = '';
+      $('topReregConfirm').disabled = true;
+      $('topRereg').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  }
+  function reregFail(html) {
+    topupBusy = false; palmScanBusy = false;
+    $('topCapture').disabled = false;
+    $('topMsg').innerHTML = html;
+    Snd.buzz();
+  }
+  function runReRegistration() {
+    if (!reregPerson || recoveryPersonId !== reregPerson.id) return;
+    var personId = reregPerson.id;
+    $('topRereg').classList.add('hidden');
+    DB.all('people').then(function (people) {
+      var person = people.find(function (p) { return p.id === personId; });
+      if (!person) { reregFail('<div class="error">That person is no longer in the registry — nothing was changed.</div>'); return; }
+      topupBusy = true; palmScanBusy = true;
+      $('topCapture').disabled = true;
+      var control = { cancelled: false };
+      topupControl = control;
+      var swap = function () {
+        camFacing.topup = camFacing.topup === 'user' ? 'environment' : 'user';
+        syncCamToggle('topup');
+        return Cam.start($('topVideo'), camFacing.topup, 'topup');
+      };
+      function burstError(res, stepName) {
+        if (res.stopped) return 'Capture stopped — nothing was changed.';
+        if (res.spoof && res.spoof.spoof) {
+          DB.put('logs', { ts: Date.now(), personId: '', personName: '(re-registration attempt)', store: '', method: 'palm', measured: 'Spoof score ' + res.spoof.score.toFixed(2) + ' - ' + res.spoof.reasons.join('; '), result: 'Spoof / Screen Replay Detected' });
+          return 'Spoof / Screen Replay Detected — the ' + stepName + ' capture showed a screen or a recording, not a live hand (' + res.spoof.reasons.join('; ') + '). Nothing was changed.';
+        }
+        if (!res.burst) return 'No capture burst ran in the ' + stepName + ' step' + (res.hint ? ' (' + res.hint + ')' : '') + ' — nothing was changed. Run the re-registration again.';
+        if (!res.burst.liveness.pass) return 'Liveness check failed in the ' + stepName + ' step: ' + res.burst.liveness.reason + ' Nothing was changed.';
+        return null;
+      }
+      $('topMsg').innerHTML = '<div class="notice">Re-registration step 1 of 2 — hold your palm flat, facing the camera, at your natural distance. The capture runs by itself when a sharp open palm is seen.</div>';
+      streamEnrolPalm($('topVideo'), $('topStatus'), null, swap, control).then(function (res1) {
+        var e1 = burstError(res1, 'first');
+        if (e1) { reregFail('<div class="error">' + esc(e1) + '</div>'); return; }
+        $('topMsg').innerHTML = '<div class="notice">Re-registration step 2 of 2 — now move your palm a little farther back and hold it there, still open and facing the camera.</div>';
+        return streamEnrolPalm($('topVideo'), $('topStatus'), null, swap, control).then(function (res2) {
+          var e2 = burstError(res2, 'second');
+          if (e2) { reregFail('<div class="error">' + esc(e2) + '</div>'); return; }
+          bankReRegistration(person, res1, res2);
+        });
+      }).catch(function (e) {
+        reregFail('<div class="error">Re-registration capture failed: ' + esc(e && e.message ? e.message : e) + ' Nothing was changed.</div>');
+      });
+    });
+  }
+  function bankReRegistration(person, res1, res2) {
+    var results = (res1.results || []).concat(res2.results || []);
+    // Only complete frames bank: the whole point of the remedy
+    // is a bank founded on whole palms at honest distances.
+    var complete = results.filter(function (r) { return r.frameComplete === true; });
+    var cand = B.palmprintPackedCandidates(complete);
+    if (!cand.list.length) {
+      reregFail('<div class="error">No complete-palm templates could be banked from those captures — every usable frame was cropped or too close. Nothing was changed. Move back so your whole palm fits the frame and run the re-registration again.</div>');
+      return;
+    }
+    var kept = cand.list.slice(0, B.PALMPRINT_PROFILE_MAX_CODES);
+    var codes = kept.map(function (c) { return c.b64; });
+    var poses = kept.map(function (c) { return c.desc; });
+    var hand = B.palmConsensusHand(complete.map(function (r) { return r.hand; }));
+    var oldEdcc = person.palmProfile && Array.isArray(person.palmProfile.codes) ? person.palmProfile.codes.length : 0;
+    var oldNeural = (B.palmnetProfileEmbeddings(person.palmProfile) || []).length;
+    PalmNet.embedRois(neuralCandidateRois(complete)).then(function (embs) {
+      var good = (embs || []).filter(function (e) { return !!e; });
+      var bank = good.length ? B.palmnetBankFromEmbeddings(good) : null;
+      var profile = { v: 4, format: B.PALMPRINT_FORMAT, codes: codes, hand: hand };
+      if (poses.some(function (d) { return !!d; })) profile.poses = poses;
+      if (bank) profile.neural = bank;
+      if (person.palmProfile && person.palmProfile.legacyCodes) profile.legacyCodes = person.palmProfile.legacyCodes;
+      var updated = Object.assign({}, person, { palmProfile: profile });
+      return DB.put('people', updated).then(function () {
+        return DB.put('logs', { ts: Date.now(), personId: person.id, personName: person.name, store: '', method: 'palm',
+          measured: 'Owner re-registration: after the banking guard refused an Add Angles top-up in the wallet recovery path, the owner confirmed (typed REPLACE) replacement of this profile\'s palm bank. Old bank: ' + oldEdcc + ' EDCC template(s), ' + oldNeural + ' PalmNet embedding(s). New bank: ' + codes.length + ' EDCC template(s), ' + (bank ? bank.embeddings.length : 0) + ' PalmNet embedding(s), hand recorded: ' + (hand || 'not determined') + '. Biom ID, wallet, balance, statement, linked accounts, limits and points unchanged.',
+          result: 'Owner Re-registration' });
+      }).then(function () {
+        recoveryPersonId = null;
+        reregPerson = null;
+        topupBusy = false; palmScanBusy = false;
+        $('topCapture').disabled = false;
+        $('topMsg').innerHTML = '<div class="success">Palm re-registered for ' + esc(person.name) + ': ' + codes.length + ' new template' + (codes.length === 1 ? '' : 's') + ' banked from two guided captures (natural distance, then a little farther back)' +
+          (bank ? ', with ' + bank.embeddings.length + ' PalmNet embedding' + (bank.embeddings.length === 1 ? '' : 's') : ' (PalmNet embeddings were not banked — the Registry will offer a Neural Scan)') +
+          (hand ? '. ' + (hand === 'left' ? 'Left' : 'Right') + ' palm recorded — the other hand will not match this profile.' : '. The hand could not be determined from these captures.') +
+          ' Biom ID, wallet, balance, statement, linked accounts, limits and points are untouched. Go to My Wallet and open it with this palm.</div>';
+        Snd.chime();
+        Snd.speak('Palm re-registered');
+      });
+    }).catch(function (e) {
+      reregFail('<div class="error">Re-registration could not be saved: ' + esc(e && e.message ? e.message : e) + ' Nothing was changed.</div>');
+    });
+  }
+  function wireRereg() {
+    var panel = $('topRereg'), input = $('topReregInput'),
+      confirmBtn = $('topReregConfirm'), cancelBtn = $('topReregCancel');
+    if (!panel || !input || !confirmBtn || !cancelBtn) return;
+    input.addEventListener('input', function () {
+      confirmBtn.disabled = input.value.trim() !== 'REPLACE';
+    });
+    cancelBtn.addEventListener('click', function () {
+      panel.classList.add('hidden');
+      input.value = '';
+      confirmBtn.disabled = true;
+    });
+    confirmBtn.addEventListener('click', function () {
+      if (input.value.trim() !== 'REPLACE') return;
+      confirmBtn.disabled = true;
+      runReRegistration();
+    });
+  }
+  wireRereg();
+
   $('topStart').addEventListener('click', function () { startTopupCamera(); });
   $('topCapture').addEventListener('click', runTopupCapture);
-  $('topBack').addEventListener('click', function () { go('registry'); });
+  $('topBack').addEventListener('click', function () { recoveryPersonId = null; reregPerson = null; if ($('topRereg')) $('topRereg').classList.add('hidden'); go('registry'); });
   camRestarters.topup = function () { startTopupCamera(); };
 
   function renderFieldPanel() {

@@ -2869,6 +2869,13 @@
   var PALM_GUIDANCE_BLUR = 100;
   function palmGuidance(info) {
     if (!info || !info.hasHand) return 'Show an open hand to the camera';
+    // v53: the frame-completeness judgement (palmFrameCompleteness)
+    // outranks the framing-hint mapping — a cropped or too-close
+    // hand gets the one instruction that fixes it, in the words
+    // the Chairman approved. Callers that pass no frameIssue (and
+    // every pre-v53 fixture) see exactly the mapping below.
+    if (info.frameIssue === 'cropped' || info.frameIssue === 'tooClose') return 'Move back — fit your whole palm in the frame';
+    if (info.frameIssue === 'tooFar') return 'Move a little closer';
     if (info.framing) {
       var f = String(info.framing);
       if (f.indexOf('Whole hand in view') === 0) return 'Whole hand in view — move back a little';
@@ -3584,7 +3591,14 @@
      old code selection (PALM_LIVE_OPEN_MIN, sharpest first, top 3);
      a frame without a valid warped ROI cannot take part. */
   function selectPalmprintLiveRois(frames) {
-    var usable = palmprintUsableOpenFrames(frames, PALM_LIVE_OPEN_MIN);
+    // v53 FULL-HAND FRAME RULE: a frame the completeness
+    // judgement positively marked incomplete (frameComplete ===
+    // false — cropped fingertips or too close, see
+    // palmFrameCompleteness) never reaches the collected-set
+    // judgement. Frames that carry no judgement (every pre-v53
+    // fixture and caller) pass exactly as before.
+    var complete = (frames || []).filter(function (f) { return !f || f.frameComplete !== false; });
+    var usable = palmprintUsableOpenFrames(complete, PALM_LIVE_OPEN_MIN);
     var withRoi = usable.filter(function (u) { return !!u.roi; });
     if (!withRoi.length) return null;
     withRoi.sort(function (a, b) { return b.sharpness - a.sharpness; });
@@ -3630,6 +3644,104 @@
       if (pose.span < 0.15) return 'Move the palm a little closer to the camera.';
     }
     return null;
+  }
+
+  /* ================= v53: full-hand frame rule =================
+     The Chairman's phone failure (2026-11-24 20:17): his own
+     left palm, good light, steady, hand detected — no verify.
+     The presentation was a hand held so close that the
+     fingertips left the top of the frame. Two mechanisms hurt:
+     MediaPipe ESTIMATES off-frame points, so the affine ROI is
+     warped from guessed geometry and the print cannot match
+     the enrolment; and the chirality reading behind the v51
+     hand gate is computed from the same degraded landmarks, so
+     a cropped close-up can be read as the wrong hand and the
+     owner's own profile is excluded before scoring. Until v53
+     the framing hint above was guidance only — a cropped frame
+     was coded and scored exactly like a whole one.
+
+     THE RULE: a frame counts toward matching only when the
+     hand is fully inside the frame. The numbers are not new —
+     they are palmFramingHint's own, promoted from advice to
+     judgement so the hint and the rule can never disagree:
+       - every fingertip (landmarks 4, 8, 12, 16, 20) inside
+         the frame with the hint's 0.02 margin on both axes;
+       - the knuckle span (landmarks 5-17, palmFramePose) at or
+         below the hint's too-close ceiling, 0.55 of frame
+         width.
+     A span under the hint's 0.15 floor is 'tooFar' — advice
+     only ('Move a little closer'); the frame still counts,
+     because the affine warp is scale-normalised and a small
+     whole palm encodes honestly, while a cropped or
+     overflowing one cannot. Returns null when the landmarks
+     cannot support a judgement (not 21 finite points) — such a
+     frame produces no code anyway. Otherwise returns
+     { complete, issue, span } with issue null | 'cropped' |
+     'tooClose' | 'tooFar'; complete is false exactly for
+     'cropped' and 'tooClose'. */
+  var PALM_FRAME_TIP_MARGIN = 0.02;  // palmFramingHint's in-frame margin
+  var PALM_FRAME_MAX_SPAN = 0.55;    // palmFramingHint's 'Too close' span ceiling
+  var PALM_FRAME_MIN_SPAN = 0.15;    // palmFramingHint's 'a little closer' span floor
+  var PALM_FRAME_TIPS = [4, 8, 12, 16, 20];
+  function palmFrameCompleteness(landmarks) {
+    if (!landmarks || landmarks.length !== 21) return null;
+    var i, p;
+    for (i = 0; i < 21; i++) {
+      p = landmarks[i];
+      if (!p || !isFinite(Number(p.x)) || !isFinite(Number(p.y))) return null;
+    }
+    for (i = 0; i < PALM_FRAME_TIPS.length; i++) {
+      p = landmarks[PALM_FRAME_TIPS[i]];
+      if (Number(p.x) < PALM_FRAME_TIP_MARGIN || Number(p.x) > 1 - PALM_FRAME_TIP_MARGIN ||
+          Number(p.y) < PALM_FRAME_TIP_MARGIN || Number(p.y) > 1 - PALM_FRAME_TIP_MARGIN) {
+        return { complete: false, issue: 'cropped', span: null };
+      }
+    }
+    var pose = palmFramePose(landmarks);
+    var span = pose ? pose.span : null;
+    if (span !== null && span > PALM_FRAME_MAX_SPAN) return { complete: false, issue: 'tooClose', span: span };
+    if (span !== null && span < PALM_FRAME_MIN_SPAN) return { complete: true, issue: 'tooFar', span: span };
+    return { complete: true, issue: null, span: span };
+  }
+
+  /* ================= v53: scan diagnosis lines =================
+     The plain-language measured panel shown under a failed
+     scan's message (the wallet card, the terminal). The values
+     come from the SAME outcome fields the scan's log record is
+     built from — the streams attach `diag` to the outcome in
+     the same closure that calls fieldRec with the same fused
+     similarity, the same PalmNet score and the same hand
+     evidence, so the card and the log cannot disagree. This
+     builder is the pure half: diag in, lines out. It reports
+     the bars as facts (they are never presented as adjustable)
+     and names the hand gate plainly when the gate, not a score,
+     decided the rejection. British English throughout. */
+  function scanDiagnosisLines(diag) {
+    if (!diag || typeof diag !== 'object') return [];
+    var lines = [];
+    if (typeof diag.edcc === 'number' && isFinite(diag.edcc)) {
+      lines.push('Best palm score: ' + diag.edcc.toFixed(3) + ' — the bar is ' + PALMPRINT_THRESHOLD.toFixed(2) + '.');
+    } else {
+      lines.push('Best palm score: no readable palm code was scored.');
+    }
+    if (typeof diag.neural === 'number' && isFinite(diag.neural)) {
+      lines.push('PalmNet score: ' + diag.neural.toFixed(3) + ' — the bar is ' + PALMNET_THRESHOLD.toFixed(2) + '.');
+    } else {
+      lines.push('PalmNet: no neural evidence this scan.');
+    }
+    var hand = (diag.probeHand === 'left' || diag.probeHand === 'right') ? diag.probeHand : null;
+    lines.push(hand ? 'Hand read: ' + hand + '.' : 'Hand read: not readable.');
+    if (diag.handGate && hand) {
+      if (diag.profileHand === 'left' || diag.profileHand === 'right') {
+        lines.push('Your other hand is registered as a different identity — this profile is the ' + diag.profileHand + ' hand, but this scan was read as the ' + hand + ' hand, so it was not scored.');
+      } else {
+        lines.push('Your other hand is registered as a different identity — this scan was read as the ' + hand + ' hand' +
+          (typeof diag.excludedCount === 'number' && diag.excludedCount > 0
+            ? ', and ' + diag.excludedCount + ' registered profile' + (diag.excludedCount === 1 ? '' : 's') + ' recording the other hand ' + (diag.excludedCount === 1 ? 'was' : 'were') + ' excluded.'
+            : ', and profiles recording the other hand were excluded.'));
+      }
+    }
+    return lines;
   }
 
   /* Passive liveness over a few rapid frames (Show & Pay, v20): a live
@@ -4457,8 +4569,22 @@
      enrolment, Field Test and Delete All Data are untouched.
      The step is therefore the identity, and a v51 store —
      neural banks, hand stamps, wallet balance, statement and
-     linked accounts included — opens under v52 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52'];
+     linked accounts included — opens under v52 byte-identical.
+
+     v52 -> v53 is an ADOPTION: v53 changes no stored field and
+     no threshold, bar, fusion, guard or gate. It changes what
+     a scan frame must be to count toward matching (the
+     full-hand frame rule), what a failed scan reports (the
+     measured diagnosis panel), and it adds the owner recovery
+     path (guarded Add Angles from the failure card, then a
+     confirmation-gated re-registration that replaces only the
+     named profile's palm bank — an owner action in app.js,
+     logged like every banking event; it writes the SAME
+     profile shape v45-v52 enrolment writes). The step is
+     therefore the identity, and a v52 store — neural banks,
+     hand stamps, wallet balance, statement and linked
+     accounts included — opens under v53 byte-identical. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -4473,6 +4599,7 @@
     'v50': function (snap) { return snap; },
     'v51': function (snap) { return snap; },
     'v52': function (snap) { return snap; },
+    'v53': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
@@ -4687,6 +4814,11 @@
     selectPalmprintLiveRois: selectPalmprintLiveRois,
     palmFramePose: palmFramePose,
     palmFramingHint: palmFramingHint,
+    palmFrameCompleteness: palmFrameCompleteness,
+    scanDiagnosisLines: scanDiagnosisLines,
+    PALM_FRAME_TIP_MARGIN: PALM_FRAME_TIP_MARGIN,
+    PALM_FRAME_MAX_SPAN: PALM_FRAME_MAX_SPAN,
+    PALM_FRAME_MIN_SPAN: PALM_FRAME_MIN_SPAN,
     passiveLivenessCheck: passiveLivenessCheck,
     passiveLivenessPairCheck: passiveLivenessPairCheck,
     streamMatchUpdate: streamMatchUpdate,

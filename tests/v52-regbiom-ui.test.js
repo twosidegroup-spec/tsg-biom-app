@@ -47,10 +47,17 @@ const cssSrc = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8')
 const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
 
 /* ---------------- versions ------------------------------------ */
-check('VERSION app data version is v52', appSrc.indexOf("APP_DATA_VERSION = 'v52'") !== -1);
-check('VERSION shell is v52', swSrc.indexOf('tsg-biom-shell-v52') !== -1);
-check('VERSION v52 is the newest link in the chain',
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v52');
+// v53: the three absolute pins below were converted to the
+// version-coherence form (the v48/v49/v50/v51 pattern) when v53
+// shipped — v52 remains IN the chain as an adoption step; the
+// living current-version pins are in v38-migration + the v53
+// suite. The redesign proofs in this suite are unchanged.
+check('VERSION app data version and shell version agree', (function () {
+  const dv = (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1];
+  const sv = (swSrc.match(/tsg-biom-shell-(v\d+)/) || [])[1];
+  return !!dv && dv === sv;
+})());
+check('VERSION v52 remains in the chain as an adoption step', B.BIOM_DATA_VERSIONS.indexOf('v52') !== -1);
 
 /* ---------------- structure: balance home --------------------- */
 check('HOME the balance card exists (deep-blue balcard)', htmlSrc.indexOf('class="balcard"') !== -1 && cssSrc.indexOf('.balcard{background:var(--blue)') !== -1);
