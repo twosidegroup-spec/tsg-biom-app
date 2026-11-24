@@ -41,7 +41,7 @@
      is skipped, nothing is deleted, and the next launch retries —
      the app boots on the un-migrated data either way, because its
      readers fail closed per record. */
-  var APP_DATA_VERSION = 'v48';
+  var APP_DATA_VERSION = 'v49';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -65,6 +65,7 @@
   } catch (e) { dataMigratedFrom = null; }
 
   /* ---------------- Storage: IndexedDB with localStorage fallback -------- */
+  var DB_OP_TIMEOUT_MS = 8000; // v49: bound on every IndexedDB request (see DB.put)
   var DB = {
     db: null, useLS: false,
     open: function () {
@@ -101,6 +102,18 @@
     },
     lsGet: function (store) { try { return JSON.parse(localStorage.getItem('tsgbiom_' + store) || '[]'); } catch (e) { return []; } },
     lsSet: function (store, rows) { try { localStorage.setItem('tsgbiom_' + store, JSON.stringify(rows)); } catch (e) {} },
+    /* v49 freeze-proofing: an IndexedDB request whose transaction
+       wedges (a blocked versionchange in another tab, a storage
+       fault) fires NEITHER onsuccess nor onerror — the promise
+       below would never settle, and every flow waiting on it
+       (boot's migration + first render, a wallet credit, the
+       terminal verdict card) froze with it: the Chairman's
+       2026-11-24 report, "the site stuck then nothing works".
+       Every IDB request now runs under B.withTimeout: after
+       DB_OP_TIMEOUT_MS the caller sees a rejection it already
+       knows how to surface, instead of silence forever. The
+       request itself is not cancelled — a late write of the same
+       value may still land, which is harmless for these stores. */
     put: function (store, value) {
       var self = this;
       if (this.useLS || !this.db) {
@@ -115,21 +128,21 @@
         this.lsSet(store, rows);
         return Promise.resolve(value);
       }
-      return new Promise(function (resolve, reject) {
+      return B.withTimeout(new Promise(function (resolve, reject) {
         var tx = self.db.transaction(store, 'readwrite');
         var req = tx.objectStore(store).put(value);
         req.onsuccess = function () { resolve(value); };
         req.onerror = function () { reject(req.error); };
-      });
+      }), DB_OP_TIMEOUT_MS);
     },
     all: function (store) {
       var self = this;
       if (this.useLS || !this.db) return Promise.resolve(this.lsGet(store));
-      return new Promise(function (resolve, reject) {
+      return B.withTimeout(new Promise(function (resolve, reject) {
         var req = self.db.transaction(store, 'readonly').objectStore(store).getAll();
         req.onsuccess = function () { resolve(req.result || []); };
         req.onerror = function () { reject(req.error); };
-      });
+      }), DB_OP_TIMEOUT_MS);
     },
     getMeta: function (key, fallback) {
       return this.all('meta').then(function (rows) {
@@ -229,6 +242,7 @@
   function isToday(ts) { var d = new Date(ts), n = new Date(); return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate(); }
 
   /* ---------------- Camera manager --------------------------------------- */
+  var CAM_START_TIMEOUT_MS = 12000; // v49: bound on a whole camera start (see Cam.start)
   var Cam = {
     stream: null, video: null, viewKey: null, _token: 0, _starting: null, _startVideo: null, _startKey: null,
     start: function (video, facingMode, viewKey) {
@@ -348,12 +362,37 @@
           return stream;
         });
       });
-      this._starting = p;
+      /* v49 freeze-proofing: the whole start chain — getUserMedia,
+         play(), capture tuning, flash application — previously
+         had NO overall bound. A getUserMedia promise that never
+         settles (wedged driver, abandoned permission surface)
+         left every caller waiting forever: camera-start handlers
+         stuck on "Starting the camera...", and, worse, a scan
+         loop's mid-scan camera swap never returned, so the scan
+         blew past its own deadline without ever re-checking it
+         and palmScanBusy stayed latched — every later scan on
+         every view was blocked ("the site stuck then nothing
+         works", 2026-11-24). The start now runs under
+         B.withTimeout: on timeout the start is superseded (the
+         token bump makes the chain's own guard stop any late
+         stream) and any tracks it did attach are released, then
+         the rejection reaches the caller's existing camera-error
+         surface. 12 s is generous — a healthy start, including
+         the NotReadableError retry ladder, lands in ~2 s. */
+      var bounded = B.withTimeout(p, CAM_START_TIMEOUT_MS).catch(function (e) {
+        if (e && e.code === 'ETIMEOUT' && Cam._starting === bounded) {
+          Cam._token++;
+          Cam.stop();
+          throw new Error('The camera did not start within ' + Math.round(CAM_START_TIMEOUT_MS / 1000) + ' seconds. Close any other app using the camera, check the camera permission for this site, and try again.');
+        }
+        throw e;
+      });
+      this._starting = bounded;
       this._startVideo = video;
       this._startKey = viewKey || null;
-      var clear = function () { if (Cam._starting === p) { Cam._starting = null; Cam._startVideo = null; Cam._startKey = null; } };
-      p.then(clear, clear);
-      return p;
+      var clear = function () { if (Cam._starting === bounded) { Cam._starting = null; Cam._startVideo = null; Cam._startKey = null; } };
+      bounded.then(clear, clear);
+      return bounded;
     },
     stop: function () {
       if (this.stream) {
@@ -1141,14 +1180,18 @@
       });
     },
     loadOrtScript: function () {
-      return new Promise(function (resolve, reject) {
+      // v49 freeze-proofing: a stalled CDN connection can leave a
+      // script element neither loaded nor errored — the promise
+      // never settles. Bounded like every other wait in v49; the
+      // rejection lands in init()'s fail-soft catch.
+      return B.withTimeout(new Promise(function (resolve, reject) {
         if (typeof window !== 'undefined' && window.ort) { resolve(); return; }
         var s = document.createElement('script');
         s.src = PalmNet.ortUrl;
         s.onload = function () { resolve(); };
         s.onerror = function () { reject(new Error('ONNX Runtime Web failed to load from the CDN')); };
         document.head.appendChild(s);
-      });
+      }), 20000);
     },
     fetchModelBytes: function () {
       var self = this;
@@ -1173,14 +1216,24 @@
     },
     initMainThread: function () {
       var self = this;
-      return this.loadOrtScript().then(function () {
+      // v49 freeze-proofing: the worker path is bounded (45 s in
+      // initWorker) and per-call embeds are bounded (4 s worker /
+      // 6 s race in embedPair), but this main-thread fallback was
+      // not: fetchModelBytes uses plain fetch (no timeout) and
+      // InferenceSession.create can stall, so PalmNet.init()
+      // could sit in 'loading' forever and the diagnostics note
+      // lied about it. The whole chain now runs under a 60 s
+      // bound; a timeout rejects into init()'s catch, the state
+      // flips to 'failed' with the reason, and the app runs
+      // EDCC-only — the designed fail-soft.
+      return B.withTimeout(this.loadOrtScript().then(function () {
         window.ort.env.wasm.numThreads = 1;
         return self.fetchModelBytes();
       }).then(function (bytes) {
         return window.ort.InferenceSession.create(bytes);
       }).then(function (session) {
         self.session = session;
-      });
+      }), 60000);
     },
     embedViaWorker: function (roi, roiM) {
       var self = this;
@@ -1563,7 +1616,15 @@
      around the match are unchanged, only the match rule itself
      follows the spec. MAXF and the wall-clock deadline bound the
      scan as before. */
-  function streamVerifyPalm(video, statusEl, person, people, swapCamera, fieldRec, control) {
+  /* v49: the exact refusal every money scan ends with when the
+     palm matched the PLAIN bars but the strict money rule
+     (two-frame confirmation + impostor margin, see the v49
+     section in biometrics.js) was not satisfied. It authorises
+     nothing, and it does not claim the palm failed to match —
+     it says precisely what happened. */
+  var MONEY_STRICT_FAIL_MSG = 'Matched, but not clearly enough to authorise money — please scan again';
+
+  function streamVerifyPalm(video, statusEl, person, people, swapCamera, fieldRec, control, opts) {
     var t0 = Date.now();
     var tracker = makeSpoofTracker();
     var frames = [];
@@ -1584,6 +1645,16 @@
     // binds first on fast devices), the budget binds first on a
     // slow phone. Basis at B.SCAN_TIME_BUDGET_MS.
     var MAXF = 24, deadline = t0 + B.SCAN_TIME_BUDGET_MS;
+    // v49: money authorisations run this same stream with
+    // opts.strictMoney — the PLAIN fused verdict is computed
+    // exactly as before (and is what Field Test Mode records),
+    // but the money verdict is issued only when the strict rule
+    // also holds: the fused win on at least two distinct
+    // analysed frames (moneyGate) AND the margin over every
+    // other profile (checked in verifiedOut / finalOut against
+    // the impostor-maxima those paths already compute).
+    var strictMoney = !!(opts && opts.strictMoney);
+    var moneyGate = B.createMoneyScanGate();
     // v44: per-stage timing accumulators for the result-panel
     // diagnostics — the phone's own numbers, measured on-device:
     // landmark inference + ROI/base encode from analysePalmFrame,
@@ -1623,6 +1694,13 @@
       if (frameEdcc[frameIdx] === undefined) return;
       var ns = frameNeural[frameIdx] === undefined ? null : frameNeural[frameIdx];
       var fused = B.fusePalmVerifyResults(frameEdcc[frameIdx], ns);
+      // v49: every frame whose fused decision verifies is
+      // recorded for the strict money rule's two-frame
+      // confirmation — including frames after the win latched
+      // (they are the confirmation) and re-takes of a frame when
+      // its neural score lands (the gate counts distinct frames,
+      // so a re-take never double-counts).
+      if (fused.verified) moneyGate.noteVerified('target', frameIdx);
       if (win) {
         // The win already stands; if it came from THIS frame
         // before the neural score landed, refresh its evidence so
@@ -1713,8 +1791,28 @@
     function verifiedOut() {
       return impostorMaxFor(win.rois).then(function (impMax) {
         return neuralImpostorMaxFor(win.rois).then(function (nImpMax) {
-          fieldRec(win.res.similarity, impMax, 'pass', 'verified', tracker.state().lightTag, { neuralScore: typeof win.res.neuralScore === 'number' ? win.res.neuralScore : null, neuralImpostorMax: nImpMax, acceptedBy: win.res.acceptedBy || null });
+          var extras = { neuralScore: typeof win.res.neuralScore === 'number' ? win.res.neuralScore : null, neuralImpostorMax: nImpMax, acceptedBy: win.res.acceptedBy || null };
           var measured = 'Palmprint similarity ' + (typeof win.res.similarity === 'number' ? win.res.similarity.toFixed(3) : 'n/a') + ' (threshold ' + win.res.threshold + ', 1-snap packed match: the winning frame\'s bit-packed template scored by the 5-shift popcount matcher against ' + person.palmProfile.codes.length + ' enrolled packed templates), passive liveness passed (natural micro-shift across rapid frames), Show & Pay streaming scan.' + neuralMeasuredStr(win.res) + ' Scan latency: ' + (Date.now() - t0) + ' ms.' + shiftLogStr(win.res) + ' ' + diagStr();
+          if (strictMoney) {
+            // v49 margin rule, judged on the accepting system(s)
+            // against the impostor-maxima computed just above for
+            // this same probe. Field Test Mode still records the
+            // PLAIN fused verdict ('pass' / 'verified'); the
+            // strict outcome rides the record as extra fields.
+            var mc = B.moneyMarginCheck(win.res, impMax, nImpMax);
+            extras.strictMoney = true;
+            extras.strictPass = mc.pass;
+            if (!mc.pass) extras.strictBlock = 'margin';
+            fieldRec(win.res.similarity, impMax, 'pass', 'verified', tracker.state().lightTag, extras);
+            if (!mc.pass) {
+              Snd.buzz();
+              measured += ' Money authorisation rule applied: the match was confirmed on ' + moneyGate.verifiedFrames('target') + ' distinct frames but did NOT beat every other enrolled palm by the money margin (EDCC ' + B.MONEY_MARGIN_EDCC + ' / PalmNet ' + B.MONEY_MARGIN_NEURAL + '), so nothing was authorised.';
+              return finish({ fail: MONEY_STRICT_FAIL_MSG, measured: measured, strictMoney: { applied: true, pass: false, block: 'margin' } });
+            }
+            measured += ' Money authorisation rule applied: the match was confirmed on ' + moneyGate.verifiedFrames('target') + ' distinct frames and beat every other enrolled palm by at least the money margin (EDCC ' + B.MONEY_MARGIN_EDCC + ' / PalmNet ' + B.MONEY_MARGIN_NEURAL + ') — authorised under the strict rule.';
+            return finish({ r: win.res, measured: measured, latencyMs: Date.now() - t0, strictMoney: { applied: true, pass: true } });
+          }
+          fieldRec(win.res.similarity, impMax, 'pass', 'verified', tracker.state().lightTag, extras);
           return finish({ r: win.res, measured: measured, latencyMs: Date.now() - t0 });
         });
       });
@@ -1735,6 +1833,18 @@
           return impostorMaxFor(liveRois).then(function (impMax) {
             return neuralImpostorMaxFor(liveRois).then(function (nImpMax) {
               if (fused.verified && lv.pass) {
+                if (strictMoney) {
+                  // v49: the collected-set judgement matched (the
+                  // PLAIN verdict, recorded as such), but a money
+                  // authorisation needs the win confirmed on two
+                  // distinct STREAMED frames — a set judgement over
+                  // the top-3 ROIs is not that evidence, and no
+                  // streaming frame verified (win is null here).
+                  // The strict rule blocks; nothing is authorised.
+                  fieldRec(fused.similarity, impMax, 'pass', 'verified', sp.lightTag, { neuralScore: nScore, neuralImpostorMax: nImpMax, acceptedBy: fused.acceptedBy || null, strictMoney: true, strictPass: false, strictBlock: 'frames' });
+                  Snd.buzz();
+                  return finish({ fail: MONEY_STRICT_FAIL_MSG, strictMoney: { applied: true, pass: false, block: 'frames' } });
+                }
                 // The collected set matched and liveness passed — the
                 // win the streaming rule would have honoured.
                 win = { res: fused, rois: liveRois, fast: false };
@@ -1892,8 +2002,12 @@
       // rejection above also runs first: if the tracker has
       // convicted the scan on the frames examined so far, no win
       // is honoured.
-      if (win && lv.pass && sp.framesChecked >= 3) return verifiedOut();
+      if (win && lv.pass && sp.framesChecked >= 3 && (!strictMoney || moneyGate.confirmed('target'))) return verifiedOut();
       if (win && lv.pass && statusEl) statusEl.textContent = 'Palm matched — confirming this is a live hand, not a screen…';
+      // v49: in a money scan, a latched win that still lacks its
+      // second confirming frame says so — the scan keeps running
+      // and the palm simply stays in view a moment longer.
+      if (strictMoney && win && lv.pass && sp.framesChecked >= 3 && statusEl) statusEl.textContent = 'Palm matched — money authorisation needs the match confirmed on a second frame. Keep the palm there…';
       // v37: the burst-era "two bursts" static guard is the same
       // evidence in continuous terms — six analysed frames.
       if (lv.verdict === 'static' && analysed >= 6) return livenessFailOut(lv);
@@ -1907,6 +2021,16 @@
         if (prevMatch) {
           var prev = prevMatch; prevMatch = null;
           return prev.promise.then(function (res) { applyMatch(res, prev.roi, prev.frameIdx); return loop(); });
+        }
+        if (strictMoney && win && lv.pass) {
+          // v49: the palm matched and liveness passed (the PLAIN
+          // verdict, recorded as such), but the win never reached
+          // two distinct verified frames before the cap — a money
+          // authorisation needs that confirmation. Strict block,
+          // not a liveness failure: the message says which.
+          fieldRec(win.res.similarity, null, 'pass', 'verified', sp.lightTag, { neuralScore: typeof win.res.neuralScore === 'number' ? win.res.neuralScore : null, neuralImpostorMax: null, acceptedBy: win.res.acceptedBy || null, strictMoney: true, strictPass: false, strictBlock: 'frames' });
+          Snd.buzz();
+          return finish({ fail: MONEY_STRICT_FAIL_MSG, strictMoney: { applied: true, pass: false, block: 'frames' } });
         }
         if (win) {
           fieldRec(win.res.similarity, null, 'fail', 'rejected', sp.lightTag, { neuralScore: typeof win.res.neuralScore === 'number' ? win.res.neuralScore : null, neuralImpostorMax: null, acceptedBy: win.res.acceptedBy || null });
@@ -1949,7 +2073,7 @@
      shared evidence, the per-candidate match rule is identical,
      and a scan matching no enrolled palm identifies nobody. Used
      by the demo wallet (open wallet, find a send receiver). */
-  function streamIdentifyPalm(video, statusEl, people, swapCamera, control) {
+  function streamIdentifyPalm(video, statusEl, people, swapCamera, control, opts) {
     var t0 = Date.now();
     var candidates = (people || []).filter(function (p) { return B.palmprintProfileSane(p.palmProfile); });
     if (!candidates.length) {
@@ -1963,6 +2087,18 @@
     var appliedBy = {};
     candidates.forEach(function (p) { states[p.id] = { streak: 0, best: null }; appliedBy[p.id] = []; });
     var win = null; // { person, res, fast }
+    // v49: with opts.strictMoney (wallet open is a money
+    // authorisation) the identification must ALSO satisfy the
+    // strict rule before loop() honours it: the same candidate's
+    // fused win on two distinct analysed frames (moneyGate, one
+    // key per candidate) and, on the confirming frame, the
+    // margin over every other candidate's same-frame score
+    // (judged in tryWinIdentify, where that frame's per-candidate
+    // results are in hand). A margin failure is terminal for the
+    // scan (strictFail): an ambiguous palm does not move money.
+    var strictMoney = !!(opts && opts.strictMoney);
+    var moneyGate = B.createMoneyScanGate();
+    var strictFail = null; // { block: 'margin' }
     var analysed = 0, swapped = false, locked = false;
     var lastHint = null, coded = 0;
     // v43: the latest frame's quality signals, feeding the live
@@ -1997,14 +2133,34 @@
     var frameResults = {};       // frameIdx -> per-candidate EDCC results array
     var frameNeuralScores = {};  // frameIdx -> { personId: cosine|null } (absent = pending)
     function tryWinIdentify(frameIdx) {
-      if (win) return;
+      if (win || strictFail) return;
       var results = frameResults[frameIdx];
       if (!results) return;
       var scores = frameNeuralScores[frameIdx] || null;
       for (var i = 0; i < candidates.length; i++) {
         var p = candidates[i];
         var fused = B.fusePalmVerifyResults(results[i] || null, scores ? scores[p.id] : null);
-        if (fused.verified) { win = { person: p, res: fused, fast: false }; return; }
+        if (!fused.verified) continue;
+        if (!strictMoney) { win = { person: p, res: fused, fast: false }; return; }
+        // v49 strict: record this frame for this candidate; only
+        // the SECOND distinct verified frame can confirm, and on
+        // that frame the margin is judged against the other
+        // candidates' scores from the SAME frame (one shared
+        // probe — the exact impostor comparison the rule names).
+        moneyGate.noteVerified(p.id, frameIdx);
+        if (!moneyGate.confirmed(p.id)) continue;
+        var edccOthers = null, neuralOthers = null;
+        for (var j = 0; j < candidates.length; j++) {
+          if (j === i) continue;
+          var rj = results[j];
+          if (rj && typeof rj.similarity === 'number' && (edccOthers === null || rj.similarity > edccOthers)) edccOthers = rj.similarity;
+          var ns = scores ? scores[candidates[j].id] : null;
+          if (typeof ns === 'number' && (neuralOthers === null || ns > neuralOthers)) neuralOthers = ns;
+        }
+        var mc = B.moneyMarginCheck(fused, edccOthers, neuralOthers);
+        if (mc.pass) win = { person: p, res: fused, fast: false, strictMargin: mc };
+        else strictFail = { block: 'margin' };
+        return;
       }
     }
     function neuralScoresForRois(rois) {
@@ -2048,6 +2204,10 @@
     }
     function identifiedOut() {
       var measured = 'Palmprint similarity ' + (typeof win.res.similarity === 'number' ? win.res.similarity.toFixed(3) : 'n/a') + ' (threshold ' + win.res.threshold + ', 1-snap packed match: the winning frame\'s bit-packed template scored by the 5-shift popcount matcher against ' + win.person.palmProfile.codes.length + ' enrolled packed templates), passive liveness passed (natural micro-shift across rapid frames), wallet identification scan (1:N over ' + candidates.length + ' enrolled palms).' + neuralMeasuredStrId(win.res) + ' Scan latency: ' + (Date.now() - t0) + ' ms.' + shiftLogStr(win.res) + ' ' + diagStr();
+      if (strictMoney) {
+        measured += ' Money authorisation rule applied: the match was confirmed on ' + moneyGate.verifiedFrames(win.person.id) + ' distinct frames and beat every other enrolled palm by at least the money margin (EDCC ' + B.MONEY_MARGIN_EDCC + ' / PalmNet ' + B.MONEY_MARGIN_NEURAL + ') — authorised under the strict rule.';
+        return { person: win.person, r: win.res, measured: measured, latencyMs: Date.now() - t0, strictMoney: { applied: true, pass: true } };
+      }
       return { person: win.person, r: win.res, measured: measured, latencyMs: Date.now() - t0 };
     }
     function finalOut(timedOut) {
@@ -2077,6 +2237,15 @@
             if (ro && ro.verified && (bestVerified === null || (typeof ro.similarity === 'number' ? ro.similarity : 0) > (typeof bestVerified.similarity === 'number' ? bestVerified.similarity : 0))) { bestVerified = ro; bestVerifiedPerson = candidates[i]; }
           });
           if (bestVerified && lv.pass) {
+            if (strictMoney) {
+              // v49: the collected-set judgement matched, but a
+              // money authorisation needs one candidate's win
+              // confirmed on two distinct STREAMED frames — the
+              // set judgement is not that evidence. Strict block;
+              // nothing is opened.
+              Snd.buzz();
+              return { fail: MONEY_STRICT_FAIL_MSG, strictMoney: { applied: true, pass: false, block: 'frames' } };
+            }
             win = { person: bestVerifiedPerson, res: bestVerified, fast: false };
             return identifiedOut();
           }
@@ -2196,9 +2365,16 @@
       if (control && control.cancelled) return { stopped: true, fail: 'Scan stopped.' };
       var sp = tracker.state();
       if (sp.spoof) return spoofOut(sp);
+      // v49: a strict margin failure ends the money scan at once
+      // — the palm matched the plain bars but ambiguously, and
+      // no later frame can un-ambiguate an authorisation.
+      if (strictFail) { Snd.buzz(); return { fail: MONEY_STRICT_FAIL_MSG, strictMoney: { applied: true, pass: false, block: strictFail.block } }; }
       var lv = B.passiveLivenessCheck(poses);
       if (win && lv.pass && sp.framesChecked >= 3) return identifiedOut();
       if (win && lv.pass && statusEl) statusEl.textContent = 'Palm identified — confirming this is a live hand, not a screen…';
+      // v49: one candidate has a first verified frame but not yet
+      // its confirming second — say so while the scan runs on.
+      if (strictMoney && !win && lv.pass && statusEl && candidates.some(function (p) { return moneyGate.verifiedFrames(p.id) === 1; })) statusEl.textContent = 'Palm matched — money authorisation needs the match confirmed on a second frame. Keep the palm there…';
       if (lv.verdict === 'static' && analysed >= 6) return livenessFailOut(lv);
       if (lv.verdict === 'erratic') return livenessFailOut(lv);
       if (analysed >= MAXF || Date.now() > deadline) {
@@ -2594,7 +2770,10 @@
   });
 
   function logVerification(person, method, measured, result) {
-    return DB.put('logs', { ts: Date.now(), personId: person.id, personName: person.name, store: $('termStore').value, method: method, measured: measured, result: result });
+    // v49: the log write is best-effort — it must never gate the
+    // verdict card. A wedged store (now bounded in DB.put) rejects
+    // here and the terminal still renders its verdict.
+    return DB.put('logs', { ts: Date.now(), personId: person.id, personName: person.name, store: $('termStore').value, method: method, measured: measured, result: result }).catch(function () { return null; });
   }
 
   /* ---------------- Field Test Mode (v18) -------------------------------
@@ -2668,6 +2847,15 @@
           rec.neuralScore = typeof neural.neuralScore === 'number' ? neural.neuralScore : null;
           rec.neuralImpostorMax = typeof neural.neuralImpostorMax === 'number' ? neural.neuralImpostorMax : null;
           rec.acceptedBy = neural.acceptedBy || null;
+          // v49: the strict money rule's outcome rides the record
+          // the same way — the record's result above stays the
+          // PLAIN fused verdict Field Test Mode measures, and the
+          // pinned CSV columns are untouched.
+          if (neural.strictMoney) {
+            rec.strictMoney = true;
+            rec.strictPass = neural.strictPass === true;
+            rec.strictBlock = neural.strictBlock || null;
+          }
         }
         writeFieldRecord(rec);
       };
@@ -2682,7 +2870,7 @@
         // flash choice to honour, so a mid-scan camera swap killed
         // the torch and never re-applied it on the new track.
         return Cam.start($('termVideo'), camFacing[k], k);
-      }, fieldRec, control).then(function (out) {
+      }, fieldRec, control, { strictMoney: true }).then(function (out) {
         palmScanBusy = false;
         $('termScan').disabled = false;
         return out;
@@ -2922,7 +3110,11 @@
   }
   $('wScanStart').addEventListener('click', startWalletCamera);
   camRestarters.walletAct = function () {
-    Cam.start($('wScanVideo'), camFacing.walletAct, 'walletAct').then(function () { runWalletScan(); });
+    // v49: this restarter was the one camera-start caller with no
+    // rejection path — a failed restart vanished silently and the
+    // scan card sat dead. It now surfaces the same camera error
+    // as startWalletCamera.
+    Cam.start($('wScanVideo'), camFacing.walletAct, 'walletAct').then(function () { runWalletScan(); }).catch(function (e) { $('wScanMsg').innerHTML = cameraErrorHTML(e); $('wScanStatus').textContent = 'Camera blocked.'; });
   };
   $('wScanRun').addEventListener('click', runWalletScan);
   $('wScanCancel').addEventListener('click', function () {
@@ -2940,7 +3132,7 @@
       prompt: 'Show your open palm to the camera. If it matches a registered palm, that person\'s wallet opens. A palm that is not registered opens nothing.',
       run: function () {
         return DB.all('people').then(function (people) {
-          return streamIdentifyPalm($('wScanVideo'), $('wScanStatus'), people, walletSwapCamera, walletControl).then(function (out) {
+          return streamIdentifyPalm($('wScanVideo'), $('wScanStatus'), people, walletSwapCamera, walletControl, { strictMoney: true }).then(function (out) {
             if (!out || out.fail || !out.person) { walletScanFailed(out); return; }
             walletSessionId = out.person.id;
             hideWalletScan();
@@ -2964,7 +3156,7 @@
       run: function () {
         return DB.all('people').then(function (people) {
           var fresh = people.find(function (p) { return p.id === personId; }) || person;
-          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, walletSwapCamera, function () {}, walletControl).then(function (out) {
+          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, walletSwapCamera, function () {}, walletControl, { strictMoney: true }).then(function (out) {
             var auth = authFromVerify(out, personId);
             if (!auth.verified) { walletScanFailed(out); return; }
             walletSessionId = personId;
@@ -3027,7 +3219,7 @@
       run: function () {
         return DB.all('people').then(function (people) {
           var fresh = people.find(function (p) { return p.id === me.id; }) || me;
-          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, walletSwapCamera, function () {}, walletControl).then(function (out) {
+          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, walletSwapCamera, function () {}, walletControl, { strictMoney: true }).then(function (out) {
             var auth = authFromVerify(out, fresh.id);
             if (!auth.verified) { walletScanFailed(out); return; }
             return DB.nextSeq('demoSeq', 1).then(function (seq) {
@@ -3113,7 +3305,7 @@
       run: function () {
         return DB.all('people').then(function (people) {
           var freshSender = people.find(function (p) { return p.id === me.id; }) || me;
-          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), freshSender, people, walletSwapCamera, function () {}, walletControl).then(function (out) {
+          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), freshSender, people, walletSwapCamera, function () {}, walletControl, { strictMoney: true }).then(function (out) {
             var auth = authFromVerify(out, freshSender.id);
             if (!auth.verified) { walletScanFailed(out); return; }
             return DB.nextSeq('demoSeq', 1).then(function (seq) {
@@ -3203,11 +3395,11 @@
         ? 'Runs the same burst capture as enrolment and banks PalmNet neural embeddings for this person\'s palm, so it can match through the neural matcher as well as EDCC. Their EDCC templates, Biom ID, wallet, balance, statement, linked accounts and loyalty points do not change.'
         : 'Runs the same burst capture as enrolment and adds diverse sharp templates to this person\'s stored profile — or re-banks the palm in the current format when it was enrolled in the previous one. Their Biom ID, wallet, balance, statement, linked accounts and loyalty points do not change — only the palm profile gains templates.';
       if (topupMode === 'neural') {
-        $('topWho').innerHTML = '<b>' + esc(person.name) + '</b> — ' + esc(person.id) + '<br><span style="color:var(--muted)">Neural scan: this palm is enrolled for the EDCC matcher but has no PalmNet neural embeddings yet, so it verifies EDCC-only. One burst banks neural embeddings for the same palm; the EDCC templates, Biom ID, wallet and points do not change.</span>';
+        $('topWho').innerHTML = '<b>' + esc(person.name) + '</b> — ' + esc(person.id) + '<br><span style="color:var(--muted)">Neural scan: this palm is enrolled for the EDCC matcher but has no PalmNet neural embeddings yet, so it verifies EDCC-only. One burst banks neural embeddings for the same palm; the EDCC templates, Biom ID, wallet and points do not change. Before anything is banked, the burst is checked against the palm already banked for this profile — a different palm is refused and nothing is added.</span>';
       } else if (fmt === 'legacy') {
-        $('topWho').innerHTML = '<b>' + esc(person.name) + '</b> — ' + esc(person.id) + '<br><span style="color:var(--muted)">Palm re-scan needed: this palm was enrolled in the previous template format, which the current packed matcher cannot read. One burst re-banks it in the current format; the old codes stay archived in this record, and nothing else about this person changes.</span>';
+        $('topWho').innerHTML = '<b>' + esc(person.name) + '</b> — ' + esc(person.id) + '<br><span style="color:var(--muted)">Palm re-scan needed: this palm was enrolled in the previous template format, which the current packed matcher cannot read. One burst re-banks it in the current format; the old codes stay archived in this record, and nothing else about this person changes. Honest limit: because the old templates cannot be read, this re-scan cannot check the presented palm against them — it banks the palm that is presented, so only run it with this person\'s own palm.</span>';
       } else {
-        $('topWho').innerHTML = '<b>' + esc(person.name) + '</b> — ' + esc(person.id) + '<br><span style="color:var(--muted)">Currently banked: ' + person.palmProfile.codes.length + ' packed palm templates' + (Array.isArray(person.palmProfile.poses) ? ' with pose data.' : ' from a single-posture enrolment — no pose data yet.') + ' The burst adds diverse sharp templates; nothing else about this person changes.</span>';
+        $('topWho').innerHTML = '<b>' + esc(person.name) + '</b> — ' + esc(person.id) + '<br><span style="color:var(--muted)">Currently banked: ' + person.palmProfile.codes.length + ' packed palm templates' + (Array.isArray(person.palmProfile.poses) ? ' with pose data.' : ' from a single-posture enrolment — no pose data yet.') + ' The burst adds diverse sharp templates; nothing else about this person changes. Before anything is added, the burst is checked against the palm already banked — a different palm is refused and nothing is added.</span>';
       }
       $('topMsg').innerHTML = '';
       $('topStatus').textContent = 'Starting the camera...';
@@ -3257,11 +3449,34 @@
       return DB.all('people').then(function (people) {
         var person = people.find(function (p) { return p.id === topupPersonId; }) || null;
         if (!person) { $('topMsg').innerHTML = '<div class="error">That person is no longer in the registry — nothing was changed.</div>'; return; }
+        // v49 SAME-PERSON GUARD (audit AUDIT-addmoney-v48.md,
+        // hypothesis (c)): before ANY merge below, the captured
+        // palm must verify against this profile's existing
+        // readable bank at the standard fused bars
+        // (B.bankingGuardCheck) — computed offline from THIS
+        // burst's own candidates (the packed candidates the EDCC
+        // merge would bank, the embeddings the neural merge would
+        // bank), with no extra camera session. A palm that does
+        // not match is refused whole: nothing is banked, in
+        // either system, and the refusal is logged. The one case
+        // the guard cannot cover is the legacy re-bank — archived
+        // pre-v45 codes cannot be scored by the current matchers,
+        // so the guard reports 'uncheckable' and the flow
+        // proceeds; that limitation is stated in the flow's own
+        // copy (openTopup) and never hidden.
+        var candProbes = B.palmprintPackedCandidates(res.results).list.map(function (c) { return c.words; });
+        return PalmNet.embedRois(neuralCandidateRois(res.results)).then(function (embs) {
+          var good = (embs || []).filter(function (e) { return !!e; });
+          var guard = B.bankingGuardCheck(person.palmProfile, { edccProbes: candProbes, neuralEmbeddings: good });
+          if (guard.status === 'fail') {
+            DB.put('logs', { ts: Date.now(), personId: person.id, personName: person.name, store: '', method: 'palm', measured: 'Banking refused by the v49 same-person guard: the captured palm did not verify against this profile (EDCC ' + (guard.edccChecked ? guard.edccScore.toFixed(3) : 'not checkable') + ', PalmNet ' + (guard.neuralChecked ? guard.neuralScore.toFixed(3) : 'not checkable') + '). Nothing was banked.', result: 'Banking Refused — Palm Mismatch' });
+            $('topMsg').innerHTML = '<div class="error">This palm does not match this profile — nothing was added</div>';
+            Snd.buzz();
+            return;
+          }
         // v47 Neural scan mode: bank PalmNet embeddings only —
         // the EDCC profile is carried over untouched.
         if (topupMode === 'neural') {
-          return PalmNet.embedRois(neuralCandidateRois(res.results)).then(function (embs) {
-            var good = (embs || []).filter(function (e) { return !!e; });
             if (!good.length) {
               $('topMsg').innerHTML = '<div class="error">The PalmNet neural matcher produced no embeddings for this burst (' + (PalmNet.state === 'failed' ? esc(PalmNet.failReason) : 'the model may still be loading') + '). Nothing was changed. Run it again in a few seconds.</div>';
               Snd.buzz();
@@ -3279,7 +3494,7 @@
               Snd.chime();
               Snd.speak('Neural scan banked');
             });
-          });
+          return;
         }
         var merged = B.mergePalmprintProfileCodes(person.palmProfile, res.results);
         if (!merged) {
@@ -3288,8 +3503,9 @@
         }
         // v47: Add Angles banks BOTH template types from the same
         // burst — the EDCC merge above and the neural merge here.
-        return PalmNet.embedRois(neuralCandidateRois(res.results)).then(function (embs) {
-          var good = (embs || []).filter(function (e) { return !!e; });
+        // v49: the embeddings are the ones already computed for
+        // the same-person guard above (`good`) — one embed pass
+        // serves the guard and this merge.
           var nMerge = good.length
             ? B.mergePalmnetEmbeddings(person.palmProfile.neural || null, good)
             : { neural: person.palmProfile.neural || null, added: 0, skipped: 0, total: 0, changed: false };

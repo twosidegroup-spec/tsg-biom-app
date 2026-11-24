@@ -189,10 +189,14 @@ function wiringChecks() {
   check('WIRING the terminal method note goes through refreshFlashUi (one owner of the note)',
     appSrc.indexOf("refreshFlashUi('terminal');") !== -1);
   check('WIRING the disabled toggle state has a style', cssSrc.indexOf('.camtoggle button:disabled') !== -1);
-  check('WIRING versions: app data v48, shell v48',
-    appSrc.indexOf("APP_DATA_VERSION = 'v48'") !== -1 && swSrc.indexOf('tsg-biom-shell-v48') !== -1);
-  check('MIGRATION v48 is in the chain as an adoption step',
-    B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v48' &&
+  check('WIRING versions: app data version and shell version agree and sit in the chain (v49-era form of this pin)',
+    (function () {
+      const dv = (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1];
+      const sv = (swSrc.match(/tsg-biom-shell-(v\d+)/) || [])[1];
+      return !!dv && dv === sv && B.BIOM_DATA_VERSIONS.indexOf(dv) !== -1 && B.BIOM_DATA_VERSIONS.indexOf('v48') !== -1;
+    })());
+  check('MIGRATION v48 remains in the chain as an adoption step',
+    B.BIOM_DATA_VERSIONS.indexOf('v48') !== -1 &&
     B.migrateBiomData({ people: [], logs: [], transactions: [], meta: [] }, 'v47', 'v48').appliedSteps.join(',') === 'v48');
 }
 

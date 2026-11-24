@@ -3064,6 +3064,240 @@
     return out;
   }
 
+  /* ================= v49: money-scan strict rule + banking guard ==
+     Ordered 2026-11-24 after the Add Money audit
+     (AUDIT-addmoney-v48.md). Two independent routes explained how
+     an unregistered palm passed a money authorisation once:
+     (a) the plain fused operating point (EER bar x max-fusion x
+     mirror twin x 1-snap multi-frame) admits cross-person passes,
+     and (c) the banking flows (Add Angles / Neural Scan / legacy
+     Re-scan) banked ANY live palm into a profile with no identity
+     check. v49 answers both WITHOUT touching the plain verify /
+     identify operating point:
+
+     1. BANKING GUARD (bankingGuardCheck): before any top-up
+        merge, the session's captured palm must verify against
+        the profile's existing readable bank at the standard
+        fused bars — EDCC >= 0.32 and/or PalmNet cosine >=
+        0.5773, the same OR rule as verification. The check is
+        computed offline from the session's own captured
+        templates/embeddings against the stored bank; no extra
+        camera session. Where NO readable bank exists (the
+        legacy re-bank case: archived pre-v45 codes cannot be
+        scored by the current matchers) the guard honestly
+        reports 'uncheckable' and the caller proceeds — it never
+        pretends to have checked.
+
+     2. STRICT MONEY RULE (createMoneyScanGate + moneyMarginCheck):
+        money authorisations (wallet Add Money, wallet Send
+        Money sender authorisation, wallet open on both routes,
+        terminal Biom Pay verify) additionally require
+          (i) TWO-FRAME CONFIRMATION — the fused win must occur
+              on at least MONEY_CONFIRM_FRAMES distinct analysed
+              frames (the gate below counts distinct frame
+              indices per target; the app streams own the
+              counting calls), and
+          (ii) THE MARGIN RULE — on the accepting system, the
+              target's score must beat the best score of every
+              OTHER profile (the impostor-max the scan already
+              computes) by a clear margin. With no other profile
+              on the device the rule is vacuously satisfied.
+        Plain verify/identify keeps the v45/v47 rules exactly;
+        Field Test Mode keeps measuring the PLAIN fused verdict.
+
+     MARGIN BASIS (measured, not chosen for comfort):
+       PalmNet — MONEY_MARGIN_NEURAL = 0.15. PalmNet-Bench EVAL
+       (logs/neural_results.json): clean genuine p05 = 0.7414
+       vs impostor p95 = 0.2791, a typical separation of ~0.46;
+       under the worst measured tilt (av = 0.80) genuine p05 =
+       0.4334 vs impostor p95 = 0.2544, a separation of ~0.18.
+       0.15 sits just under that worst-case band, so a genuine
+       palm at the 5th percentile under heavy tilt still
+       typically clears it, while a palm whose best OTHER-
+       profile score comes within 0.15 of its target score is
+       genuinely ambiguous and must not move money.
+       EDCC — MONEY_MARGIN_EDCC = 0.10. The bench EDCC numbers
+       are a different operating point (consensus gallery, EER
+       threshold 0.1052) and do not transfer; the app's own
+       fixture bands do: genuine scores ~0.50-0.59 (v41 tilt-fix
+       fixtures; v44 analysis-grid fixtures 0.499-0.511 flat)
+       against an impostor maximum of ~0.15 (0.146-0.150 across
+       the same fixture families) — a typical separation of
+       ~0.35. 0.10 is roughly a third of that separation: a
+       visible, meaningful gap that the genuine band clears
+       comfortably. Both margins are LAB/RIG numbers; only the
+       Field Test gate (20 people / 200 scans) can calibrate
+       them for real phone use. */
+  var MONEY_CONFIRM_FRAMES = 2;
+  var MONEY_MARGIN_EDCC = 0.10;
+  var MONEY_MARGIN_NEURAL = 0.15;
+
+  /* The two-frame half of the strict rule, as a tiny pure gate
+     so the rule itself is unit-testable without a camera: the
+     app streams call noteVerified(targetKey, frameIdx) whenever
+     a frame's fused decision verifies for that target (the 1:1
+     stream uses one key; the identification stream uses one key
+     per candidate), and confirmed(key) answers whether the win
+     has landed on at least MONEY_CONFIRM_FRAMES DISTINCT
+     analysed frames. Repeat notes for the same frame (a neural
+     score landing after the EDCC score re-takes the same frame's
+     decision) never double-count. */
+  function createMoneyScanGate() {
+    var framesByKey = {};
+    function count(key) {
+      var set = framesByKey[key];
+      return set ? Object.keys(set).length : 0;
+    }
+    return {
+      noteVerified: function (key, frameIdx) {
+        if (typeof frameIdx !== 'number' || !isFinite(frameIdx)) return count(key);
+        var set = framesByKey[key] || (framesByKey[key] = {});
+        set[frameIdx] = true;
+        return count(key);
+      },
+      verifiedFrames: function (key) { return count(key); },
+      confirmed: function (key) { return count(key) >= MONEY_CONFIRM_FRAMES; }
+    };
+  }
+
+  /* The margin half of the strict rule. `fused` is the fused
+     result that verified (B.fusePalmVerifyResults shape);
+     edccImpostorMax / neuralImpostorMax are the best scores the
+     SAME probe achieved against every OTHER profile on each
+     system (null when no other profile has a readable bank on
+     that system — the margin is then vacuously satisfied for
+     that system). EVERY accepting system must clear its margin:
+     a palm accepted by both systems that is ambiguous on one of
+     them does not authorise money. Returns
+     { applied, pass, edcc, palmnet, blockers } where each
+     per-system entry is { pass, score, impostorMax, margin,
+     gap, vacuous } or null when that system did not accept.
+     A fused result that did not verify is never passed here by
+     the app; if it is, applied stays false and pass false —
+     fail closed. */
+  function moneyMarginCheck(fused, edccImpostorMax, neuralImpostorMax) {
+    var out = { applied: false, pass: false, edcc: null, palmnet: null, blockers: [] };
+    if (!fused || fused.verified !== true) return out;
+    out.applied = true;
+    function judge(score, impMax, margin) {
+      if (typeof score !== 'number' || !isFinite(score)) {
+        return { pass: false, score: null, impostorMax: null, margin: margin, gap: null, vacuous: false };
+      }
+      if (typeof impMax !== 'number' || !isFinite(impMax)) {
+        return { pass: true, score: score, impostorMax: null, margin: margin, gap: null, vacuous: true };
+      }
+      var gap = score - impMax;
+      return { pass: gap >= margin, score: score, impostorMax: impMax, margin: margin, gap: gap, vacuous: false };
+    }
+    var by = fused.acceptedBy || null;
+    if (by === 'edcc' || by === 'both') {
+      out.edcc = judge(fused.similarity, edccImpostorMax, MONEY_MARGIN_EDCC);
+      if (!out.edcc.pass) out.blockers.push('edcc');
+    }
+    if (by === 'palmnet' || by === 'both') {
+      out.palmnet = judge(fused.neuralScore, neuralImpostorMax, MONEY_MARGIN_NEURAL);
+      if (!out.palmnet.pass) out.blockers.push('palmnet');
+    }
+    out.pass = out.blockers.length === 0 && (out.edcc !== null || out.palmnet !== null);
+    return out;
+  }
+
+  /* The same-person guard for banking (Add Angles / Neural
+     Scan / legacy Re-scan). cand = { edccProbes: [packed words
+     from THIS session's captured frames], neuralEmbeddings:
+     [embeddings of THIS session's captured ROIs] } — the same
+     candidates the merges would bank. The stored profile is
+     judged with the standard matchers at the standard bars:
+       EDCC checkable  — the profile is in the current packed96
+         format (its bank can be scored) and the session produced
+         sane packed probes: verifyPackedProbes decides.
+       Neural checkable — the profile carries a readable neural
+         bank and the session produced embeddings:
+         palmnetScoreEmbeddings decides against 0.5773.
+     Returns { status, via, edccChecked, edccScore,
+     neuralChecked, neuralScore }:
+       'pass'        — at least one checkable system verified
+                       (via says which: 'edcc' | 'palmnet' |
+                       'both'); the same OR rule as verify.
+       'fail'        — at least one system could check and NONE
+                       verified: the captured palm is not this
+                       profile's palm; the caller must refuse
+                       the merge entirely and bank nothing.
+       'uncheckable' — no system could check (legacy profile
+                       whose archived codes the current matchers
+                       cannot score, or a session that produced
+                       no candidates for the banked systems):
+                       the caller proceeds, and must say so
+                       honestly wherever it describes the flow. */
+  function bankingGuardCheck(profile, cand) {
+    var out = { status: 'uncheckable', via: null, edccChecked: false, edccScore: null, neuralChecked: false, neuralScore: null };
+    if (!profile || typeof profile !== 'object') return out;
+    cand = cand || {};
+    if (palmprintProfileFormat(profile) === 'packed96' && Array.isArray(cand.edccProbes)) {
+      var sane = [];
+      cand.edccProbes.forEach(function (w) {
+        var words = palmprintPackedWords(w);
+        if (words && palmprintPackedSane(words)) sane.push(words);
+      });
+      if (sane.length) {
+        var r = verifyPackedProbes(profile, sane);
+        if (r && r.ok === true) {
+          out.edccChecked = true;
+          out.edccScore = typeof r.similarity === 'number' ? r.similarity : null;
+          if (r.verified === true) { out.status = 'pass'; out.via = 'edcc'; }
+        }
+      }
+    }
+    var bank = palmnetProfileEmbeddings(profile);
+    if (bank && Array.isArray(cand.neuralEmbeddings) && cand.neuralEmbeddings.length) {
+      var s = palmnetScoreEmbeddings(bank, cand.neuralEmbeddings);
+      if (s !== null) {
+        out.neuralChecked = true;
+        out.neuralScore = s;
+        if (s >= PALMNET_THRESHOLD) {
+          if (out.status === 'pass') out.via = 'both';
+          else { out.status = 'pass'; out.via = 'palmnet'; }
+        }
+      }
+    }
+    if (out.status !== 'pass' && (out.edccChecked || out.neuralChecked)) out.status = 'fail';
+    return out;
+  }
+
+  /* A promise that cannot hang forever (v49 freeze-proofing):
+     settles exactly as `promise` settles, or rejects with an
+     ETIMEOUT error after `ms`. The underlying operation is not
+     cancelled (promises cannot be) — its late settlement is
+     simply ignored, so callers must treat a timeout as "the
+     operation's outcome is unknown" and fail soft / fail
+     visibly, never as success. app.js routes every previously
+     unbounded wait through this one helper (IndexedDB requests,
+     the camera start, the PalmNet main-thread runtime load) so
+     the bound is a single implementation the suites exercise. */
+  function withTimeout(promise, ms) {
+    return new Promise(function (resolve, reject) {
+      var done = false;
+      var to = setTimeout(function () {
+        if (done) return;
+        done = true;
+        var err = new Error('timed out after ' + ms + ' ms');
+        err.code = 'ETIMEOUT';
+        reject(err);
+      }, ms);
+      Promise.resolve(promise).then(function (v) {
+        if (done) return;
+        done = true;
+        clearTimeout(to);
+        resolve(v);
+      }, function (e) {
+        if (done) return;
+        done = true;
+        clearTimeout(to);
+        reject(e);
+      });
+    });
+  }
+
   /* ================= v43: hands-free scan session ================
      The auto-trigger / cooldown state machine the scan views run
      on. Pure logic (the caller passes timestamps), so the rules
@@ -4008,8 +4242,20 @@
      B.applyTorchToTrack above). Flash choices were never stored
      data, so the step is the identity, and a v47 store — neural
      banks, wallet balance, statement and linked accounts
-     included — opens under v48 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48'];
+     included — opens under v48 byte-identical.
+
+     v48 -> v49 is an ADOPTION: v49 changes no stored field. It
+     adds the same-person banking guard, the strict money-scan
+     rule (two-frame confirmation + impostor margin) and the
+     freeze-proofing bounds — all decision logic in this file
+     and app.js, nothing about how a person, wallet or palm
+     profile is stored. Field-test records gain OPTIONAL strict-
+     rule fields written only by v49 terminal scans; older
+     records simply lack them and every reader treats them as
+     absent. The step is therefore the identity, and a v48
+     store — neural banks, wallet balance, statement and linked
+     accounts included — opens under v49 byte-identical. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -4020,6 +4266,7 @@
     'v46': function (snap) { return snap; },
     'v47': function (snap) { return snap; },
     'v48': function (snap) { return snap; },
+    'v49': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
@@ -4261,6 +4508,14 @@
     palmnetScoreEmbeddings: palmnetScoreEmbeddings,
     palmnetScoreProfile: palmnetScoreProfile,
     fusePalmVerifyResults: fusePalmVerifyResults,
+    palmprintPackedCandidates: palmprintPackedCandidates,
+    MONEY_CONFIRM_FRAMES: MONEY_CONFIRM_FRAMES,
+    MONEY_MARGIN_EDCC: MONEY_MARGIN_EDCC,
+    MONEY_MARGIN_NEURAL: MONEY_MARGIN_NEURAL,
+    createMoneyScanGate: createMoneyScanGate,
+    moneyMarginCheck: moneyMarginCheck,
+    bankingGuardCheck: bankingGuardCheck,
+    withTimeout: withTimeout,
     laplacianVariance: laplacianVariance,
     contrastStretch: contrastStretch,
     sharpen: sharpen,
