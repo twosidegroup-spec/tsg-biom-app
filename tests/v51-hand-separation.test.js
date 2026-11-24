@@ -304,8 +304,17 @@ check('APP the legacy re-bank records the capture hand', appSrc.indexOf('codes: 
 check('APP Field Test records carry the hand evidence as extra fields',
   appSrc.indexOf('rec.probeHand = neural.probeHand') !== -1 && appSrc.indexOf('rec.profileHand = neural.profileHand') !== -1 && appSrc.indexOf('rec.handGate = true') !== -1);
 check('APP the Registry shows each profile hand', appSrc.indexOf("B.palmProfileHand(p.palmProfile) === 'left' ? 'Left' : 'Right'") !== -1);
-check('VERSION app data version is v51', appSrc.indexOf("APP_DATA_VERSION = 'v51'") !== -1);
-check('VERSION shell is v51', swSrc.indexOf('tsg-biom-shell-v51') !== -1);
+// v52: the two absolute pins below were converted to the
+// version-coherence form (the v48/v49/v50 pattern) when v52
+// shipped — v51 remains IN the chain as an adoption step; the
+// living current-version pins are in v38-migration + the v52
+// suite. The hand-separation proofs in this suite are unchanged.
+check('VERSION app data version and shell version agree', (function () {
+  const dv = (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1];
+  const sv = (swSrc.match(/tsg-biom-shell-(v\d+)/) || [])[1];
+  return !!dv && dv === sv;
+})());
+check('VERSION v51 remains in the chain as an adoption step', B.BIOM_DATA_VERSIONS.indexOf('v51') !== -1);
 
 info('rig only: chirality fixtures are synthetic landmark geometry; gate fixtures are synthetic palms. The phone verdict (his two hands, his two profiles) is the real-world proof.');
 console.log('\nv51 hand-separation tests: ' + pass + ' passed, ' + fail + ' failed');

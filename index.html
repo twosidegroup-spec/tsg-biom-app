@@ -47,30 +47,51 @@
       <p class="sub" style="margin-top:16px">No palm registered yet? <button class="btn small" data-go="enroll">Register a palm</button> — registration issues your Biom ID and creates your wallet at balance 0.</p>
     </div>
 
-    <div id="walletHome" class="card hidden">
-      <div class="kv"><b>Wallet owner:</b> <span id="wHomeName"></span><br><b>Biom ID (wallet account):</b> <span id="wHomeId"></span></div>
-      <div class="balancebox">
-        <div class="ballabel">Demo balance</div>
-        <div class="balnum" id="wHomeBalance">BDT 0</div>
-        <div class="balnote">Demo money — not real funds</div>
+    <div id="walletHome" class="hidden">
+      <div class="balcard">
+        <div class="balcard-top">
+          <span class="balcard-brand">regBIOM</span>
+          <button class="avatarbtn" id="wHomeAvatar" aria-label="Open My Account" title="My Account">--</button>
+        </div>
+        <div class="ballabel">Available Balance</div>
+        <div class="balrow">
+          <div class="balnum" id="wHomeBalance">BDT 0</div>
+          <button class="eyebtn" id="wBalEye" aria-label="Hide or show the balance" title="Hide / show balance"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/></svg></button>
+        </div>
+        <div class="balholder" id="wHomeName"></div>
+        <div class="balid">Biom ID: <span id="wHomeId"></span></div>
+        <div class="balnote">Demo balance · Demo money — not real funds</div>
       </div>
       <div id="wHomeMsg" style="margin-top:12px"></div>
-      <div class="row" style="margin-top:14px">
-        <div><button class="btn primary big" id="wAddOpen">Add Money</button></div>
-        <div><button class="btn primary big" id="wSendOpen">Send Money</button></div>
+      <div class="qa-grid">
+        <button class="qa-tile" id="wAddOpen"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M12 8.4v7.2M8.4 12h7.2"/></svg><span>Add Money</span></button>
+        <button class="qa-tile" id="wSendOpen"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M9.2 14.8 14.8 9.2M10.2 9.2h4.6v4.6"/></svg><span>Send Money</span></button>
+        <button class="qa-tile" id="wQuickScan"><svg viewBox="0 0 24 24" aria-hidden="true" class="palmicon"><path d="M7 11.8V6.2a1.5 1.5 0 0 1 3 0v4.3m0-5.8a1.5 1.5 0 0 1 3 0v5.3m0-4.8a1.5 1.5 0 0 1 3 0v5.8m0-3.6a1.5 1.5 0 0 1 3 0v4.7c0 4.3-3 6.9-6.9 6.9-3.4 0-5.7-1.9-7.1-5L3.7 12c-.4-.9.7-1.8 1.5-1.2L7 12.4"/></svg><span>Scan Palm</span></button>
+        <button class="qa-tile" id="wQuickHistory"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M12 7.4V12l3.1 2"/></svg><span>History</span></button>
       </div>
       <button class="btn" id="wCloseWallet" style="margin-top:12px">Close Wallet / Switch User</button>
-      <h2 style="margin-top:22px">Linked funding accounts</h2>
-      <div id="wHomeAccounts" class="kv"></div>
-      <h2 style="margin-top:22px">Statement</h2>
-      <div id="wHomeStatement"></div>
+      <div class="card seccard">
+        <h2>Linked Wallets</h2>
+        <div id="wHomeAccounts"></div>
+      </div>
+      <div class="card seccard" id="wActivityCard">
+        <h2>Recent Activity</h2>
+        <div id="wHomeStatement"></div>
+      </div>
     </div>
 
     <div id="walletAdd" class="card hidden">
       <h2>Add Money (demo)</h2>
       <p class="sub">Demo money — not real funds. Nothing here contacts a real account or moves real money. The amount lands in your wallet only after <b>your own palm</b> verifies.</p>
+      <p class="balanceline">Current balance: <b id="wAddBalance">BDT 0</b></p>
       <label>Amount (BDT)</label>
       <input id="wAddAmount" type="number" min="1" placeholder="e.g. 500">
+      <div class="chips" data-chips="wAddAmount">
+        <button type="button" class="chip" data-amt="100">BDT 100</button>
+        <button type="button" class="chip" data-amt="500">BDT 500</button>
+        <button type="button" class="chip" data-amt="1000">BDT 1,000</button>
+        <button type="button" class="chip" data-amt="5000">BDT 5,000</button>
+      </div>
       <label>From funding account</label>
       <select id="wAddAccountSelect"></select>
       <h2 style="margin-top:20px">Link a new funding account</h2>
@@ -80,18 +101,27 @@
         <div><label>Account name / number — a label you choose</label><input id="wAddLabel" placeholder="e.g. My bKash — 01933…"></div>
       </div>
       <button class="btn" id="wLinkAccount" style="margin-top:12px">Link This Account</button>
+      <div class="feerow"><span>Fee</span><b>BDT 0</b></div>
+      <p class="sub" style="margin:0">Demo money moves inside this app only — no fee is charged and no real account is contacted.</p>
       <div id="wAddMsg" style="margin-top:12px"></div>
       <div class="row" style="margin-top:14px">
         <div><button class="btn" id="wAddBack">Back</button></div>
-        <div><button class="btn primary" id="wAddScan">Scan My Palm to Add</button></div>
+        <div><button class="btn primary" id="wAddScan">Scan Palm to Add</button></div>
       </div>
     </div>
 
     <div id="walletSend" class="card hidden">
       <h2>Send Money (demo)</h2>
       <p class="sub">Demo money between wallets on this device. The receiver is found by <b>their palm</b>: if the scanned palm matches no registered Biom ID, no money can be sent — even if you have an account and a balance. Your own palm authorises the send.</p>
+      <p class="balanceline">Your balance: <b id="wSendBalance">BDT 0</b></p>
       <label>Amount (BDT)</label>
       <input id="wSendAmount" type="number" min="1" placeholder="e.g. 200">
+      <div class="chips" data-chips="wSendAmount">
+        <button type="button" class="chip" data-amt="100">BDT 100</button>
+        <button type="button" class="chip" data-amt="500">BDT 500</button>
+        <button type="button" class="chip" data-amt="1000">BDT 1,000</button>
+        <button type="button" class="chip" data-amt="5000">BDT 5,000</button>
+      </div>
       <div id="wSendMsg" style="margin-top:12px"></div>
       <button class="btn primary big" id="wSendScanReceiver" style="margin-top:12px">Scan the Receiver's Palm</button>
       <div id="wSendConfirm" class="hidden" style="margin-top:14px"></div>
@@ -110,14 +140,78 @@
         <button type="button" data-flash="on">Flash On</button>
       </div>
       <p class="camnote flashnote" data-flash-note="walletAct"></p>
+      <div class="scanpill"><span class="scanpill-dot"></span>Scanning</div>
       <div class="camwrap"><video id="wScanVideo" autoplay playsinline muted></video>
+        <div class="corners" aria-hidden="true"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i></div>
         <div class="camstatus" id="wScanStatus">Camera not started.</div></div>
+      <div class="scaninds">
+        <div class="scanind" id="wIndHand"><span class="dot"></span><span class="indtxt">Hand detected</span></div>
+        <div class="scanind" id="wIndLight"><span class="dot"></span><span class="indtxt">Good light</span></div>
+        <div class="scanind" id="wIndSteady"><span class="dot"></span><span class="indtxt">Holding steady</span></div>
+      </div>
       <div class="row" style="margin-top:12px">
         <div><button class="btn" id="wScanStart">Start Camera</button></div>
         <div><button class="btn primary" id="wScanRun" disabled>Scan</button></div>
       </div>
       <div id="wScanMsg" style="margin-top:12px"></div>
       <button class="btn" id="wScanCancel" style="margin-top:12px">Cancel</button>
+    </div>
+  </section>
+
+  <!-- MY ACCOUNT (v52) -->
+  <section class="page" id="page-account">
+    <div class="acctbar">
+      <button class="backbtn" id="acBack" aria-label="Back to wallet"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></button>
+      <h1>My Account</h1>
+    </div>
+
+    <div id="accountLocked" class="card">
+      <h2>No wallet is open</h2>
+      <p class="sub" style="margin:0">Your account details live behind your palm. Open your wallet first — the scan is the key.</p>
+      <button class="btn primary big" id="acOpenWallet" style="margin-top:14px">Go to My Wallet</button>
+    </div>
+
+    <div id="accountOpen" class="hidden">
+      <div class="card accthead">
+        <div class="avatarbig" id="acAvatar">--</div>
+        <div class="accthead-txt">
+          <div class="acctname" id="acName"></div>
+          <div class="acctphone" id="acPhone"></div>
+          <div id="acVerified" style="margin-top:6px"></div>
+        </div>
+      </div>
+
+      <div class="card seccard palmcard">
+        <div class="palmcard-head">
+          <span class="palmchip"><svg viewBox="0 0 24 24" aria-hidden="true" class="palmicon"><path d="M7 11.8V6.2a1.5 1.5 0 0 1 3 0v4.3m0-5.8a1.5 1.5 0 0 1 3 0v5.3m0-4.8a1.5 1.5 0 0 1 3 0v5.8m0-3.6a1.5 1.5 0 0 1 3 0v4.7c0 4.3-3 6.9-6.9 6.9-3.4 0-5.7-1.9-7.1-5L3.7 12c-.4-.9.7-1.8 1.5-1.2L7 12.4"/></svg></span>
+          <h2 style="margin:0">My Palm Identity</h2>
+          <span id="acPalmStatus" style="margin-left:auto"></span>
+        </div>
+        <div class="kv" style="margin-top:12px">
+          <b>Biom ID:</b> <span id="acBiomId"></span><br>
+          <b>Registered palm:</b> <span id="acPalmHand"></span>
+        </div>
+        <div id="acPalmActions" class="row" style="margin-top:14px"></div>
+      </div>
+
+      <div class="card seccard">
+        <h2>Account Settings</h2>
+        <div class="setlist">
+          <button class="setrow" data-acct-toggle="info"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.6"/><path d="M5 20c.7-3.4 3.4-5.2 7-5.2s6.3 1.8 7 5.2"/></svg></span><span class="setlbl">Personal Information</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
+          <div class="setdetail hidden" id="acDetail-info"><div class="kv" id="acInfoBody"></div></div>
+          <button class="setrow" id="acRowLinked"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10.5h18"/><circle cx="16.6" cy="15" r="1.1"/></svg></span><span class="setlbl">Linked Wallets</span><span class="setval" id="acLinkedVal"></span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
+          <button class="setrow" data-acct-toggle="limits"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 14a8 8 0 1 1 16 0"/><path d="M12 14l4-4"/><path d="M3 19h18"/></svg></span><span class="setlbl">Daily Limit</span><span class="setval" id="acLimitsVal"></span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
+          <div class="setdetail hidden" id="acDetail-limits"><div class="kv" id="acLimitsBody"></div></div>
+          <button class="setrow" data-acct-toggle="security"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 2.8v5.4c0 4.6-3 8-7 9.8-4-1.8-7-5.2-7-9.8V5.8Z"/><path d="M9.2 12l2 2 3.6-3.8"/></svg></span><span class="setlbl">Security</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
+          <div class="setdetail hidden" id="acDetail-security"><div class="kv" id="acSecBody"></div></div>
+          <button class="setrow" data-acct-toggle="notif"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 10a6 6 0 0 1 12 0c0 4 1.4 5.6 2.4 6.6H3.6C4.6 15.6 6 14 6 10Z"/><path d="M10 20a2.2 2.2 0 0 0 4 0"/></svg></span><span class="setlbl">Notifications</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
+          <div class="setdetail hidden" id="acDetail-notif"><p class="sub" style="margin:0">TSG Biom sends no notifications and makes no network calls for a scan — results are announced on screen and by voice on this device.</p></div>
+          <button class="setrow" data-acct-toggle="lang"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M3.4 12h17.2M12 3.4c2.4 2.3 3.6 5.2 3.6 8.6s-1.2 6.3-3.6 8.6c-2.4-2.3-3.6-5.2-3.6-8.6s1.2-6.3 3.6-8.6Z"/></svg></span><span class="setlbl">Language</span><span class="setval">English</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
+          <div class="setdetail hidden" id="acDetail-lang"><p class="sub" style="margin:0">The app interface is English. Bangla is not available in this build.</p></div>
+          <button class="setrow" id="acRowHelp"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M9.6 9.4A2.5 2.5 0 1 1 12 12.4V14"/><circle cx="12" cy="17" r=".4"/></svg></span><span class="setlbl">Help and Support</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
+          <button class="setrow danger" id="acLogout"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"/><path d="M10 8l-4 4 4 4M6 12h11"/></svg></span><span class="setlbl">Log Out</span></button>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -165,6 +259,7 @@
     <h1>More</h1>
     <p class="sub">Everything else in TSG Biom, one tap away.</p>
     <div class="morelinks">
+      <button class="morelink" data-go="account"><span>My Account</span><small>Your palm identity, linked wallets, limits and settings</small></button>
       <button class="morelink" data-go="stores"><span>Store Modes</span><small>CVS / Pharmacy, Supermarket, Retail, Mall terminal setups</small></button>
       <button class="morelink" data-go="logs"><span>Transactions / Logs</span><small>Every scan result and Biom Pay record on this device</small></button>
       <button class="morelink" data-go="partner"><span>Partner Integration</span><small>bKash / Nagad merchant connection status</small></button>
@@ -248,6 +343,7 @@
       </div>
       <p class="camnote flashnote" data-flash-note="enrollPalm"></p>
       <div class="camwrap"><video id="palmVideo" autoplay playsinline muted></video>
+        <div class="corners" aria-hidden="true"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i></div>
         <div class="camstatus" id="palmStatus">Camera not started.</div>
         <div id="palmBurstRing" class="burstring hidden"><span>0%</span></div></div>
       <div class="row" style="margin-top:12px">
@@ -302,6 +398,7 @@
       </div>
       <p class="camnote flashnote" data-flash-note="terminal"></p>
       <div class="camwrap" style="margin-top:14px"><video id="termVideo" autoplay playsinline muted></video>
+        <div class="corners" aria-hidden="true"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i></div>
         <div class="camstatus" id="termStatus">Camera not started.</div></div>
       <div class="row" style="margin-top:12px">
         <div><button class="btn big" id="termStart">Start Camera</button></div>
@@ -360,6 +457,7 @@
       </div>
       <p class="camnote flashnote" data-flash-note="topup"></p>
       <div class="camwrap"><video id="topVideo" autoplay playsinline muted></video>
+        <div class="corners" aria-hidden="true"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i></div>
         <div class="camstatus" id="topStatus">Camera not started.</div></div>
       <div class="row" style="margin-top:12px">
         <div><button class="btn" id="topStart">Start Camera</button></div>

@@ -4443,8 +4443,22 @@
      as null (no hand evidence, v50 behaviour). Nothing needs
      converting, so the step is the identity, and a v50 store —
      neural banks, wallet balance, statement and linked
-     accounts included — opens under v51 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51'];
+     accounts included — opens under v51 byte-identical.
+
+     v51 -> v52 is an ADOPTION: v52 changes no stored field and
+     no decision rule. It is a presentation-layer release: the
+     regBIOM customer surfaces (wallet home / balance, My
+     Account, palm scan, Send / Add Money) are rebuilt to the
+     approved designs, reading only the existing stores — wallet
+     balance, statement and linked accounts from the wallet,
+     the palm identity (Biom ID, profile hand, format) from the
+     person record. Matching, thresholds, fusion, the hand gate,
+     the banking guard, the strict money rule, flash behaviour,
+     enrolment, Field Test and Delete All Data are untouched.
+     The step is therefore the identity, and a v51 store —
+     neural banks, hand stamps, wallet balance, statement and
+     linked accounts included — opens under v52 byte-identical. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -4458,6 +4472,7 @@
     'v49': function (snap) { return snap; },
     'v50': function (snap) { return snap; },
     'v51': function (snap) { return snap; },
+    'v52': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {

@@ -41,7 +41,7 @@
      is skipped, nothing is deleted, and the next launch retries —
      the app boots on the un-migrated data either way, because its
      readers fail closed per record. */
-  var APP_DATA_VERSION = 'v51';
+  var APP_DATA_VERSION = 'v52';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -2633,7 +2633,7 @@
 
   /* ---------------- Navigation ------------------------------------------- */
   function go(page) {
-    var navPage = page === 'topup' ? 'registry' : (page === 'stores' || page === 'logs' || page === 'partner') ? 'more' : page;
+    var navPage = page === 'topup' ? 'registry' : page === 'account' ? 'wallet' : (page === 'stores' || page === 'logs' || page === 'partner') ? 'more' : page;
     document.querySelectorAll('#mainNav button').forEach(function (b) { b.classList.toggle('active', b.dataset.page === navPage); });
     document.querySelectorAll('section.page').forEach(function (s) { s.classList.toggle('active', s.id === 'page-' + page); });
     if (page !== 'enroll' && page !== 'terminal') { Cam.stop(); }
@@ -2645,6 +2645,7 @@
     if (page !== 'topup' && topupControl) topupControl.cancelled = true;
     if (page !== 'wallet') { if (walletControl) walletControl.cancelled = true; walletSession.leave(); }
     if (page === 'wallet') { renderWallet(); Pipeline.enterScanView(); }
+    if (page === 'account') { renderAccount(); }
     if (page === 'dashboard') renderDashboard();
     if (page === 'registry') renderRegistry();
     if (page === 'logs') renderLogs();
@@ -3268,32 +3269,63 @@
     var withPalm = people.filter(function (p) { return personHasMethod(p); });
     $('walletProfiles').innerHTML = withPalm.length
       ? withPalm.map(function (p) {
-          return '<button class="profilecard" data-open-wallet="' + esc(p.id) + '"><span class="pc-name">' + esc(p.name) + '</span><span class="pc-id">' + esc(p.id) + '</span><span class="pc-sub">Tap, then scan this person\'s palm — the wallet opens only for their own palm</span></button>';
+          var hand = B.palmProfileHand(p.palmProfile);
+          return '<button class="profilecard" data-open-wallet="' + esc(p.id) + '"><span class="pc-name">' + esc(p.name) + '</span><span class="pc-id">' + esc(p.id) + '</span><span class="pc-sub">Tap, then scan this person\'s palm — the wallet opens only for their own palm' + (hand ? ' · ' + (hand === 'left' ? 'Left' : 'Right') + ' palm registered' : '') + '</span></button>';
         }).join('')
       : '<p class="sub" style="margin:0">No palm is registered on this device yet. Register a palm first — registration issues the Biom ID and creates the wallet automatically.</p>';
     document.querySelectorAll('[data-open-wallet]').forEach(function (b) {
       b.addEventListener('click', function () { openWalletForPerson(b.dataset.openWallet); });
     });
   }
+  /* v52: the balance card's hide/show eye is a view preference
+     for this session only — the stored balance never changes. */
+  var balanceHidden = false;
+  function initialsOf(name) {
+    var parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return '--';
+    return (parts[0].charAt(0) + (parts.length > 1 ? parts[parts.length - 1].charAt(0) : '')).toUpperCase();
+  }
+  function brandChipClass(type) {
+    var t = String(type || '').toLowerCase();
+    if (t.indexOf('bkash') !== -1) return 'bkash';
+    if (t.indexOf('nagad') !== -1) return 'nagad';
+    if (t.indexOf('bank') !== -1) return 'bank';
+    if (t.indexOf('card') !== -1) return 'card';
+    return 'pay';
+  }
   function renderWalletHome(me) {
     var w = B.walletEnsurePerson(me).wallet;
     $('wHomeName').textContent = me.name;
     $('wHomeId').textContent = me.id;
-    $('wHomeBalance').textContent = fmtBDT(w.balance);
-    $('wHomeAccounts').innerHTML = w.linkedAccounts.length
-      ? w.linkedAccounts.map(function (a) { return '<div><b>' + esc(a.type) + '</b> — ' + esc(a.label) + '</div>'; }).join('')
-      : '<span style="color:var(--muted)">No funding account linked yet — Add Money will ask you to link one.</span>';
+    $('wHomeAvatar').textContent = initialsOf(me.name);
+    $('wHomeBalance').textContent = balanceHidden ? 'BDT ••••••••' : fmtBDT(w.balance);
+    $('wBalEye').classList.toggle('off', balanceHidden);
+    var linkRows = w.linkedAccounts.map(function (a) {
+      return '<div class="linkrow"><span class="brandchip ' + brandChipClass(a.type) + '">' + esc(String(a.type || '?').charAt(0)) + '</span>' +
+        '<div class="lr-main"><div class="lr-name">' + esc(a.type) + '</div><div class="lr-sub">' + esc(a.label) + '</div></div>' +
+        '<span class="badge ok">Linked</span></div>';
+    });
+    if (me.walletProvider) {
+      linkRows.push('<div class="linkrow"><span class="brandchip pay"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:24px;height:24px;stroke:#fff;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round"><path d="M7 11.8V6.2a1.5 1.5 0 0 1 3 0v4.3m0-5.8a1.5 1.5 0 0 1 3 0v5.3m0-4.8a1.5 1.5 0 0 1 3 0v5.8m0-3.6a1.5 1.5 0 0 1 3 0v4.7c0 4.3-3 6.9-6.9 6.9-3.4 0-5.7-1.9-7.1-5L3.7 12c-.4-.9.7-1.8 1.5-1.2L7 12.4"/></svg></span>' +
+        '<div class="lr-main"><div class="lr-name">' + esc(me.walletProvider) + ' — Biom Pay</div><div class="lr-sub">' + esc(B.maskWalletNumber(me.walletNumber)) + '</div></div>' +
+        '<span class="badge ok">Linked</span></div>');
+    }
+    $('wHomeAccounts').innerHTML = linkRows.length
+      ? linkRows.join('')
+      : '<p class="sub" style="margin:0">No wallet linked yet — Add Money will ask you to link a funding account.</p>';
+    var downArrow = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v13m0 0 5-5m-5 5-5-5"/></svg>';
+    var upArrow = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V7m0 0 5 5m-5-5-5 5"/></svg>';
     var rows = w.statement.slice().reverse().map(function (e) {
-      var when = '<div class="smeta">' + esc(fmtTime(e.ts)) + ' · Ref ' + esc(e.ref) + ' · Balance after: ' + fmtBDT(e.balanceAfter) + '</div>';
+      var meta = '<div class="ar-meta">' + esc(fmtTime(e.ts)) + ' · Ref ' + esc(e.ref) + ' · Balance after: ' + fmtBDT(e.balanceAfter) + '</div>';
       if (e.kind === 'add') {
-        return '<div class="stmtrow"><div><b>Money added (demo)</b><div class="smeta">From ' + esc(e.accountType) + ' — ' + esc(e.accountLabel) + '</div>' + when + '</div><div class="amt in">+ ' + fmtBDT(e.amount) + '</div></div>';
+        return '<div class="actrow"><span class="acticon in">' + downArrow + '</span><div class="ar-main"><div class="ar-title">Money added (demo)</div><div class="ar-meta">From ' + esc(e.accountType) + ' — ' + esc(e.accountLabel) + '</div>' + meta + '</div><div class="amt in">+ ' + fmtBDT(e.amount) + '</div></div>';
       }
       if (e.kind === 'send') {
-        return '<div class="stmtrow"><div><b>Sent (demo)</b><div class="smeta">To ' + esc(e.counterpartyName) + ' (' + esc(e.counterpartyId) + ')</div>' + when + '</div><div class="amt out">− ' + fmtBDT(e.amount) + '</div></div>';
+        return '<div class="actrow"><span class="acticon out">' + upArrow + '</span><div class="ar-main"><div class="ar-title">Sent (demo)</div><div class="ar-meta">To ' + esc(e.counterpartyName) + ' (' + esc(e.counterpartyId) + ')</div>' + meta + '</div><div class="amt out">− ' + fmtBDT(e.amount) + '</div></div>';
       }
-      return '<div class="stmtrow"><div><b>Received (demo)</b><div class="smeta">From ' + esc(e.counterpartyName) + ' (' + esc(e.counterpartyId) + ')</div>' + when + '</div><div class="amt in">+ ' + fmtBDT(e.amount) + '</div></div>';
+      return '<div class="actrow"><span class="acticon in">' + downArrow + '</span><div class="ar-main"><div class="ar-title">Received (demo)</div><div class="ar-meta">From ' + esc(e.counterpartyName) + ' (' + esc(e.counterpartyId) + ')</div>' + meta + '</div><div class="amt in">+ ' + fmtBDT(e.amount) + '</div></div>';
     }).join('');
-    $('wHomeStatement').innerHTML = rows || '<p class="sub" style="margin:0">No demo transactions yet.</p>';
+    $('wHomeStatement').innerHTML = rows || '<p class="sub" style="margin:0">No activity yet — add or send demo money and it will appear here.</p>';
   }
 
   /* Shared wallet scan card: one camera surface, the caller's run()
@@ -3305,9 +3337,47 @@
      scan silently. */
   var walletSession = B.createScanSession();
   var walletControl = null;
+  /* v52: the scan card's three status indicators are a pure
+     presentation mirror of the live pipeline — hand presence and
+     light come from the same per-frame info the guidance pill
+     reads (dark below mean luma 45, glare above 0.15, exactly the
+     B.palmGuidance thresholds), steadiness from the scan
+     session's own stability count. They gate nothing. */
+  var scanIndKey = '';
+  function setScanInd(id, state, text) {
+    var el = $(id);
+    if (!el) return;
+    el.classList.toggle('ok', state === 'ok');
+    el.classList.toggle('warn', state === 'warn');
+    var t = el.querySelector('.indtxt');
+    if (t) t.textContent = text;
+  }
+  function updateScanIndicators(info, frameRes) {
+    var hand = !!(info && info.hasHand);
+    var lightState = 'wait', lightText = 'Light —';
+    if (info && typeof info.meanLuma === 'number' && isFinite(info.meanLuma)) {
+      if (info.meanLuma < 45) { lightState = 'warn'; lightText = 'Too dark'; }
+      else if (typeof info.glareFrac === 'number' && info.glareFrac > 0.15) { lightState = 'warn'; lightText = 'Glare'; }
+      else { lightState = 'ok'; lightText = 'Good light'; }
+    }
+    var steady = !!(frameRes && frameRes.armed);
+    var key = (hand ? '1' : '0') + '|' + lightState + '|' + (steady ? '1' : '0');
+    if (key === scanIndKey) return;
+    scanIndKey = key;
+    setScanInd('wIndHand', hand ? 'ok' : 'wait', hand ? 'Hand detected' : 'No hand yet');
+    setScanInd('wIndLight', lightState, lightText);
+    setScanInd('wIndSteady', steady ? 'ok' : 'wait', steady ? 'Holding steady' : 'Hold steady');
+  }
+  function resetScanIndicators() {
+    scanIndKey = '';
+    setScanInd('wIndHand', 'wait', 'No hand yet');
+    setScanInd('wIndLight', 'wait', 'Light —');
+    setScanInd('wIndSteady', 'wait', 'Hold steady');
+  }
   function showWalletScan(ctx) {
     walletScanCtx = ctx;
     walletSession.enter();
+    resetScanIndicators();
     $('walletScanCard').classList.remove('hidden');
     $('wScanTitle').textContent = ctx.title;
     $('wScanPrompt').textContent = ctx.prompt;
@@ -3332,7 +3402,7 @@
     palmScanBusy = true;
     $('wScanRun').disabled = true;
     var ctx = walletScanCtx;
-    walletControl = { cancelled: false, onFrame: function (info) { walletSession.frame({ hasHand: info.hasHand, pose: info.pose }); } };
+    walletControl = { cancelled: false, onFrame: function (info) { var fr = walletSession.frame({ hasHand: info.hasHand, pose: info.pose }); updateScanIndicators(info, fr); } };
     Promise.resolve()
       .then(function () { return ctx.run(); })
       .catch(function (e) { walletScanFailed({ fail: 'Scan failed: ' + (e && e.message ? e.message : e) }); })
@@ -3426,12 +3496,13 @@
       }
     });
   }
-  $('wCloseWallet').addEventListener('click', function () {
+  function closeWalletSession() {
     walletSessionId = null;
     Cam.stop();
     renderWallet();
     toast('Wallet closed.');
-  });
+  }
+  $('wCloseWallet').addEventListener('click', closeWalletSession);
 
   /* Add Money: amount -> funding account -> OWN palm authorises. */
   function renderAddAccounts(me, selectedId) {
@@ -3446,6 +3517,7 @@
     $('walletHome').classList.add('hidden');
     $('walletAdd').classList.remove('hidden');
     $('wAddMsg').innerHTML = '';
+    $('wAddBalance').textContent = fmtBDT(B.walletEnsurePerson(me).wallet.balance);
     renderAddAccounts(me, null);
   });
   $('wAddBack').addEventListener('click', function () { renderWallet(); });
@@ -3504,6 +3576,7 @@
     sendDraft = { amount: null, receiverId: null, receiverName: null };
     $('walletHome').classList.add('hidden');
     $('walletSend').classList.remove('hidden');
+    $('wSendBalance').textContent = fmtBDT(B.walletEnsurePerson(me).wallet.balance);
     $('wSendMsg').innerHTML = '';
     $('wSendConfirm').classList.add('hidden');
     $('wSendConfirm').innerHTML = '';
@@ -3544,10 +3617,12 @@
     var w = B.walletEnsurePerson(me).wallet;
     $('wSendConfirm').classList.remove('hidden');
     $('wSendConfirm').innerHTML =
-      '<div class="notice"><b>Receiver found:</b> ' + esc(sendDraft.receiverName) + ' (' + esc(sendDraft.receiverId) + ')<br>' +
-      '<b>Amount:</b> ' + fmtBDT(sendDraft.amount) + ' (demo money)<br>' +
-      '<b>Your demo balance:</b> ' + fmtBDT(w.balance) + (sendDraft.amount > w.balance ? '<br><b>That is more than your balance — the send will be blocked.</b>' : '') + '</div>' +
-      '<button class="btn primary big" id="wSendAuthorise" style="margin-top:12px">Scan My Palm to Send</button>';
+      '<div class="recvcard"><div class="rc-head"><span class="avatarbtn" style="background:var(--blue);border:none;cursor:default">' + esc(initialsOf(sendDraft.receiverName)) + '</span>' +
+      '<div><div class="rc-name">' + esc(sendDraft.receiverName) + '</div><div class="rc-id">' + esc(sendDraft.receiverId) + '</div></div>' +
+      '<span class="badge ok" style="margin-left:auto">Palm verified</span></div>' +
+      '<div class="rc-rows"><b>Amount:</b> ' + fmtBDT(sendDraft.amount) + ' (demo money)<br>' +
+      '<b>Your demo balance:</b> ' + fmtBDT(w.balance) + (sendDraft.amount > w.balance ? '<br><b>That is more than your balance — the send will be blocked.</b>' : '') + '</div></div>' +
+      '<button class="btn primary big" id="wSendAuthorise" style="margin-top:12px">Scan Palm to Send</button>';
     $('wSendAuthorise').addEventListener('click', authoriseSend);
   }
   function authoriseSend() {
@@ -3583,6 +3658,131 @@
       }
     });
   }
+
+  /* ---------------- My Account (v52) --------------------------------
+     The customer account surface: every value is read live from
+     the open wallet's person record and wallet — nothing here is
+     stored separately, and nothing here writes. Palm actions are
+     the REAL existing flows (Add Angles / re-scan / Neural Scan
+     via openTopup, other-hand registration via enrolment). */
+  function renderAccount() {
+    return loadWalletPeople().then(function () {
+      var me = walletSessionPerson();
+      $('accountLocked').classList.toggle('hidden', !!me);
+      $('accountOpen').classList.toggle('hidden', !me);
+      if (!me) return;
+      var w = B.walletEnsurePerson(me).wallet;
+      var hand = B.palmProfileHand(me.palmProfile);
+      var format = B.palmprintProfileFormat(me.palmProfile);
+      var enrolled = personHasMethod(me);
+      $('acAvatar').textContent = initialsOf(me.name);
+      $('acName').textContent = me.name;
+      $('acPhone').textContent = me.phone || 'No phone number recorded';
+      $('acVerified').innerHTML = !enrolled
+        ? '<span class="badge bad">Not enrolled</span>'
+        : format === 'legacy'
+          ? '<span class="badge bad">Palm re-scan needed</span>'
+          : '<span class="badge ok">Verified</span>';
+      $('acPalmStatus').innerHTML = !enrolled
+        ? '<span class="badge bad">Not enrolled</span>'
+        : format === 'legacy'
+          ? '<span class="badge bad">Re-scan needed</span>'
+          : '<span class="badge ok">Active</span>';
+      $('acBiomId').textContent = me.id;
+      $('acPalmHand').textContent = !enrolled
+        ? 'No palm registered yet'
+        : hand
+          ? (hand === 'left' ? 'Left' : 'Right') + ' palm'
+          : 'Palm registered — hand not recorded (enrolled before hand recording began)';
+      var actions = '';
+      if (enrolled) actions += '<div><button class="btn primary" data-acct-topup="angles">Add Angles</button></div>';
+      if (format === 'legacy') actions += '<div><button class="btn primary" data-acct-topup="angles">Re-scan Palm</button></div>';
+      if (B.palmnetNeedsScan(me.palmProfile)) actions += '<div><button class="btn" data-acct-topup="neural">Neural Scan</button></div>';
+      actions += '<div><button class="btn" id="acOtherHand">Register Other Hand</button></div>';
+      $('acPalmActions').innerHTML = actions;
+      document.querySelectorAll('[data-acct-topup]').forEach(function (b) {
+        b.addEventListener('click', function () { openTopup(me.id, b.dataset.acctTopup === 'neural' ? 'neural' : undefined); });
+      });
+      var oh = $('acOtherHand');
+      if (oh) oh.addEventListener('click', function () { go('enroll'); });
+      $('acInfoBody').innerHTML =
+        '<b>Name:</b> ' + esc(me.name) + '<br>' +
+        '<b>Phone:</b> ' + esc(me.phone || 'No phone number recorded') + '<br>' +
+        '<b>Person type:</b> ' + esc(me.type || '') + '<br>' +
+        '<b>Home store:</b> ' + esc(me.store || '') + '<br>' +
+        '<b>Biom ID:</b> ' + esc(me.id) + '<br>' +
+        '<b>Loyalty points:</b> ' + Number(me.loyaltyPoints || 0);
+      var linkedParts = w.linkedAccounts.map(function (a) { return a.type; });
+      if (me.walletProvider) linkedParts.push(me.walletProvider + ' (Biom Pay)');
+      $('acLinkedVal').textContent = linkedParts.length ? linkedParts.join(', ') : 'None linked';
+      var lim = me.limits || {};
+      $('acLimitsVal').textContent = lim.daily ? fmtBDT(lim.daily) + ' / day' : 'No daily limit set';
+      $('acLimitsBody').innerHTML =
+        '<b>Per-transaction limit:</b> ' + (lim.perTx ? fmtBDT(lim.perTx) : 'No limit') + '<br>' +
+        '<b>Daily limit:</b> ' + (lim.daily ? fmtBDT(lim.daily) : 'No limit') + '<br>' +
+        '<span style="color:var(--muted)">Limits are chosen at registration. Above a limit, a Biom Pay payment is not created on palm alone — PIN confirmation is required.</span>';
+      $('acSecBody').innerHTML =
+        'Palm templates are stored only on this device — nothing about your palm leaves it.<br>' +
+        '<b>Registered palm:</b> ' + (hand ? (hand === 'left' ? 'Left' : 'Right') + ' hand' : 'hand not recorded') + '<br>' +
+        '<b>Money scans:</b> Add Money, Send Money and Biom Pay use the strict money rule — a two-frame confirmation that must clearly beat every other enrolled palm.<br>' +
+        '<span style="color:var(--muted)">Erase everything on this device from More → Delete All Data.</span>';
+    });
+  }
+  $('acBack').addEventListener('click', function () { go('wallet'); });
+  $('acOpenWallet').addEventListener('click', function () { go('wallet'); });
+  $('acRowLinked').addEventListener('click', function () { go('wallet'); });
+  $('acRowHelp').addEventListener('click', function () { go('more'); });
+  $('acLogout').addEventListener('click', function () { closeWalletSession(); go('wallet'); });
+  document.querySelectorAll('[data-acct-toggle]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var d = $('acDetail-' + b.dataset.acctToggle);
+      if (d) d.classList.toggle('hidden');
+    });
+  });
+
+  /* ---------------- v52 wallet home wiring --------------------------
+     Eye toggle, avatar, quick actions and amount chips — all
+     presentation wiring over the existing flows. */
+  $('wBalEye').addEventListener('click', function () {
+    balanceHidden = !balanceHidden;
+    var me = walletSessionPerson();
+    if (me) renderWalletHome(me);
+  });
+  $('wHomeAvatar').addEventListener('click', function () { go('account'); });
+  $('wQuickHistory').addEventListener('click', function () {
+    var card = $('wActivityCard');
+    if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  $('wQuickScan').addEventListener('click', function () {
+    var me = walletSessionPerson();
+    if (!me) return;
+    showWalletScan({
+      title: 'Scan Palm — verify it is you',
+      prompt: 'Show your open palm. This is a plain identity check on the open wallet — it authorises nothing and moves no money.',
+      run: function () {
+        return DB.all('people').then(function (people) {
+          var fresh = people.find(function (p) { return p.id === me.id; }) || me;
+          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, walletSwapCamera, function () {}, walletControl).then(function (out) {
+            var auth = authFromVerify(out, fresh.id);
+            if (!auth.verified) { walletScanFailed(out); return; }
+            hideWalletScan();
+            return renderWallet().then(function () {
+              $('wHomeMsg').innerHTML = '<div class="success">Palm verified — this wallet belongs to ' + esc(fresh.name) + ' (' + esc(fresh.id) + ').<br><span style="color:var(--muted)">' + esc(out.measured) + '</span></div>';
+              Snd.chime();
+            });
+          });
+        });
+      }
+    });
+  });
+  document.querySelectorAll('[data-chips]').forEach(function (group) {
+    var input = $(group.dataset.chips);
+    group.querySelectorAll('[data-amt]').forEach(function (chip) {
+      chip.addEventListener('click', function () {
+        if (input) { input.value = chip.dataset.amt; input.focus(); }
+      });
+    });
+  });
 
   /* ---------------- Registry & logs -------------------------------------- */
   function renderRegistry() {

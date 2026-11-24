@@ -160,3 +160,123 @@ input,select{padding:14px;font-size:16px;min-height:52px}
 .checkrow .check{min-height:52px}
 @media (max-width:640px){ h1{font-size:23px }
   .desk-actions{grid-template-columns:1fr} .resultbig .verdict{font-size:32px} }
+
+/* --- regBIOM v52: customer surfaces rebuilt to the approved designs ---
+   Deep-blue solid balance card, four quick actions, linked-wallet and
+   activity rows, My Account, corner-bracket scan frame with live
+   status indicators, amount chips. Solid colours only, one stroke
+   icon family (the nav set's), soft shadows, calm transitions. */
+:root{ --blue:#0b4ea2; --blue-dark:#083a7c; --blue-soft:#e8f1fb; }
+section.page.active{animation:pagein .3s ease both}
+@keyframes pagein{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.btn,.qa-tile,.chip,.profilecard,.setrow{transition:border-color .18s ease,background .18s ease,box-shadow .18s ease,transform .18s ease}
+.balcard{background:var(--blue);color:#fff;border-radius:26px;padding:22px 22px 20px;
+  box-shadow:0 16px 34px rgba(8,58,124,.30),0 3px 8px rgba(8,58,124,.18)}
+.balcard-top{display:flex;align-items:center;justify-content:space-between}
+.balcard-brand{font-weight:800;letter-spacing:1.6px;font-size:13px;color:rgba(255,255,255,.85);text-transform:uppercase}
+.avatarbtn{width:46px;height:46px;border-radius:50%;border:2px solid rgba(255,255,255,.55);
+  background:rgba(255,255,255,.14);color:#fff;font-weight:800;font-size:16px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;padding:0}
+.avatarbtn:hover{background:rgba(255,255,255,.24)}
+.balcard .ballabel{color:rgba(255,255,255,.75);font-size:13px;font-weight:700;margin-top:16px}
+.balrow{display:flex;align-items:center;gap:12px;margin-top:2px}
+.balcard .balnum{font-size:40px;font-weight:800;letter-spacing:.2px;line-height:1.1}
+.eyebtn{background:transparent;border:none;color:rgba(255,255,255,.9);cursor:pointer;padding:8px;border-radius:10px;display:flex}
+.eyebtn svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.eyebtn.off{color:rgba(255,255,255,.45)}
+.balholder{font-size:17px;font-weight:700;margin-top:12px}
+.balid{color:rgba(255,255,255,.8);font-size:13.5px;margin-top:2px}
+.balcard .balnote{color:#ffd98a;font-size:12.5px;font-weight:700;margin-top:12px}
+.qa-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px}
+.qa-tile{background:var(--surface);border:1px solid var(--line2);border-radius:20px;box-shadow:var(--shadow);
+  padding:16px 6px 13px;cursor:pointer;color:var(--text);display:flex;flex-direction:column;align-items:center;gap:8px;
+  font-size:13px;font-weight:700;min-height:88px;justify-content:center}
+.qa-tile svg{width:30px;height:30px;stroke:var(--blue);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.qa-tile:hover{border-color:var(--blue);transform:translateY(-1px)}
+.seccard{margin-top:16px}
+.linkrow{display:flex;align-items:center;gap:12px;padding:11px 2px;border-bottom:1px solid var(--line2)}
+.linkrow:last-child{border-bottom:none}
+.brandchip{width:44px;height:44px;border-radius:13px;display:flex;align-items:center;justify-content:center;
+  font-weight:800;font-size:15px;color:#fff;flex:none}
+.brandchip.bkash{background:#e2136e}
+.brandchip.nagad{background:#f6921e}
+.brandchip.bank{background:#5b7a99}
+.brandchip.card{background:#6b6f76}
+.brandchip.pay{background:var(--blue)}
+.linkrow .lr-main{flex:1;min-width:0}
+.linkrow .lr-name{font-weight:800;font-size:15px}
+.linkrow .lr-sub{color:var(--muted);font-size:12.5px;margin-top:1px}
+.actrow{display:flex;align-items:center;gap:12px;padding:11px 2px;border-bottom:1px solid var(--line2)}
+.actrow:last-child{border-bottom:none}
+.acticon{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:none}
+.acticon svg{width:20px;height:20px;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.acticon.in{background:#e2f6ec}.acticon.in svg{stroke:var(--ok)}
+.acticon.out{background:#fdeaea}.acticon.out svg{stroke:var(--danger)}
+.actrow .ar-main{flex:1;min-width:0}
+.actrow .ar-title{font-weight:700;font-size:14.5px}
+.actrow .ar-meta{color:var(--muted);font-size:12.5px;line-height:1.5}
+.actrow .amt{font-weight:800;white-space:nowrap;font-size:15px}
+.actrow .amt.in{color:var(--ok)}
+.actrow .amt.out{color:var(--danger)}
+.balanceline{font-size:14.5px;color:var(--muted);margin:0 0 4px}
+.balanceline b{color:var(--text)}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.chip{background:var(--blue-soft);border:1px solid #c9def6;color:var(--blue-dark);border-radius:999px;
+  padding:9px 15px;font-size:13.5px;font-weight:700;cursor:pointer;min-height:40px}
+.chip:hover{border-color:var(--blue)}
+.feerow{display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--line2);
+  border-bottom:1px solid var(--line2);padding:11px 2px;margin-top:16px;font-size:14.5px}
+.feerow span{color:var(--muted);font-weight:600}
+.recvcard{border:1px solid var(--line);border-radius:18px;padding:16px;background:#fbfcfc}
+.recvcard .rc-head{display:flex;align-items:center;gap:12px}
+.recvcard .rc-name{font-size:16.5px;font-weight:800}
+.recvcard .rc-id{color:var(--teal);font-weight:700;font-size:13px}
+.recvcard .rc-rows{margin-top:12px;font-size:14.5px;line-height:1.9}
+.recvcard .rc-rows b{color:var(--muted);font-weight:600}
+/* Palm scan: corner brackets + live indicators (no ring — free-form) */
+.corners{position:absolute;inset:0;pointer-events:none}
+.corners i{position:absolute;width:34px;height:34px;border:0 solid rgba(255,255,255,.92)}
+.corners .tl{top:14px;left:14px;border-top-width:3.5px;border-left-width:3.5px;border-top-left-radius:10px}
+.corners .tr{top:14px;right:14px;border-top-width:3.5px;border-right-width:3.5px;border-top-right-radius:10px}
+.corners .bl{bottom:14px;left:14px;border-bottom-width:3.5px;border-left-width:3.5px;border-bottom-left-radius:10px}
+.corners .br{bottom:14px;right:14px;border-bottom-width:3.5px;border-right-width:3.5px;border-bottom-right-radius:10px}
+.scanpill{display:inline-flex;align-items:center;gap:8px;background:var(--blue-soft);color:var(--blue-dark);
+  border:1px solid #c9def6;border-radius:999px;padding:7px 14px;font-size:13px;font-weight:800;margin:10px 0}
+.scanpill-dot{width:8px;height:8px;border-radius:50%;background:var(--blue);animation:pulse 1.6s ease infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.scaninds{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.scanind{display:inline-flex;align-items:center;gap:7px;background:#f4f7f7;border:1px solid var(--line2);
+  border-radius:999px;padding:8px 13px;font-size:13px;font-weight:700;color:var(--muted)}
+.scanind .dot{width:9px;height:9px;border-radius:50%;background:#b9c6c4;flex:none}
+.scanind.ok{color:var(--ok)}.scanind.ok .dot{background:var(--green)}
+.scanind.warn{color:var(--warn)}.scanind.warn .dot{background:#e8a13a}
+/* My Account */
+.acctbar{display:flex;align-items:center;gap:12px}
+.acctbar h1{margin:8px 0}
+.backbtn{width:44px;height:44px;border-radius:50%;border:1px solid var(--line);background:var(--surface);
+  cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--text);box-shadow:0 2px 6px rgba(6,60,54,.05);flex:none}
+.backbtn svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.accthead{display:flex;align-items:center;gap:16px}
+.avatarbig{width:72px;height:72px;border-radius:50%;background:var(--blue);color:#fff;flex:none;
+  display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:800;
+  box-shadow:0 10px 22px rgba(8,58,124,.28)}
+.acctname{font-size:20px;font-weight:800}
+.acctphone{color:var(--muted);font-size:14px;margin-top:2px}
+.palmcard-head{display:flex;align-items:center;gap:12px}
+.palmchip{width:48px;height:48px;border-radius:14px;background:var(--blue-soft);display:flex;align-items:center;justify-content:center;flex:none}
+.palmchip svg{width:27px;height:27px;stroke:var(--blue);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.setlist{display:flex;flex-direction:column}
+.setrow{display:flex;align-items:center;gap:12px;width:100%;background:transparent;border:none;border-bottom:1px solid var(--line2);
+  padding:14px 2px;cursor:pointer;color:var(--text);text-align:left;min-height:56px}
+.setrow:last-child{border-bottom:none}
+.setrow:hover{background:#f7fafa}
+.setic{width:38px;height:38px;border-radius:11px;background:#eef5f4;display:flex;align-items:center;justify-content:center;flex:none}
+.setic svg{width:21px;height:21px;stroke:var(--teal);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.setrow.danger .setic{background:#fdeaea}.setrow.danger .setic svg{stroke:var(--danger)}
+.setrow.danger .setlbl{color:var(--danger)}
+.setlbl{font-size:15px;font-weight:700;flex:1}
+.setval{color:var(--muted);font-size:13.5px;font-weight:600;text-align:right}
+.setchev{display:flex}.setchev svg{width:18px;height:18px;stroke:#9db3b0;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.setdetail{padding:4px 2px 14px 52px;border-bottom:1px solid var(--line2)}
+@media (max-width:640px){ .qa-grid{grid-template-columns:repeat(4,1fr);gap:8px}
+  .qa-tile{font-size:11.5px;min-height:80px;padding:13px 4px 11px} .balcard .balnum{font-size:34px} }
