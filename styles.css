@@ -80,6 +80,7 @@ input:focus,select:focus{outline:2px solid rgba(11,122,110,.35);border-color:var
 .camtoggle button.on{background:var(--teal);color:#fff;box-shadow:0 4px 10px rgba(7,94,85,.25)}
 .camnote{color:var(--muted);font-size:13px;margin:4px 0 0;line-height:1.5}
 .camtoggle.flashtoggle{margin-top:8px}
+.camtoggle button:disabled{opacity:.45;cursor:default;box-shadow:none}
 .flashnote:empty{display:none}
 .checkrow{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
 .checkrow .check{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:10px 14px;font-size:14px;font-weight:700;color:var(--text);margin:0;cursor:pointer}

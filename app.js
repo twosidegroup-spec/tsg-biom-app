@@ -41,7 +41,7 @@
      is skipped, nothing is deleted, and the next launch retries —
      the app boots on the un-migrated data either way, because its
      readers fail closed per record. */
-  var APP_DATA_VERSION = 'v47';
+  var APP_DATA_VERSION = 'v48';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -323,17 +323,29 @@
         Cam.stream = stream;
         video.srcObject = stream;
         return playWithRetry().then(function () {
+          // Capture tuning FIRST (v48): it issues its own
+          // applyConstraints call, and a later call that does not
+          // mention torch can drop an already-lit torch back off —
+          // so the flash application below runs LAST, on the final
+          // track state.
+          return applyCaptureTuning(stream);
+        }).then(function () {
           // Flash is MANUAL only - it is never turned on automatically.
           // The one exception to "only from the toggle": if the user had
           // already chosen Flash On for this view before the camera
           // started, honour that explicit choice now (via the same
-          // apply helper the toggle uses).
-          if (viewKey && typeof flashState !== 'undefined' && flashState[viewKey]) {
-            return applyFlashForKey(viewKey).then(function () { return stream; });
+          // apply helper the toggle uses) — this is also what
+          // re-applies the choice to every re-acquired track (stream
+          // restart, Front <-> Back switch). The toggle's honest
+          // state (capability disabling + note) is then refreshed
+          // for the view either way.
+          if (viewKey && typeof flashState !== 'undefined' && typeof refreshFlashUi === 'function') {
+            return applyFlashForKey(viewKey).then(function () {
+              refreshFlashUi(flashGroupKey(viewKey));
+              return stream;
+            });
           }
           return stream;
-        }).then(function () {
-          return applyCaptureTuning(stream).then(function () { return stream; });
         });
       });
       this._starting = p;
@@ -347,8 +359,12 @@
       if (this.stream) {
         this.stream.getTracks().forEach(function (t) { t.stop(); });
         this.stream = null;
-        // The old track is gone, so that view's flash choice resets to Off.
-        if (this.viewKey && typeof resetFlash === 'function') resetFlash(this.viewKey);
+        // v48: stopping the stream does NOT clear the view's flash
+        // choice. The choice is a preference (see the flash section
+        // below): it survives restarts and camera switches, and
+        // Cam.start re-applies it to the next track this view
+        // acquires. (Before v48 this reset the choice to Off, so
+        // the app's own machinery silently destroyed it.)
       }
       if (this.video) { try { this.video.srcObject = null; } catch (e) {} }
     }
@@ -393,21 +409,45 @@
           var videoId = camVideoId(groupKey);
           applyMirror(videoId, b.dataset.facing);
           if (restart && Cam.stream && Cam.video === $(videoId)) restart();
+          // v48: with no live restart, the flash toggle's note for
+          // the new facing is refreshed here; with a restart,
+          // Cam.start refreshes it when the new track lands. Either
+          // way the stored flash choice itself is untouched — the
+          // torch simply cannot light on the front camera and is
+          // re-applied when the back camera returns.
+          else refreshFlashUi(groupKey);
         });
       });
     });
   }
 
-  /* ---------------- Per-view flash (torch) choice -------------------------
+  /* ---------------- Per-view flash (torch) choice (v48) ------------------
      Flash is INDEPENDENT and MANUAL - never automatic. Every camera view
      has its own Flash Off | Flash On toggle next to its Front | Back
-     toggle, default OFF, remembered per view in
-     this state object - keyed exactly like camFacing. The ONLY code that
-     ever lights the torch is applyTorchToCurrentTrack below, and it is
-     only ever called from the flash toggle handler or, when a camera
-     starts, to honour a Flash On the user had already chosen for that
-     view. Switching camera or stopping the camera resets that view's
-     flash to Off (see Cam.stop). */
+     toggle, default OFF, remembered per view in this state object -
+     keyed exactly like camFacing. The Chairman's order (2026-11-24):
+     whenever the BACK camera is open, the flash control must work —
+     functionally and smoothly. The RULES live in biometrics.js
+     (B.flashUiState / B.applyTorchToTrack) so the suites pin them;
+     this section only wires them to the DOM and the live track:
+       - The stored choice is a PREFERENCE. It is never reset by the
+         app's own machinery: stream restarts, Front <-> Back
+         switches and view navigation all keep it, and Cam.start
+         re-applies it to every new track (after capture tuning, so
+         nothing overwrites it).
+       - The torch lights only while the BACK camera is chosen. On
+         the front camera the choice stays set — the note says it
+         will light on the back camera — and switching back
+         restores it.
+       - Capability honesty: when the live back camera reports no
+         torch (most laptop webcams), refreshFlashUi disables the
+         toggle with the note 'Flash not available on this camera'
+         instead of leaving a live-looking button that does
+         nothing. Flash never throws and never blocks a scan.
+       - Toggling applies the constraint to the live track
+         directly — the camera and the scan session are NEVER
+         restarted by a flash tap, so an in-progress scan or
+         enrolment burst continues untouched. */
   var flashState = {
     enrollPalm: false, termPalm: false, walletOpen: false, walletAct: false, topup: false
   };
@@ -426,38 +466,61 @@
     var n = document.querySelector('[data-flash-note="' + groupKey + '"]');
     if (n) n.textContent = text || '';
   }
-  function resetFlash(key) {
-    if (!key || !(key in flashState)) return;
-    flashState[key] = false;
-    syncFlashToggle(flashGroupKey(key));
-    setFlashNote(flashGroupKey(key), '');
+  /* The live track serving a view's video element, or null when
+     that view's camera is not the live one. */
+  function flashLiveTrack(groupKey) {
+    if (!Cam.stream || Cam.video !== $(flashVideoId(groupKey))) return null;
+    return Cam.stream.getVideoTracks ? (Cam.stream.getVideoTracks()[0] || null) : null;
   }
-  /* The single place in the app that applies the torch constraint.
+  function trackTorchSupported(track) {
+    if (!track) return false;
+    try { var caps = track.getCapabilities ? track.getCapabilities() : {}; return !!caps.torch; } catch (e) { return false; }
+  }
+  /* Recompute a view's flash toggle from the pure rules: the
+     highlighted choice, the disabled state and the note. Called
+     after every camera start, camera switch and flash tap, so the
+     toggle always tells the truth about the live track. */
+  function refreshFlashUi(groupKey) {
+    var key = flashKeyForGroup(groupKey);
+    var track = flashLiveTrack(groupKey);
+    var ui = B.flashUiState({
+      prefOn: !!flashState[key],
+      live: !!track,
+      backChosen: camFacing[key] === 'environment',
+      torchSupported: trackTorchSupported(track)
+    });
+    syncFlashToggle(groupKey);
+    document.querySelectorAll('[data-flash-toggle="' + groupKey + '"] button').forEach(function (b) {
+      b.disabled = !!ui.disabled;
+    });
+    setFlashNote(groupKey, ui.note);
+    return ui;
+  }
+  /* The single place in the app that applies the torch constraint
+     (the capability gate itself lives in B.applyTorchToTrack).
      Resolves true only when the live track actually accepted it. */
   function applyTorchToCurrentTrack(on) {
     var track = Cam.stream && Cam.stream.getVideoTracks ? Cam.stream.getVideoTracks()[0] : null;
-    if (!track || !track.applyConstraints) return Promise.resolve(false);
-    var caps = {};
-    try { caps = track.getCapabilities ? track.getCapabilities() : {}; } catch (e) {}
-    if (!caps.torch) return Promise.resolve(false); // not supported on this camera/device
-    return track.applyConstraints({ advanced: [{ torch: !!on }] })
-      .then(function () { return true; })
-      .catch(function () { return false; });
+    return B.applyTorchToTrack(track, on);
   }
-  /* Honour view key's stored Flash On against the live track. If the
-     camera/device has no torch, say so plainly and leave flash Off. */
+  /* Honour a view key's stored Flash On against the live track.
+     The pure rules decide whether the torch may light at all (this
+     view's camera live, back camera chosen, torch supported); a
+     view whose video is not the live one is left alone. The
+     preference itself is NEVER changed here: a camera that cannot
+     light the torch today does not erase the user's choice. */
   function applyFlashForKey(key) {
     var groupKey = flashGroupKey(key);
-    if (!flashState[key]) { setFlashNote(groupKey, ''); return Promise.resolve(); }
-    return applyTorchToCurrentTrack(true).then(function (ok) {
-      if (!ok) {
-        flashState[key] = false;
-        syncFlashToggle(groupKey);
-        setFlashNote(groupKey, 'Flash is not available on this camera/device.');
-      } else {
-        setFlashNote(groupKey, '');
-      }
+    if (!flashState[key]) return Promise.resolve(false);
+    var track = flashLiveTrack(groupKey);
+    if (!track) return Promise.resolve(false);
+    var ui = B.flashUiState({
+      prefOn: true, live: true,
+      backChosen: camFacing[key] === 'environment',
+      torchSupported: trackTorchSupported(track)
     });
+    if (!ui.applyTorch) return Promise.resolve(false);
+    return applyTorchToCurrentTrack(true);
   }
   function wireFlashToggles() {
     document.querySelectorAll('[data-flash-toggle]').forEach(function (group) {
@@ -466,22 +529,21 @@
         b.addEventListener('click', function () {
           var key = flashKeyForGroup(groupKey);
           var wantOn = b.dataset.flash === 'on';
-          if (!!flashState[key] === wantOn) { syncFlashToggle(groupKey); return; }
+          if (!!flashState[key] === wantOn) { refreshFlashUi(groupKey); return; }
           flashState[key] = wantOn;
-          syncFlashToggle(groupKey);
-          var live = Cam.stream && Cam.video === $(flashVideoId(groupKey));
           if (!wantOn) {
-            setFlashNote(groupKey, '');
-            if (live) applyTorchToCurrentTrack(false);
+            // Torch off on the live track when this view owns it —
+            // applied in place; no camera or scan restart.
+            if (flashLiveTrack(groupKey)) applyTorchToCurrentTrack(false);
+            refreshFlashUi(groupKey);
             return;
           }
-          if (live) {
-            applyFlashForKey(key);
-          } else {
-            // Camera not started yet: remember the choice; it is applied
-            // when the camera starts - because the user chose it.
-            setFlashNote(groupKey, 'Flash is set On - it will light when this camera starts.');
-          }
+          // Torch on: applied to the live track immediately when
+          // this view's back camera is live; on the front camera or
+          // with no camera yet, the choice is remembered and
+          // Cam.start applies it when a back camera starts.
+          // refreshFlashUi sets the honest note either way.
+          applyFlashForKey(key).then(function () { refreshFlashUi(groupKey); });
         });
       });
     });
@@ -2452,8 +2514,7 @@
       : '';
     $('termScan').disabled = true;
     syncCamToggle('terminal');
-    syncFlashToggle('terminal');
-    setFlashNote('terminal', flashState[termFacingKey()] ? 'Flash is set On - it will light when this camera starts.' : '');
+    refreshFlashUi('terminal');
     applyMirror('termVideo', camFacing[termFacingKey()]);
   }
   function personHasMethod(person) {
@@ -2616,7 +2677,11 @@
         var k = termFacingKey();
         camFacing[k] = camFacing[k] === 'user' ? 'environment' : 'user';
         syncCamToggle('terminal');
-        return Cam.start($('termVideo'), camFacing[k], 'terminal');
+        // v48: the viewKey must be the terminal's flash key (k),
+        // not the group name — with 'terminal' Cam.start found no
+        // flash choice to honour, so a mid-scan camera swap killed
+        // the torch and never re-applied it on the new track.
+        return Cam.start($('termVideo'), camFacing[k], k);
       }, fieldRec, control).then(function (out) {
         palmScanBusy = false;
         $('termScan').disabled = false;

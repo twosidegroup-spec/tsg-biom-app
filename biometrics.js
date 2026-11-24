@@ -3824,6 +3824,57 @@
     return { ok: true, people: newPeople, sender: newSender, receiver: newReceiver, senderEntry: senderEntry, receiverEntry: receiverEntry };
   }
 
+  /* ================= Flash (torch) control rules (v48) =============
+     The pure half of the per-view Flash toggles in app.js. The app
+     owns the camera and the DOM; these functions own the RULES, so
+     the suites pin the behaviour and the screen can only follow:
+       applyTorchToTrack(track, on) — the one place a torch
+         constraint is applied: capability-gated on the track's own
+         getCapabilities().torch, never throws, resolves true only
+         when the track accepted the constraint.
+       flashUiState(input) — a view's honest flash state: whether
+         the toggle is disabled, the note to show, and whether the
+         torch should be lit on the live track right now.
+     The rules (the Chairman's order, 2026-11-24 — whenever the back
+     camera is open, the flash control must work, functionally and
+     smoothly):
+       - The user's per-view choice is a PREFERENCE: it survives
+         stream restarts, camera switches and view navigation. It
+         is never cleared by the app's own machinery; the app
+         re-applies it to every new track a view acquires.
+       - The torch lights only on the BACK camera. On the front
+         camera the choice stays set and the note says it will
+         light on the back camera; switching back restores it.
+       - If the active BACK camera reports no torch capability
+         (most laptop webcams, desktop cameras), the toggle is
+         DISABLED with the note 'Flash not available on this
+         camera' — never a live-looking button that does nothing.
+       - No camera yet: the choice can be set in advance and the
+         note says it will light when the camera starts. */
+  var FLASH_NOTE_NOT_AVAILABLE = 'Flash not available on this camera';
+  var FLASH_NOTE_FRONT = 'Flash is set On - it will light on the back camera.';
+  var FLASH_NOTE_PENDING = 'Flash is set On - it will light when this camera starts.';
+  function applyTorchToTrack(track, on) {
+    if (!track || !track.applyConstraints) return Promise.resolve(false);
+    var caps = {};
+    try { caps = track.getCapabilities ? track.getCapabilities() : {}; } catch (e) {}
+    if (!caps.torch) return Promise.resolve(false); // no torch on this camera/device
+    return track.applyConstraints({ advanced: [{ torch: !!on }] })
+      .then(function () { return true; })
+      .catch(function () { return false; });
+  }
+  function flashUiState(input) {
+    var o = input || {};
+    if (!o.live) {
+      return { disabled: false, applyTorch: false, note: o.prefOn ? FLASH_NOTE_PENDING : '' };
+    }
+    if (o.backChosen) {
+      if (!o.torchSupported) return { disabled: true, applyTorch: false, note: FLASH_NOTE_NOT_AVAILABLE };
+      return { disabled: false, applyTorch: !!o.prefOn, note: '' };
+    }
+    return { disabled: false, applyTorch: false, note: o.prefOn ? FLASH_NOTE_FRONT : '' };
+  }
+
   /* ================= Stored-data migration (v38) =================
      STANDING RULE (the Chairman's order, 2026-11-23): "from now keep
      data dont wipe". App updates MIGRATE the on-device store forward
@@ -3946,8 +3997,19 @@
      without the field is fully valid (it verifies EDCC-only,
      exactly as under v46). The step is therefore the identity,
      and a v46 store — wallet balance, statement and linked
-     accounts included — opens under v47 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47'];
+     accounts included — opens under v47 byte-identical.
+
+     v47 -> v48 is an ADOPTION: v48 changes no stored field. It
+     reworks only the per-view flash (torch) control in app.js —
+     the choice becomes a preference that survives stream restarts
+     and camera switches and is re-applied to each new back-camera
+     track, with capability-honest disabling when a camera has no
+     torch (the pure rules live in B.flashUiState /
+     B.applyTorchToTrack above). Flash choices were never stored
+     data, so the step is the identity, and a v47 store — neural
+     banks, wallet balance, statement and linked accounts
+     included — opens under v48 byte-identical. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -3957,6 +4019,7 @@
     'v44': function (snap) { return snap; },
     'v46': function (snap) { return snap; },
     'v47': function (snap) { return snap; },
+    'v48': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
@@ -4222,6 +4285,11 @@
     walletApplyAddMoney: walletApplyAddMoney,
     walletResolveReceiver: walletResolveReceiver,
     walletApplySend: walletApplySend,
+    applyTorchToTrack: applyTorchToTrack,
+    flashUiState: flashUiState,
+    FLASH_NOTE_NOT_AVAILABLE: FLASH_NOTE_NOT_AVAILABLE,
+    FLASH_NOTE_FRONT: FLASH_NOTE_FRONT,
+    FLASH_NOTE_PENDING: FLASH_NOTE_PENDING,
     migrateBiomData: migrateBiomData,
     wipeBiomData: wipeBiomData,
     emptyBiomDataSnapshot: emptyBiomDataSnapshot,
