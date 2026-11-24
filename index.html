@@ -36,13 +36,12 @@
   <!-- WALLET (DEMO) -->
   <section class="page active" id="page-wallet">
     <h1>My Biom Wallet</h1>
-    <p class="sub">Your Biom ID is your wallet account, and your palm is the key. Balances here are <b>demo money inside this app — not real funds</b>. Real bKash / Nagad settlement stays biometric-authorised pending the partner API, exactly as the terminal states.</p>
+    <p class="sub">Your Biom ID is your wallet account. The wallet on this device opens directly — no scan to enter; your palm is asked for only when money moves (Add Money, Send Money, Biom Pay). Balances here are <b>demo money inside this app — not real funds</b>. Real bKash / Nagad settlement stays biometric-authorised pending the partner API, exactly as the terminal states.</p>
 
     <div id="walletLocked" class="card">
       <h2>Open your wallet</h2>
-      <p class="sub">Scan your palm to open your wallet. A palm that is not registered on this device opens nothing.</p>
-      <button class="btn primary big" id="walletOpenScan">Scan Your Palm to Open Your Wallet</button>
-      <h2 style="margin-top:22px">Registered on this device</h2>
+      <p class="sub">Your wallet lives on this device and opens without a scan — tap your profile to open it. Choosing a profile is not a security check: your palm authorises payments, not entry.</p>
+      <h2 style="margin-top:22px">Choose your wallet</h2>
       <div id="walletProfiles" class="profilecards"></div>
       <p class="sub" style="margin-top:16px">No palm registered yet? <button class="btn small" data-go="enroll">Register a palm</button> — registration issues your Biom ID and creates your wallet at balance 0.</p>
     </div>
@@ -168,7 +167,7 @@
 
     <div id="accountLocked" class="card">
       <h2>No wallet is open</h2>
-      <p class="sub" style="margin:0">Your account details live behind your palm. Open your wallet first — the scan is the key.</p>
+      <p class="sub" style="margin:0">No wallet is open yet. When several profiles are registered on this device, open yours from the Wallet page — tap your profile there; it opens directly, no scan.</p>
       <button class="btn primary big" id="acOpenWallet" style="margin-top:14px">Go to My Wallet</button>
     </div>
 

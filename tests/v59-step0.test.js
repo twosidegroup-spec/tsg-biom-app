@@ -54,11 +54,20 @@ const cssSrc = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
 const readmeSrc = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 
-/* ---------- version coherence at v59 ---------- */
-check('VERSION app declares v59', appSrc.indexOf("APP_DATA_VERSION = 'v59'") !== -1);
-check('VERSION shell is tsg-biom-shell-v59', swSrc.indexOf('tsg-biom-shell-v59') !== -1);
-check('VERSION newest migration link is v59',
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v59');
+/* ---------- version coherence ---------- */
+/* v60 PIN CHANGE (named openly): these three pins were
+   absolute at v59 when this suite shipped; following the
+   v55/v56/v57-suite precedent they are converted to the
+   coherence form now that v60 is current — app version ==
+   shell version == newest chain link, and v59 remains in
+   the chain as an adoption step. */
+const appVer59 = (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1];
+const shellVer59 = (swSrc.match(/tsg-biom-shell-(v\d+)/) || [])[1];
+check('VERSION app data version and shell version agree and sit in the chain',
+  !!appVer59 && appVer59 === shellVer59 && B.BIOM_DATA_VERSIONS.indexOf(appVer59) !== -1 &&
+  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === appVer59,
+  appVer59 + ' vs ' + shellVer59);
+check('VERSION v59 remains in the chain as an adoption step', B.BIOM_DATA_VERSIONS.indexOf('v59') !== -1);
 
 /* ---------- 0.1 copy truth: the false claim is gone ---------- */
 const surfaces = { 'index.html': htmlSrc, 'app.js': appSrc, 'biometrics.js': bioSrc, 'sw.js': swSrc, 'styles.css': cssSrc, 'README.md': readmeSrc };
@@ -134,8 +143,8 @@ check('DRIFT stage-www enforces the drift check after staging',
 const drift = spawnSync(process.execPath, [path.join(root, 'check-www.js')], { encoding: 'utf8' });
 check('DRIFT www/ matches the root sources right now', drift.status === 0, (drift.stdout || '').trim());
 check('DRIFT the staged app is the current version (no stale copy remains)',
-  fs.readFileSync(path.join(root, 'www', 'app.js'), 'utf8').indexOf("APP_DATA_VERSION = 'v59'") !== -1 &&
-  fs.readFileSync(path.join(root, 'www', 'sw.js'), 'utf8').indexOf('tsg-biom-shell-v59') !== -1);
+  fs.readFileSync(path.join(root, 'www', 'app.js'), 'utf8').indexOf("APP_DATA_VERSION = '" + appVer59 + "'") !== -1 &&
+  fs.readFileSync(path.join(root, 'www', 'sw.js'), 'utf8').indexOf('tsg-biom-shell-' + appVer59) !== -1);
 
 console.log(fail === 0 ? 'ALL v59 STEP-0 TESTS PASSED (' + pass + ')' : fail + ' FAILURES, ' + pass + ' passed');
 process.exit(fail === 0 ? 0 : 1);

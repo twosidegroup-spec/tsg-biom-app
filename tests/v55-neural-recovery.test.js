@@ -175,12 +175,12 @@ check('FIX1 the offer on the neural path states the true reason (previous model,
   appSrc.indexOf('which restores full verify') !== -1);
 check('FIX1 the wallet-path offer text is the v53 text, untouched',
   appSrc.indexOf('those stored templates are the ones that are failing') !== -1);
-check('FIX1 the re-registration log names the path that led there (neural wording present, wallet wording kept)',
+check('FIX1 the re-registration log names the path that led there (neural wording present, owner-recovery wording — v60 pin change: was "wallet recovery path" while the entry hung off wallet-open scans; the entry moved to My Account at v60 and the log line follows it)',
   (function () {
     const bank = appSrc.slice(appSrc.indexOf('function bankReRegistration'), appSrc.indexOf('function wireRereg'));
     return bank.indexOf("recoveryVia === 'neural'") !== -1 &&
       bank.indexOf('could not check the capture') !== -1 &&
-      bank.indexOf('an Add Angles top-up in the wallet recovery path') !== -1 &&
+      bank.indexOf('an Add Angles top-up in the owner recovery path') !== -1 &&
       bank.indexOf("result: 'Owner Re-registration'") !== -1;
   })());
 check('FIX1 recovery state (id + via) is cleared on completion and on Back, as v53 cleared the id',

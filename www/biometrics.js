@@ -4882,7 +4882,22 @@
      stored field changes, so the step is the identity and a
      v58 store — banks, wallet, hand stamps and a queued sync
      outbox row included — opens under v59 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59'];
+  /* v60 (2026-11-25) changes no stored shape at all: entering
+     the wallet stops being a palm scan (the Chairman's direct
+     order — "entering our own wallet no need scan"). The
+     wallet on a device opens straight to its owner's home —
+     directly when one profile is enrolled, by a tap-to-choose
+     picker when several are — and entry produces no scan and
+     no scan record. The v53 owner-recovery entries that hung
+     off wallet-open failures (Strengthen / Neural Scan /
+     re-registration) move to My Account → Palm Identity,
+     routing to the same guarded top-up flows. Every money
+     authorisation keeps its palm scan exactly as before.
+     No threshold, model byte, fusion rule, guard, gate or
+     stored field changes, so the step is the identity and a
+     v59 store — banks, wallet, hand stamps and a queued sync
+     outbox row included — opens under v60 byte-identical. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -4904,6 +4919,7 @@
     'v57': function (snap) { return snap; },
     'v58': function (snap) { return snap; },
     'v59': function (snap) { return snap; },
+    'v60': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {

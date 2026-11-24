@@ -299,14 +299,20 @@ function wiringChecks() {
   const recvSlice = appSrc.slice(recvStart, appSrc.indexOf('function renderSendConfirm()', recvStart));
   check('WIRING the Send RECEIVER identification stays a plain scan (identifying a person moves no money)',
     recvSlice.indexOf('streamIdentifyPalm') !== -1 && recvSlice.indexOf('strictMoney') === -1);
-  const woStart = appSrc.indexOf("$('walletOpenScan')");
-  const woSlice = appSrc.slice(woStart, appSrc.indexOf('function openWalletForPerson', woStart));
-  check('WIRING wallet open (1:N route) carries NO strict flag — a login, not a money movement (v50 correction)',
-    woSlice.indexOf('streamIdentifyPalm') !== -1 && woSlice.indexOf('strictMoney') === -1);
-  const owStart = appSrc.indexOf('function openWalletForPerson');
-  const owSlice = appSrc.slice(owStart, appSrc.indexOf("$('wCloseWallet')", owStart));
-  check('WIRING wallet open (1:1 route) carries NO strict flag — a login, not a money movement (v50 correction)',
-    owSlice.indexOf('streamVerifyPalm') !== -1 && owSlice.indexOf('strictMoney') === -1);
+  /* v60 PIN CHANGE (named openly): the two checks that stood
+     here pinned the wallet-open routes as plain scans with no
+     strict flag (the v50 correction). At v60 those routes are
+     REMOVED — wallet entry is not a scan at all (the
+     Chairman's order, 2026-11-25: "entering our own wallet no
+     need scan"). The invariant survives in stronger form:
+     entry runs no scan, so no strict flag can ride on one,
+     and the strict sites remain exactly the three above. */
+  check('WIRING v60: wallet entry runs NO scan — both wallet-open scan routes are gone entirely',
+    appSrc.indexOf("$('walletOpenScan')") === -1 && appSrc.indexOf('function openWalletForPerson') === -1 &&
+    appSrc.indexOf("syncKind: 'wallet-open'") === -1);
+  check('WIRING v60: entry resolves by profile, not by palm (resolveWalletEntry + the tap-to-open picker)',
+    appSrc.indexOf('function resolveWalletEntry(people)') !== -1 && appSrc.indexOf('function openWalletDirect(personId)') !== -1 &&
+    appSrc.indexOf('data-open-wallet') !== -1);
   check('WIRING both streams accept the strict option and consult the gate',
     appSrc.indexOf('function streamVerifyPalm(video, statusEl, person, people, swapCamera, fieldRec, control, opts)') !== -1 &&
     appSrc.indexOf('function streamIdentifyPalm(video, statusEl, people, swapCamera, control, opts)') !== -1 &&

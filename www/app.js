@@ -84,8 +84,28 @@
      (CSP prerequisite); and the committed www/ staging is
      regenerated from these sources with a drift check, so
      no stale copy of the app remains. No data-shape change
-     — the v59 migration step is a pure adoption. */
-  var APP_DATA_VERSION = 'v59';
+     — the v59 migration step is a pure adoption.
+
+     v60 (2026-11-25) removes the palm scan from WALLET ENTRY
+     (the Chairman's direct order: "entering our own wallet
+     no need scan"). The wallet belongs to a profile on this
+     device: with exactly one enrolled profile it opens
+     straight to that wallet's home; with several, a plain
+     tap-to-choose picker (name, Biom ID, hand) opens the
+     tapped wallet — a picker, not a security gate, and no
+     scan, verdict or scan record happens at entry. With no
+     enrolled profile the wallet page points at enrolment,
+     as before. The v53 owner-recovery entries that used to
+     hang off wallet-open scan failures (Strengthen my palm,
+     Neural Scan, the confirmed re-registration) move to
+     My Account → Palm Identity, routing to the same guarded
+     top-up flows with the same grants. Every money
+     authorisation — Add Money, Send Money sender auth,
+     terminal Biom Pay — keeps its palm scan, strict rule
+     and all, exactly as before; quick verify stays an
+     explicit scan. No data-shape change — the v60
+     migration step is a pure adoption. */
+  var APP_DATA_VERSION = 'v60';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -3719,11 +3739,13 @@
      about the money itself lives in the B.wallet* store layer in
      biometrics.js — this section only runs scans and renders. The
      scans are the EXISTING pipelines: streamIdentifyPalm (1:N) to
-     open a wallet or find a receiver, streamVerifyPalm (1:1) to
-     authorise as a named person. Their outcomes are converted to
-     the authorisation object the store layer consumes
-     ({ verified, personId }); a failed or spoof-rejected scan
-     produces { verified: false } and authorises nothing. */
+     find a Send Money receiver, streamVerifyPalm (1:1) to
+     authorise as a named person. (v60: neither opens a wallet
+     any more — entry is a tap, see resolveWalletEntry.) Their
+     outcomes are converted to the authorisation object the
+     store layer consumes ({ verified, personId }); a failed or
+     spoof-rejected scan produces { verified: false } and
+     authorises nothing. */
   var walletSessionId = null; // Biom ID whose wallet is open (this session only)
   var walletPeopleCache = [];
   var walletScanCtx = null;   // { title, prompt, run } for the shared scan card
@@ -3746,9 +3768,32 @@
       : { verified: false, personId: null };
   }
 
+  /* v60 WALLET ENTRY (the Chairman's direct order, 2026-11-25:
+     "entering our own wallet no need scan"): entry is NOT a
+     scan and NOT a security gate. The wallet belongs to a
+     profile enrolled on this device; resolveWalletEntry names
+     the profile entry should open — the only enrolled profile,
+     or the one already open this session — and returns null
+     when entry must show the tap-to-choose picker (several
+     profiles) or the enrolment pointer (none). No camera is
+     started, no verdict is produced and no scan record is
+     queued by entry: records come only from judged scans.
+     The palm still authorises every money movement (Add
+     Money, Send Money, Biom Pay) — those scans are untouched. */
+  function resolveWalletEntry(people) {
+    if (walletSessionId) {
+      var open = people.find(function (p) { return p.id === walletSessionId; });
+      if (open) return open;
+      walletSessionId = null;
+    }
+    var withPalm = people.filter(function (p) { return personHasMethod(p); });
+    return withPalm.length === 1 ? withPalm[0] : null;
+  }
   function renderWallet() {
     if (walletControl) walletControl.cancelled = true; // v43: re-rendering the wallet supersedes any scan still running for it
     return loadWalletPeople().then(function (people) {
+      var entry = resolveWalletEntry(people);
+      if (entry) walletSessionId = entry.id;
       var me = walletSessionPerson();
       $('walletLocked').classList.toggle('hidden', !!me);
       $('walletHome').classList.toggle('hidden', !me);
@@ -3760,17 +3805,31 @@
       renderWalletProfiles(people);
     });
   }
+  /* v60: the profile list on the closed wallet is a plain
+     tap-to-choose picker — name, Biom ID and registered hand;
+     tapping a card opens that wallet directly. It is not
+     dressed as a security check and runs no scan: the palm
+     is asked for when money moves, not when a wallet opens. */
   function renderWalletProfiles(people) {
     var withPalm = people.filter(function (p) { return personHasMethod(p); });
     $('walletProfiles').innerHTML = withPalm.length
       ? withPalm.map(function (p) {
           var hand = B.palmProfileHand(p.palmProfile);
-          return '<button class="profilecard" data-open-wallet="' + esc(p.id) + '"><span class="pc-name">' + esc(p.name) + '</span><span class="pc-id">' + esc(p.id) + '</span><span class="pc-sub">Tap, then scan this person\'s palm — the wallet opens only for their own palm' + (hand ? ' · ' + (hand === 'left' ? 'Left' : 'Right') + ' palm registered' : '') + '</span></button>';
+          return '<button class="profilecard" data-open-wallet="' + esc(p.id) + '"><span class="pc-name">' + esc(p.name) + '</span><span class="pc-id">' + esc(p.id) + '</span><span class="pc-sub">Tap to open this wallet' + (hand ? ' · ' + (hand === 'left' ? 'Left' : 'Right') + ' palm registered' : '') + '</span></button>';
         }).join('')
       : '<p class="sub" style="margin:0">No palm is registered on this device yet. Register a palm first — registration issues the Biom ID and creates the wallet automatically.</p>';
     document.querySelectorAll('[data-open-wallet]').forEach(function (b) {
-      b.addEventListener('click', function () { openWalletForPerson(b.dataset.openWallet); });
+      b.addEventListener('click', function () { openWalletDirect(b.dataset.openWallet); });
     });
+  }
+  /* v60: open the tapped profile's wallet — session only.
+     No camera, no scan, no record: entry is a tap. */
+  function openWalletDirect(personId) {
+    var person = walletPeopleCache.find(function (p) { return p.id === personId; });
+    if (!person) return;
+    walletSessionId = personId;
+    hideWalletScan();
+    renderWallet();
   }
   /* v52: the balance card's hide/show eye is a view preference
      for this session only — the stored balance never changes. */
@@ -3958,59 +4017,42 @@
     // nobody is looking at any more.
     if (out && out.stopped) { hideWalletScan(); renderWallet(); return; }
     $('wScanMsg').innerHTML = '<div class="error">' + esc(out && out.fail ? out.fail : 'The scan did not verify. Nothing was authorised.') + '</div>';
-    // v53: under the message, the measured panel — and, on the
-    // wallet-OPEN scans, the owner recovery entry. A money
-    // authorisation failure gets the panel only: recovery from
-    // a failed payment scan is the wallet-open path, not a
-    // button beside the amount.
+    // v53: under the message, the measured diagnosis panel.
+    // v60: the panel is ALL a failed scan shows here — the
+    // v53 owner-recovery entry that used to hang off the
+    // wallet-open failures moved to My Account → Palm
+    // Identity (Strengthen my palm / Neural scan /
+    // Re-register this palm), because wallet entry is no
+    // longer a scan and so can no longer fail as one. The
+    // panel itself stays where it belongs: on actual scan
+    // failures — terminal, money auth, quick verify.
     var diagHtml = scanDiagHTML(out && out.diag);
     var ctx = walletScanCtx;
     // v56 Scan Sync: a judged scan that failed queues its record
     // too — the Chairman asked to see every scan, not only passes.
     // (No diag = no judged scan — a camera failure queues nothing.)
     if (ctx && ctx.syncKind && out && out.diag) {
-      Sync.noteScan({ kind: ctx.syncKind, profileName: '', biomId: ctx.recoverPersonId || '', hand: out.diag.probeHand || null, edccScore: typeof out.diag.edcc === 'number' ? out.diag.edcc : null, palmnetScore: typeof out.diag.neural === 'number' ? out.diag.neural : null, result: 'Denied' });
+      Sync.noteScan({ kind: ctx.syncKind, profileName: '', biomId: '', hand: out.diag.probeHand || null, edccScore: typeof out.diag.edcc === 'number' ? out.diag.edcc : null, palmnetScore: typeof out.diag.neural === 'number' ? out.diag.neural : null, result: 'Denied' });
     }
-    if (ctx && ctx.recoverable) diagHtml += renderWalletRecovery(ctx);
     $('wScanDiag').innerHTML = diagHtml;
-    wireWalletRecovery(ctx);
     $('wScanRun').disabled = false;
     Snd.buzz();
   }
-  /* v53 OWNER RECOVERY (wallet-open failures only): the
-     lockout this breaks — a genuine owner whose thin bank
+  /* v53 OWNER RECOVERY — v60 RELOCATED: the lockout this
+     breaks is unchanged — a genuine owner whose thin bank
      scores just under the bar is refused by the same bars at
      Add Angles (the v49 banking guard), so the bank that is
-     failing him can never grow. "Strengthen my palm" runs the
-     existing guided Add Angles capture for his profile under
-     that same guard; only a guard refusal there unlocks the
+     failing him can never grow. What moved is only the ENTRY:
+     at v53-v59 the entry hung off a failed wallet-open scan;
+     at v60 wallet entry is no longer a scan, so the same
+     actions live on the owner's own Palm Identity card
+     (My Account): "Strengthen my palm" runs the existing
+     guided Add Angles capture under that same guard, and
+     "Re-register this palm" enters through openRecoveryTopup
+     so a guard refusal inside that capture offers the same
      confirmation-gated re-registration (see runTopupCapture).
-     The 1:1 open names its person; the 1:N open cannot (the
-     palm matched nobody), so it offers the profile picker —
-     name + Biom ID, the owner's own knowledge doing the
-     identifying the scan could not. */
-  function renderWalletRecovery(ctx) {
-    if (ctx.recoverPersonId) {
-      return '<div class="diagpanel"><div class="diagtitle">Is this your palm?</div>' +
-        '<div class="diagrow">If this is your own palm and it keeps failing, you can strengthen its stored profile — the guided capture adds angles under the same safety check as always.</div>' +
-        '<button class="btn primary" id="wStrengthen" style="margin-top:10px">Strengthen my palm</button></div>';
-    }
-    var people = walletPeopleCache.filter(function (p) { return B.palmprintProfileSane(p.palmProfile); });
-    if (!people.length) return '';
-    return '<div class="diagpanel"><div class="diagtitle">Is this your palm?</div>' +
-      '<div class="diagrow">If this is your own palm and it keeps failing, choose your profile to strengthen its stored palm — the guided capture adds angles under the same safety check as always.</div>' +
-      people.map(function (p) {
-        return '<button class="btn" data-strengthen="' + esc(p.id) + '" style="margin-top:8px">' + esc(p.name) + ' — ' + esc(p.id) + '</button>';
-      }).join('') + '</div>';
-  }
-  function wireWalletRecovery(ctx) {
-    if (!ctx || !ctx.recoverable) return;
-    var one = $('wStrengthen');
-    if (one) one.addEventListener('click', function () { var id = ctx.recoverPersonId; hideWalletScan(); openRecoveryTopup(id); });
-    document.querySelectorAll('[data-strengthen]').forEach(function (b) {
-      b.addEventListener('click', function () { var id = b.dataset.strengthen; hideWalletScan(); openRecoveryTopup(id); });
-    });
-  }
+     The guards, the grant and the typed REPLACE are the
+     v53/v55 machinery, untouched — only the door moved. */
   $('wScanStart').addEventListener('click', startWalletCamera);
   camRestarters.walletAct = function () {
     // v49: this restarter was the one camera-start caller with no
@@ -4035,74 +4077,36 @@
     renderWallet();
   });
 
-  /* Open a wallet: the scan is the key, always. The generic route
-     identifies the palm (1:N); a profile card names the person and
-     the scan must verify as THAT person (1:1).
-     v50 (the Chairman's correction, 2026-11-24): opening a wallet
-     is a LOGIN, not a money movement — v49's strict money rule
-     ran here too and blocked the owner opening his own wallet
-     ("Matched, but not clearly enough to authorise money" at
-     wallet entry). Both routes below therefore run the PLAIN
-     fused verify, exactly as before v49. The strict rule stays
-     on the three money-moving authorisations only: Add Money,
-     Send Money sender authorisation, terminal Biom Pay. */
-  $('walletOpenScan').addEventListener('click', function () {
-    showWalletScan({
-      title: 'Open your wallet — palm scan',
-      syncKind: 'wallet-open', // v56 Scan Sync kind for this context
-      recoverable: true, // v53: a failed open offers the owner recovery (profile picker — the palm matched nobody)
-      prompt: 'Show your open palm to the camera. If it matches a registered palm, that person\'s wallet opens. A palm that is not registered opens nothing.',
-      run: function () {
-        return DB.all('people').then(function (people) {
-          return streamIdentifyPalm($('wScanVideo'), $('wScanStatus'), people, walletSwapCamera, walletControl).then(function (out) {
-            if (!out || out.fail || !out.person) { walletScanFailed(out); return; }
-            walletSessionId = out.person.id;
-            Sync.noteScan({ kind: 'wallet-open', profileName: out.person.name, biomId: out.person.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
-            hideWalletScan();
-            return renderWallet().then(function () {
-              $('wHomeMsg').innerHTML = '<div class="success">Wallet opened for ' + esc(out.person.name) + ' (' + esc(out.person.id) + ').<br><span style="color:var(--muted)">' + esc(out.measured) + '</span></div>';
-              toast('Wallet opened: ' + out.person.id);
-              Snd.chime();
-              Snd.speak('Wallet open');
-            });
-          });
-        });
-      }
-    });
-  });
-  function openWalletForPerson(personId) {
-    var person = walletPeopleCache.find(function (p) { return p.id === personId; });
-    if (!person) return;
-    showWalletScan({
-      title: 'Open ' + person.name + '\'s wallet',
-      syncKind: 'wallet-open', // v56 Scan Sync kind for this context
-      recoverable: true, recoverPersonId: personId, // v53: a failed open offers the owner recovery for this named profile
-      prompt: 'Scan ' + person.name + '\'s palm. The wallet opens only if the palm verifies as ' + person.name + ' (' + person.id + ') — nobody else\'s palm can open it.',
-      run: function () {
-        return DB.all('people').then(function (people) {
-          var fresh = people.find(function (p) { return p.id === personId; }) || person;
-          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, walletSwapCamera, function () {}, walletControl).then(function (out) {
-            var auth = authFromVerify(out, personId);
-            if (!auth.verified) { walletScanFailed(out); return; }
-            walletSessionId = personId;
-            Sync.noteScan({ kind: 'wallet-open', profileName: fresh.name, biomId: fresh.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
-            hideWalletScan();
-            return renderWallet().then(function () {
-              $('wHomeMsg').innerHTML = '<div class="success">Wallet opened for ' + esc(fresh.name) + ' (' + esc(fresh.id) + ').<br><span style="color:var(--muted)">' + esc(out.measured) + '</span></div>';
-              toast('Wallet opened: ' + fresh.id);
-              Snd.chime();
-              Snd.speak('Wallet open');
-            });
-          });
-        });
-      }
-    });
-  }
+  /* v60: the two wallet-open scan routes that stood here
+     (the generic 1:N identify and the per-profile 1:1 verify)
+     are REMOVED — wallet entry is no longer a scan at all.
+     Entry lives in renderWallet / resolveWalletEntry /
+     openWalletDirect above: one enrolled profile opens
+     directly, several show the tap-to-choose picker, none
+     points at enrolment. The v50 history is worth keeping
+     in one line: the strict money rule never belonged on
+     entry either — it stays on the three money-moving
+     authorisations only (Add Money, Send Money sender
+     authorisation, terminal Biom Pay), and those scans,
+     plus the Send receiver identify and quick verify, keep
+     using the shared wallet scan card exactly as before.
+     Entry queues no 'wallet-open' scan record any more;
+     the sync engine still accepts the kind (old records
+     already on the server keep it) — it simply has no
+     producer left in the app. */
   function closeWalletSession() {
     walletSessionId = null;
     Cam.stop();
+    // v60: closing returns to the entry state renderWallet
+    // resolves — the picker when several profiles are
+    // enrolled (a real switch), the enrolment pointer when
+    // none are. With exactly one profile there is nothing
+    // to switch to and no lock to return to: the only wallet
+    // simply stays the open one, so no 'closed' toast lies
+    // about it.
+    var withPalm = walletPeopleCache.filter(function (p) { return personHasMethod(p); });
     renderWallet();
-    toast('Wallet closed.');
+    if (withPalm.length !== 1) toast('Wallet closed.');
   }
   $('wCloseWallet').addEventListener('click', closeWalletSession);
 
@@ -4272,9 +4276,19 @@
      the open wallet's person record and wallet — nothing here is
      stored separately, and nothing here writes. Palm actions are
      the REAL existing flows (Add Angles / re-scan / Neural Scan
-     via openTopup, other-hand registration via enrolment). */
+     via openTopup, other-hand registration via enrolment).
+     v60: My Account resolves the wallet session by the same
+     entry rule as the wallet (resolveWalletEntry — one enrolled
+     profile opens directly; several wait for the wallet-page
+     picker tap), and the Palm Identity card is now the home of
+     the v53 owner-recovery actions that used to hang off
+     wallet-open scan failures: Strengthen my palm, Neural scan
+     and Re-register this palm, routing to the same guarded
+     top-up flows (openTopup / openRecoveryTopup) as before. */
   function renderAccount() {
-    return loadWalletPeople().then(function () {
+    return loadWalletPeople().then(function (people) {
+      var entry = resolveWalletEntry(people);
+      if (entry) walletSessionId = entry.id;
       var me = walletSessionPerson();
       $('accountLocked').classList.toggle('hidden', !!me);
       $('accountOpen').classList.toggle('hidden', !me);
@@ -4302,15 +4316,28 @@
         : hand
           ? (hand === 'left' ? 'Left' : 'Right') + ' palm'
           : 'Palm registered — hand not recorded (enrolled before hand recording began)';
+      /* v60: the Palm Identity actions, in the owner's own
+         terms. Strengthen my palm is the v43 Add Angles flow;
+         Neural scan is the v47 neural top-up; Re-register
+         this palm is the v53 recovery entry (openRecoveryTopup
+         — the recovery grant, so a banking-guard refusal
+         inside that capture offers the typed-REPLACE
+         re-registration exactly as it did from the old
+         wallet-open failure path). Same flows, same guards —
+         only the door moved, from a failed entry scan to the
+         owner's own account page. */
       var actions = '';
-      if (enrolled) actions += '<div><button class="btn primary" data-acct-topup="angles">Add Angles</button></div>';
+      if (enrolled) actions += '<div><button class="btn primary" data-acct-topup="angles">Strengthen my palm</button></div>';
       if (format === 'legacy') actions += '<div><button class="btn primary" data-acct-topup="angles">Re-scan Palm</button></div>';
-      if (B.palmnetNeedsScan(me.palmProfile)) actions += '<div><button class="btn" data-acct-topup="neural">Neural Scan</button></div>';
+      if (B.palmnetNeedsScan(me.palmProfile)) actions += '<div><button class="btn" data-acct-topup="neural">Neural scan</button></div>';
+      if (enrolled) actions += '<div><button class="btn" id="acRereg">Re-register this palm</button></div>';
       actions += '<div><button class="btn" id="acOtherHand">Register Other Hand</button></div>';
       $('acPalmActions').innerHTML = actions;
       document.querySelectorAll('[data-acct-topup]').forEach(function (b) {
         b.addEventListener('click', function () { openTopup(me.id, b.dataset.acctTopup === 'neural' ? 'neural' : undefined); });
       });
+      var rr = $('acRereg');
+      if (rr) rr.addEventListener('click', function () { openRecoveryTopup(me.id); });
       var oh = $('acOtherHand');
       if (oh) oh.addEventListener('click', function () { go('enroll'); });
       $('acInfoBody').innerHTML =
@@ -4448,12 +4475,15 @@
   var topupBusy = false;
   var topupMode = 'angles'; // 'angles' (EDCC + neural) | 'neural' (neural only, v47)
   /* v53 owner recovery state: recoveryPersonId is set ONLY by
-     openRecoveryTopup (reached from a failed wallet-open scan)
-     and cleared by every ordinary openTopup call, by Back, and
-     when a re-registration completes. While it names a profile,
-     a banking-guard refusal in that profile's capture offers
-     the confirmation-gated re-registration; reregPerson is the
-     record that refusal was judged against.
+     openRecoveryTopup and cleared by every ordinary openTopup
+     call, by Back, and when a re-registration completes.
+     While it names a profile, a banking-guard refusal in that
+     profile's capture offers the confirmation-gated
+     re-registration; reregPerson is the record that refusal
+     was judged against. (v60: openRecoveryTopup is reached
+     from My Account → Palm Identity → "Re-register this
+     palm" — at v53-v59 it was reached from a failed
+     wallet-open scan, which no longer exists.)
      v55 (AUDIT-v54.md, Defect 1): a SECOND grant exists.
      v54's model swap left every pre-v54 profile with a stale
      neural bank, and the Neural Scan the app prescribes for
@@ -4498,7 +4528,7 @@
       // (B.palmnetBankStale) that means the guard's neural leg
       // is uncheckable by construction, so a refusal inside
       // this capture must offer the owner the same confirmed
-      // re-registration the wallet-open path offers, or the
+      // re-registration the owner-recovery path offers, or the
       // prescribed remedy dead-ends. A never-banked profile
       // also has needsScan true, and the grant is harmless
       // there in the same way: the offer still requires a
@@ -4521,7 +4551,7 @@
         $('topWho').innerHTML = '<b>' + esc(person.name) + '</b> — ' + esc(person.id) + '<br><span style="color:var(--muted)">Currently banked: ' + person.palmProfile.codes.length + ' packed palm templates' + (Array.isArray(person.palmProfile.poses) ? ' with pose data.' : ' from a single-posture enrolment — no pose data yet.') + ' The burst adds diverse sharp templates; nothing else about this person changes. Before anything is added, the burst is checked against the palm already banked — a different palm is refused and nothing is added.</span>';
       }
       $('topMsg').innerHTML = '';
-      if (viaRecovery) $('topMsg').innerHTML = '<div class="notice">You came here from a failed wallet-open scan. This guided capture tries to add angles to ' + esc(person.name) + '\'s stored palm under the usual safety check. If the check refuses — because the stored templates are the ones failing — you will be offered a confirmed re-registration instead.</div>';
+      if (viaRecovery) $('topMsg').innerHTML = '<div class="notice">You came here from My Account → Palm Identity (Re-register this palm). This guided capture tries to add angles to ' + esc(person.name) + '\'s stored palm under the usual safety check. If the check refuses — because the stored templates are the ones failing — you will be offered a confirmed re-registration instead.</div>';
       if (neuralStaleGrant && B.palmnetBankStale(person.palmProfile)) $('topMsg').innerHTML = '<div class="notice">This profile\'s stored PalmNet bank belongs to the previous model, so the safety check cannot compare this capture against it — the check judges on the EDCC templates alone. If the check refuses for that reason, you will be offered a confirmed re-registration instead: a fresh enrolment under the current model restores full EDCC + PalmNet verify.</div>';
       $('topStatus').textContent = 'Starting the camera...';
       startTopupCamera();
@@ -4622,7 +4652,8 @@
               $('topMsg').innerHTML = '<div class="error">This palm does not match this profile — nothing was added</div>';
             }
             // v53: when this capture was launched from the
-            // wallet-open recovery path, the refusal is the
+            // owner recovery path (v60: My Account → Palm
+            // Identity → Re-register this palm), the refusal is the
             // lockout case — the stored bank is what is failing,
             // so no guarded top-up can ever fix it. Offer the
             // owner-confirmed remedy. An ordinary Add Angles
@@ -4888,11 +4919,12 @@
       var updated = Object.assign({}, person, { palmProfile: profile });
       return DB.put('people', updated).then(function () {
         // v55: the record names the path that actually led
-        // here — the wallet-open recovery (v53) or the
-        // stale-bank Neural Scan (v55, AUDIT-v54.md Defect 1).
+        // here — the owner recovery path (v53; v60: entered
+        // from My Account → Palm Identity) or the stale-bank
+        // Neural Scan (v55, AUDIT-v54.md Defect 1).
         var pathNote = recoveryVia === 'neural'
           ? 'a Neural Scan top-up — the stored PalmNet bank was banked by the previous model, so the guard\'s neural leg could not check the capture and its EDCC leg refused it'
-          : 'an Add Angles top-up in the wallet recovery path';
+          : 'an Add Angles top-up in the owner recovery path';
         return DB.put('logs', { ts: Date.now(), personId: person.id, personName: person.name, store: '', method: 'palm',
           measured: 'Owner re-registration: after the banking guard refused ' + pathNote + ', the owner confirmed (typed REPLACE) replacement of this profile\'s palm bank. Old bank: ' + oldEdcc + ' EDCC template(s), ' + oldNeural + ' PalmNet embedding(s). New bank: ' + codes.length + ' EDCC template(s), ' + (bank ? bank.embeddings.length : 0) + ' PalmNet embedding(s), hand recorded: ' + (hand || 'not determined') + '. Biom ID, wallet, balance, statement, linked accounts, limits and points unchanged.',
           result: 'Owner Re-registration' });
@@ -4910,7 +4942,7 @@
         $('topMsg').innerHTML = '<div class="success">Palm re-registered for ' + esc(person.name) + ': ' + codes.length + ' new template' + (codes.length === 1 ? '' : 's') + ' banked from two guided captures (natural distance, then a little farther back)' +
           (bank ? ', with ' + bank.embeddings.length + ' PalmNet embedding' + (bank.embeddings.length === 1 ? '' : 's') : ' (PalmNet embeddings were not banked — the Registry will offer a Neural Scan)') +
           (hand ? '. ' + (hand === 'left' ? 'Left' : 'Right') + ' palm recorded — the other hand will not match this profile.' : '. The hand could not be determined from these captures.') +
-          ' Biom ID, wallet, balance, statement, linked accounts, limits and points are untouched. Go to My Wallet and open it with this palm.</div>';
+          ' Biom ID, wallet, balance, statement, linked accounts, limits and points are untouched. Your wallet on this device opens without a scan — your palm is asked for when money moves.</div>';
         Snd.chime();
         Snd.speak('Palm re-registered');
       });

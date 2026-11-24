@@ -209,14 +209,18 @@ function walletChecks() {
   const strictSites = (appSrc.match(/\{ strictMoney: true \}\)/g) || []).length;
   check('WALLET exactly three strict-money call sites remain (terminal, Add Money, Send authorise)',
     strictSites === 3, 'found ' + strictSites);
-  const woStart = appSrc.indexOf("$('walletOpenScan')");
-  const woSlice = appSrc.slice(woStart, appSrc.indexOf('function openWalletForPerson', woStart));
-  check('WALLET the 1:N wallet-open route is a plain identification (no strict flag)',
-    woSlice.indexOf('streamIdentifyPalm') !== -1 && woSlice.indexOf('strictMoney') === -1);
-  const owStart = appSrc.indexOf('function openWalletForPerson');
-  const owSlice = appSrc.slice(owStart, appSrc.indexOf("$('wCloseWallet')", owStart));
-  check('WALLET the 1:1 wallet-open route is a plain verify (no strict flag)',
-    owSlice.indexOf('streamVerifyPalm') !== -1 && owSlice.indexOf('strictMoney') === -1);
+  /* v60 PIN CHANGE (named openly): the two checks that stood
+     here pinned the wallet-open routes as plain scans (no
+     strict flag). At v60 those routes are REMOVED — wallet
+     entry is not a scan at all (the Chairman's order,
+     2026-11-25). What this section still proves: the strict
+     rule lives on exactly the three money sites, and entry
+     itself invokes no scan stream of either kind. */
+  check('WALLET v60: wallet entry runs NO scan — both wallet-open scan routes are gone entirely',
+    appSrc.indexOf("$('walletOpenScan')") === -1 && appSrc.indexOf('function openWalletForPerson') === -1 &&
+    appSrc.indexOf("syncKind: 'wallet-open'") === -1);
+  check('WALLET v60: entry resolves by profile tap (resolveWalletEntry + openWalletDirect)',
+    appSrc.indexOf('function resolveWalletEntry(people)') !== -1 && appSrc.indexOf('function openWalletDirect(personId)') !== -1);
   const addStart = appSrc.indexOf("$('wAddScan')");
   const addSlice = appSrc.slice(addStart, appSrc.indexOf('/* Send Money', addStart) > 0 ? appSrc.indexOf('/* Send Money', addStart) : addStart + 3000);
   check('WALLET Add Money still runs the strict rule',

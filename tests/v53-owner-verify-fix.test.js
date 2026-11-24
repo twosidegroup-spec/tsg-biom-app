@@ -78,6 +78,16 @@
    its current rendering; every other rule named here is
    unchanged, and this suite's version pins were converted to
    the coherence form when v54 shipped.)
+   (v60 note: wallet ENTRY is no longer a scan — the
+   Chairman's order "entering our own wallet no need scan" —
+   so the recovery ENTRY moved from the wallet-open failure
+   panel to My Account → Palm Identity (Strengthen my palm /
+   Neural scan / Re-register this palm, the last through the
+   same openRecoveryTopup grant). The two entry-gating pins
+   below were rewritten for the relocation and say so; the
+   diagnosis panel stays on real scan failures, and the
+   recovery machinery itself — grant, guard, refusal-gated
+   offer, typed REPLACE, two-burst bank — is untouched.)
    All numbers here are RIG numbers; the phone is the verdict. */
 'use strict';
 const fs = require('fs');
@@ -247,11 +257,24 @@ check('DIAG the terminal renders the panel on both failure surfaces',
   (appSrc.match(/scanDiagHTML\(out\.diag\)/g) || []).length === 2);
 
 /* ---------------- recovery: entry gating ------------------------ */
-check('RECOVERY exactly the two wallet-open contexts carry the recovery flag',
-  (appSrc.match(/recoverable: true/g) || []).length === 2);
-check('RECOVERY the picker offers profiles by name and Biom ID, and the 1:1 card names its action',
-  appSrc.indexOf('data-strengthen') !== -1 && appSrc.indexOf('Strengthen my palm') !== -1 &&
-  appSrc.indexOf("esc(p.name) + ' — ' + esc(p.id)") !== -1);
+/* v60 PIN CHANGES (named openly): at v53-v59 the recovery
+   entry hung off the two wallet-open scan contexts (the
+   'recoverable: true' flags, the failure-panel picker and the
+   named 1:1 button). At v60 wallet entry is no longer a scan
+   (the Chairman's order, 2026-11-25), so those contexts are
+   gone and the SAME actions live on the owner's Palm Identity
+   card in My Account. The two checks below replace the two
+   that stood here; everything else in this section — the
+   grant, the guard, the refusal-gated offer, the typed
+   REPLACE, the two-burst bank — is unchanged. */
+check('RECOVERY v60: no scan context carries the recovery flag any more (wallet entry is not a scan)',
+  (appSrc.match(/recoverable: true/g) || []).length === 0 &&
+  appSrc.indexOf('renderWalletRecovery') === -1 && appSrc.indexOf('data-strengthen') === -1);
+check('RECOVERY v60: the Palm Identity card carries the relocated actions — Strengthen my palm, Neural scan, Re-register this palm',
+  appSrc.indexOf('data-acct-topup="angles">Strengthen my palm') !== -1 &&
+  appSrc.indexOf('data-acct-topup="neural">Neural scan') !== -1 &&
+  appSrc.indexOf('id="acRereg">Re-register this palm') !== -1 &&
+  appSrc.indexOf('openRecoveryTopup(me.id)') !== -1);
 check('RECOVERY the recovery entry launches the guided Add Angles capture for the chosen profile',
   appSrc.indexOf("function openRecoveryTopup(personId) { openTopup(personId, 'angles', true); }") !== -1);
 check('RECOVERY every ordinary top-up entry clears the recovery state',
@@ -352,6 +375,6 @@ check('VERSION v53 remains in the chain as an adoption step', B.BIOM_DATA_VERSIO
     mig.appliedSteps.indexOf('v53') !== -1 && mig.changed === false && JSON.stringify(mig.snapshot) === before);
 })();
 
-info('rig only: landmark fixtures are synthetic geometry; palm fixtures are synthetic prints. The phone verdict — his left palm opening his wallet — is the real-world proof, and it has not been claimed here.');
+info('rig only: landmark fixtures are synthetic geometry; palm fixtures are synthetic prints. The phone verdict — his left palm verifying at the money scans (wallet entry itself has needed no scan since v60) — is the real-world proof, and it has not been claimed here.');
 console.log('\nv53 owner-verify-fix tests: ' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

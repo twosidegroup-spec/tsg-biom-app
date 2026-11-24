@@ -250,9 +250,18 @@ async function e2eTest() {
     appSrc.indexOf("'x-device-key': p.deviceKey") !== -1 &&
     (appSrc.match(/deviceKey/g) || []).length <= 6,
     'deviceKey mentions=' + (appSrc.match(/deviceKey/g) || []).length);
-  ['enrol', 'verify', 'identify', 'wallet-open', 'money-auth', 'topup', 're-register', 'field-test'].forEach(function (k) {
+  /* v60 PIN CHANGE (named openly): 'wallet-open' leaves the
+     app-callsite list — wallet entry is no longer a scan (the
+     Chairman's order, 2026-11-25), so the app produces no
+     wallet-open records any more. The engine still accepts
+     the kind (the E2E section above queues one directly and
+     it round-trips), because records already on the server
+     carry it. The check after the loop pins the absence. */
+  ['enrol', 'verify', 'identify', 'money-auth', 'topup', 're-register', 'field-test'].forEach(function (k) {
     check('CALLSITE a noteScan call site queues kind ' + k, appSrc.indexOf("kind: '" + k + "'") !== -1 || appSrc.indexOf('kind: amount > 0') !== -1 && (k === 'verify' || k === 'money-auth'));
   });
+  check('CALLSITE v60: NO app call site queues kind wallet-open any more (entry is not a scan)',
+    appSrc.indexOf("kind: 'wallet-open'") === -1 && appSrc.indexOf("syncKind: 'wallet-open'") === -1);
   check('CALLSITE terminal money scans pick money-auth vs verify by amount (the single-source closure)',
     appSrc.indexOf("kind: amount > 0 ? 'money-auth' : 'verify'") !== -1);
   check('CALLSITE NO delete-all record is ever queued (the wipe sends nothing, by design)',
