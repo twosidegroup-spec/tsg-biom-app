@@ -44,7 +44,7 @@
 
      v56 adds the Scan Sync (the Chairman's order 2026-11-24
      22:20): a DEFAULT-OFF, owner-configured mirror of scan
-     records and encrypted palm banks to his own TSG Biom API.
+     records and encoded palm banks to his own TSG Biom API.
      It is not a data-shape change — sync preferences are
      localStorage prefs and the outbox is one 'syncOutbox' meta
      row — so the v56 migration step is a pure adoption like
@@ -69,8 +69,23 @@
      records begin only when the Scan button is tapped, and
      after a verdict the view re-arms instead of re-scanning.
      The pipelines behind the tap are unchanged. No data-shape
-     change — the v58 migration step is a pure adoption. */
-  var APP_DATA_VERSION = 'v58';
+     change — the v58 migration step is a pure adoption.
+
+     v59 (2026-11-25) is the Phase A step-0 truth pass (team
+     plan, step 0): copy stops calling the palm templates
+     "encrypted" — they are encoded palm codes, never a palm
+     image, and encryption arrives in the security release;
+     the Delete All Data copy states plainly that a device
+     wipe does not erase copies already synced to the server;
+     Palm Loyalty payment points are credited only AFTER a
+     payment actually resolves (the 5-point visit award is
+     unchanged); the enrolment Done buttons and the service-
+     worker registration lose their inline handlers/scripts
+     (CSP prerequisite); and the committed www/ staging is
+     regenerated from these sources with a drift check, so
+     no stale copy of the app remains. No data-shape change
+     — the v59 migration step is a pure adoption. */
+  var APP_DATA_VERSION = 'v59';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -3615,14 +3630,20 @@
           }
           Snd.chime();
           html = '<div class="resultbig ok"><div class="verdict">VERIFIED</div><div class="who">' + esc(person.name) + ' (' + esc(person.id) + ')</div>' + latencyLine + '<div class="meas">Measured: ' + esc(out.measured) + '</div></div>';
-          // Palm Loyalty (live mode, v18): every verified palm scan
-          // earns points - 1 per BDT 10 on a payment, 5 for a visit
-          // scan - credited to the customer's Biom ID record.
+          // Palm Loyalty (live mode, v18): a verified visit scan
+          // earns 5 points, credited here — the verified scan has
+          // already happened, so the award is earned. Payment
+          // points (1 per BDT 10) are different: since v59 they
+          // are credited ONLY after the payment actually resolves,
+          // inside createPay below, from the created transaction's
+          // amount (defect D6: before v59 the payment award ran
+          // here, before the no-wallet and limit refusals, from
+          // the typed amount — points were banked for payments
+          // that never happened).
           var loyaltyLine = '';
-          var pts = amount > 0 ? Math.floor(amount / 10) : 5;
-          if (pts > 0) {
-            person.loyaltyPoints = (person.loyaltyPoints || 0) + pts;
-            loyaltyLine = '<div class="notice" style="margin-top:10px">Palm Loyalty: +' + pts + ' points awarded — balance ' + person.loyaltyPoints + ' points.</div>';
+          if (!(amount > 0)) {
+            person.loyaltyPoints = (person.loyaltyPoints || 0) + 5;
+            loyaltyLine = '<div class="notice" style="margin-top:10px">Palm Loyalty: +5 points awarded — balance ' + person.loyaltyPoints + ' points.</div>';
             DB.put('people', person);
           }
           if (amount > 0) {
@@ -3639,6 +3660,17 @@
                   store: $('termStore').value, amount: amount, method: method, measured: out.measured, status: PAY_STATUS
                 };
                 return DB.put('transactions', tx).then(function () {
+                  // v59 (defect D6): the payment has resolved — only
+                  // now are its Palm Loyalty points credited, from
+                  // the created transaction's amount, never the
+                  // typed field. Refused payments never reach here
+                  // and earn no payment points.
+                  var payPts = Math.floor(tx.amount / 10);
+                  if (payPts > 0) {
+                    person.loyaltyPoints = (person.loyaltyPoints || 0) + payPts;
+                    loyaltyLine = '<div class="notice" style="margin-top:10px">Palm Loyalty: +' + payPts + ' points awarded — balance ' + person.loyaltyPoints + ' points.</div>';
+                    DB.put('people', person);
+                  }
                   $('termResult').innerHTML = html + loyaltyLine +
                     '<div class="receipt"><div class="rhead">Biom Pay — Payment Authorized</div><div class="kv">' +
                     '<b>Amount:</b> BDT ' + tx.amount.toLocaleString() + '<br>' +
@@ -4298,10 +4330,10 @@
         '<b>Daily limit:</b> ' + (lim.daily ? fmtBDT(lim.daily) : 'No limit') + '<br>' +
         '<span style="color:var(--muted)">Limits are chosen at registration. Above a limit, a Biom Pay payment is not created on palm alone — PIN confirmation is required.</span>';
       $('acSecBody').innerHTML =
-        'Palm templates are stored on this device, and matching always happens on this device.<br>' +
+        'Palm templates are stored on this device as encoded palm codes — never a palm image. They are not yet encrypted; encryption arrives in the security release. Matching always happens on this device.<br>' +
         '<b>Scan sync:</b> ' + (Sync.state().on && Sync.state().configured
-          ? 'ON — scan records and encrypted palm codes also sync to your own TSG Biom server (More → Scan Sync), so your scans can be reviewed off-device. The palm image itself is never sent — there is no image in what syncs.'
-          : 'OFF — nothing about your palm leaves this device. If you switch Scan Sync on (More → Scan Sync), scan records and encrypted palm codes sync to your own TSG Biom server; the palm image itself is never sent.') + '<br>' +
+          ? 'ON — scan records and encoded palm codes also sync to your own TSG Biom server (More → Scan Sync), so your scans can be reviewed off-device. The palm image itself is never sent — there is no image in what syncs.'
+          : 'OFF — nothing about your palm leaves this device. If you switch Scan Sync on (More → Scan Sync), scan records and encoded palm codes sync to your own TSG Biom server; the palm image itself is never sent.') + '<br>' +
         '<b>Registered palm:</b> ' + (hand ? (hand === 'left' ? 'Left' : 'Right') + ' hand' : 'hand not recorded') + '<br>' +
         '<b>Money scans:</b> Add Money, Send Money and Biom Pay use the strict money rule — a two-frame confirmation that must clearly beat every other enrolled palm.<br>' +
         '<span style="color:var(--muted)">Erase everything on this device from More → Delete All Data.</span>';
@@ -5033,7 +5065,7 @@
         cancelBtn.disabled = false;
         msg.innerHTML = '<div class="success">All data deleted — ' + wiped.removedTotal +
           (wiped.removedTotal === 1 ? ' stored record' : ' stored records') +
-          ' removed. This device now holds an empty registry. Reloading…</div>';
+          ' removed. This device now holds an empty registry. Copies already synced to your TSG Biom server are not erased by this wipe — server-side removal arrives in the security release. Reloading…</div>';
         toast('All data deleted. The app is empty.');
         setTimeout(function () { location.reload(); }, 1500);
       }).catch(function () {
@@ -5056,6 +5088,25 @@
   }
   $('installBtn').addEventListener('click', install);
   $('installBtn2').addEventListener('click', install);
+
+  /* ---------------- Service worker -------------------------------------
+     v59: registered here instead of an inline <script> in
+     index.html (Seat 1 Spec B3 prerequisite — a future CSP
+     without 'unsafe-inline' must not kill SW registration).
+     Behaviour identical: register sw.js on window load. */
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('sw.js').catch(function (e) { console.warn('SW registration failed', e); });
+    });
+  }
+
+  /* v59: enrolment Done-screen actions, bound here instead of
+     inline onclick attributes (Spec B3 prerequisite — the only
+     inline handlers in the app; behaviour identical). */
+  [['enrollDoneRegistry', 'registry'], ['enrollDoneWallet', 'wallet'], ['enrollDoneTerminal', 'terminal']].forEach(function (pair) {
+    var b = $(pair[0]);
+    if (b) b.addEventListener('click', function () { go(pair[1]); });
+  });
 
   /* ---------------- Boot --------------------------------------------------- */
   window.TSGApp = { go: go };

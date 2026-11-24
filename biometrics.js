@@ -4813,7 +4813,7 @@
      every event that already writes a Logs entry or a Field
      Test record also queues a scan record for that server,
      and every bank change queues a profile upsert — the
-     encrypted templates only, never an image. Sync is
+     encoded templates only, never an image. Sync is
      DEFAULT OFF and, when off or unconfigured, the app is
      v55 exactly: zero network calls, zero behaviour change.
      Sync state does not live in these four stores' row
@@ -4864,7 +4864,25 @@
      so the step is the identity and a v57 store — banks of
      either stamp, hand stamps, wallet, and a queued sync
      outbox row included — opens under v58 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58'];
+  /* v59 (2026-11-25) changes no stored shape at all: it is the
+     Phase A step-0 truth pass. Copy in the app, the API and
+     the dashboard stops calling the palm templates
+     "encrypted" — they are encoded palm codes until the
+     security release lands real envelope encryption — and
+     the Delete All Data copy states that a device wipe does
+     not erase copies already synced to the server. The one
+     behavioural fix is ordering, not shape: Palm Loyalty
+     payment points are credited only after a payment
+     resolves (defect D6); the 5-point visit award is
+     unchanged. The enrolment Done buttons and the service-
+     worker registration lose their inline handlers/scripts
+     (CSP prerequisite), and the committed www/ staging is
+     regenerated from current sources behind a drift check.
+     No threshold, model byte, fusion rule, guard, gate or
+     stored field changes, so the step is the identity and a
+     v58 store — banks, wallet, hand stamps and a queued sync
+     outbox row included — opens under v59 byte-identical. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -4885,6 +4903,7 @@
     'v56': function (snap) { return snap; },
     'v57': function (snap) { return snap; },
     'v58': function (snap) { return snap; },
+    'v59': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {

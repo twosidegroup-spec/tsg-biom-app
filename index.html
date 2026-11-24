@@ -273,7 +273,7 @@
       <p class="sub" style="margin:8px 0 0">The full field-test panel, live metrics and the CSV export live under Transactions / Logs.</p>
     </div>
     <div class="card" style="margin-top:16px"><h2>Scan Sync</h2>
-      <p class="sub" style="margin:0 0 10px">Mirror every scan on this device to your own TSG Biom server, so real scans can be reviewed off-device. Each scan posts a small record (who, which hand, the scores, the result) and each palm-bank change posts the encrypted palm codes — <b>never a palm image</b>. Matching always stays on this device; sync runs in the background and never delays a scan. Off by default.</p>
+      <p class="sub" style="margin:0 0 10px">Mirror every scan on this device to your own TSG Biom server, so real scans can be reviewed off-device. Each scan posts a small record (who, which hand, the scores, the result) and each palm-bank change posts the encoded palm codes — <b>never a palm image</b>. The codes are encoded, not yet encrypted; encryption arrives in the security release. Matching always stays on this device; sync runs in the background and never delays a scan. Off by default.</p>
       <label>Server endpoint URL</label>
       <input id="syncEndpoint" placeholder="https://your-project.vercel.app" autocomplete="off" autocapitalize="off" spellcheck="false">
       <label style="margin-top:10px">Device key</label>
@@ -289,7 +289,7 @@
       </div>
     </div>
     <div class="card" style="margin-top:16px"><h2>Delete all data</h2>
-      <p class="sub" style="margin:0 0 10px">Erase everything stored on this device — all registered people, palm templates, wallets, balances, statements, linked accounts, transactions and logs — and return the app to an empty first-run state. App updates never do this; this button is the only erase, and only when you choose it. <b>It cannot be undone</b> — there is no copy anywhere else.</p>
+      <p class="sub" style="margin:0 0 10px">Erase everything stored on this device — all registered people, palm templates, wallets, balances, statements, linked accounts, transactions and logs — and return the app to an empty first-run state. App updates never do this; this button is the only erase, and only when you choose it. <b>It cannot be undone.</b> This wipe erases this device only — copies already synced to your TSG Biom server stay on the server; server-side removal arrives in the security release.</p>
       <button class="btn danger" id="wipeDataBtn">Delete All Data</button>
       <div id="wipeConfirm" class="hidden" style="margin-top:12px">
         <div class="error"><b>This will permanently delete all data on this device.</b><br><span id="wipeCounts"></span><br>It cannot be undone.</div>
@@ -374,9 +374,9 @@
     <div id="enroll-done" class="card hidden">
       <h2>Enrollment complete</h2>
       <div id="enrollDoneBody" class="kv"></div>
-      <button class="btn" onclick="TSGApp.go('registry')">Open People Registry</button>
-      <button class="btn primary" onclick="TSGApp.go('wallet')">Open My Wallet</button>
-      <button class="btn" onclick="TSGApp.go('terminal')">Verify This Person</button>
+      <button class="btn" id="enrollDoneRegistry">Open People Registry</button>
+      <button class="btn primary" id="enrollDoneWallet">Open My Wallet</button>
+      <button class="btn" id="enrollDoneTerminal">Verify This Person</button>
     </div>
   </section>
 
@@ -547,12 +547,5 @@
 <div id="toast" class="hidden" style="position:fixed;left:50%;transform:translateX(-50%);bottom:22px;background:var(--surface2);border:1px solid var(--accent);color:var(--text);padding:12px 18px;border-radius:12px;z-index:99;font-size:14px;max-width:92vw"></div>
 
 <script src="app.js"></script>
-<script>
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', function () {
-    navigator.serviceWorker.register('sw.js').catch(function (e) { console.warn('SW registration failed', e); });
-  });
-}
-</script>
 </body>
 </html>

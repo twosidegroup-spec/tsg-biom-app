@@ -11,7 +11,7 @@ const out = path.join(root, "www");
 const EXT = new Set([".html", ".js", ".css", ".json", ".png", ".jpg",
                      ".jpeg", ".webp", ".svg", ".ico"]);
 const SKIP = new Set(["package.json", "package-lock.json",
-                      "capacitor.config.json", "stage-www.js", "vercel.json"]);
+                      "capacitor.config.json", "stage-www.js", "check-www.js", "vercel.json"]);
 
 fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(out, { recursive: true });
@@ -24,3 +24,8 @@ for (const name of fs.readdirSync(root)) {
   n++;
 }
 console.log("staged " + n + " files into www/");
+
+/* v59 (Spec B5): staging is not done until the staged copy is
+   proven identical to the sources — a drift here once shipped
+   a two-versions-stale app inside the native shell. */
+require("./check-www.js");

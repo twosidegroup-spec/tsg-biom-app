@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TSG Biom — Palmprint for Stores</title>
+<meta name="description" content="TSG Biom by TwoSide Group: hardware-free palmprint enrollment and verification through a phone or tablet camera, with bKash / Nagad Biom Pay for pharmacies, retail, supermarkets and malls.">
+<meta name="theme-color" content="#075e55">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="stylesheet" href="styles.css">
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"></script>
+<script src="biometrics.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <img src="icons/icon-192.png" alt="TSG Biom icon">
+    <div>TSG BIOM<small>TWOSIDE GROUP</small></div>
+  </div>
+  <div class="spacer"></div>
+  <button class="btn small" id="installBtn">Install App</button>
+</header>
+
+<nav class="nav" id="mainNav">
+  <button data-page="wallet" class="active"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10.5h18"/><circle cx="16.6" cy="15" r="1.1"/></svg>Wallet</button>
+  <button data-page="dashboard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>Home</button>
+  <button data-page="enroll"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="8" r="3.5"/><path d="M4 20c.6-3.2 3-5 6-5s5.4 1.8 6 5"/><path d="M18.5 5v6M15.5 8h6"/></svg>regBIOM</button>
+  <button data-page="terminal"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M4 12h16"/></svg>takeBIOM</button>
+  <button data-page="registry"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5c.5-3 2.7-4.6 5.5-4.6s5 1.6 5.5 4.6"/><path d="M15.5 5.8a3.2 3.2 0 0 1 0 5.9M17.8 15.2c1.6.7 2.5 2 2.8 4"/></svg>People</button>
+  <button data-page="more"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>More</button>
+</nav>
+
+<main>
+  <!-- WALLET (DEMO) -->
+  <section class="page active" id="page-wallet">
+    <h1>My Biom Wallet</h1>
+    <p class="sub">Your Biom ID is your wallet account, and your palm is the key. Balances here are <b>demo money inside this app — not real funds</b>. Real bKash / Nagad settlement stays biometric-authorised pending the partner API, exactly as the terminal states.</p>
+
+    <div id="walletLocked" class="card">
+      <h2>Open your wallet</h2>
+      <p class="sub">Scan your palm to open your wallet. A palm that is not registered on this device opens nothing.</p>
+      <button class="btn primary big" id="walletOpenScan">Scan Your Palm to Open Your Wallet</button>
+      <h2 style="margin-top:22px">Registered on this device</h2>
+      <div id="walletProfiles" class="profilecards"></div>
+      <p class="sub" style="margin-top:16px">No palm registered yet? <button class="btn small" data-go="enroll">Register a palm</button> — registration issues your Biom ID and creates your wallet at balance 0.</p>
+    </div>
+
+    <div id="walletHome" class="hidden">
+      <div class="balcard">
+        <div class="balcard-top">
+          <span class="balcard-brand">regBIOM</span>
+          <button class="avatarbtn" id="wHomeAvatar" aria-label="Open My Account" title="My Account">--</button>
+        </div>
+        <div class="ballabel">Available Balance</div>
+        <div class="balrow">
+          <div class="balnum" id="wHomeBalance">BDT 0</div>
+          <button class="eyebtn" id="wBalEye" aria-label="Hide or show the balance" title="Hide / show balance"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/></svg></button>
+        </div>
+        <div class="balholder" id="wHomeName"></div>
+        <div class="balid">Biom ID: <span id="wHomeId"></span></div>
+        <div class="balnote">Demo balance · Demo money — not real funds</div>
+      </div>
+      <div id="wHomeMsg" style="margin-top:12px"></div>
+      <div class="qa-grid">
+        <button class="qa-tile" id="wAddOpen"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M12 8.4v7.2M8.4 12h7.2"/></svg><span>Add Money</span></button>
+        <button class="qa-tile" id="wSendOpen"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M9.2 14.8 14.8 9.2M10.2 9.2h4.6v4.6"/></svg><span>Send Money</span></button>
+        <button class="qa-tile" id="wQuickScan"><svg viewBox="0 0 24 24" aria-hidden="true" class="palmicon"><path d="M7 11.8V6.2a1.5 1.5 0 0 1 3 0v4.3m0-5.8a1.5 1.5 0 0 1 3 0v5.3m0-4.8a1.5 1.5 0 0 1 3 0v5.8m0-3.6a1.5 1.5 0 0 1 3 0v4.7c0 4.3-3 6.9-6.9 6.9-3.4 0-5.7-1.9-7.1-5L3.7 12c-.4-.9.7-1.8 1.5-1.2L7 12.4"/></svg><span>Scan Palm</span></button>
+        <button class="qa-tile" id="wQuickHistory"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M12 7.4V12l3.1 2"/></svg><span>History</span></button>
+      </div>
+      <button class="btn" id="wCloseWallet" style="margin-top:12px">Close Wallet / Switch User</button>
+      <div class="card seccard">
+        <h2>Linked Wallets</h2>
+        <div id="wHomeAccounts"></div>
+      </div>
+      <div class="card seccard" id="wActivityCard">
+        <h2>Recent Activity</h2>
+        <div id="wHomeStatement"></div>
+      </div>
+    </div>
+
+    <div id="walletAdd" class="card hidden">
+      <h2>Add Money (demo)</h2>
+      <p class="sub">Demo money — not real funds. Nothing here contacts a real account or moves real money. The amount lands in your wallet only after <b>your own palm</b> verifies.</p>
+      <p class="balanceline">Current balance: <b id="wAddBalance">BDT 0</b></p>
+      <label>Amount (BDT)</label>
+      <input id="wAddAmount" type="number" min="1" placeholder="e.g. 500">
+      <div class="chips" data-chips="wAddAmount">
+        <button type="button" class="chip" data-amt="100">BDT 100</button>
+        <button type="button" class="chip" data-amt="500">BDT 500</button>
+        <button type="button" class="chip" data-amt="1000">BDT 1,000</button>
+        <button type="button" class="chip" data-amt="5000">BDT 5,000</button>
+      </div>
+      <label>From funding account</label>
+      <select id="wAddAccountSelect"></select>
+      <h2 style="margin-top:20px">Link a new funding account</h2>
+      <div class="row">
+        <div><label>Source type</label>
+          <select id="wAddType"><option>bKash</option><option>Nagad</option><option>Bank</option><option>Card</option></select></div>
+        <div><label>Account name / number — a label you choose</label><input id="wAddLabel" placeholder="e.g. My bKash — 01933…"></div>
+      </div>
+      <button class="btn" id="wLinkAccount" style="margin-top:12px">Link This Account</button>
+      <div class="feerow"><span>Fee</span><b>BDT 0</b></div>
+      <p class="sub" style="margin:0">Demo money moves inside this app only — no fee is charged and no real account is contacted.</p>
+      <div id="wAddMsg" style="margin-top:12px"></div>
+      <div class="row" style="margin-top:14px">
+        <div><button class="btn" id="wAddBack">Back</button></div>
+        <div><button class="btn primary" id="wAddScan">Scan Palm to Add</button></div>
+      </div>
+    </div>
+
+    <div id="walletSend" class="card hidden">
+      <h2>Send Money (demo)</h2>
+      <p class="sub">Demo money between wallets on this device. The receiver is found by <b>their palm</b>: if the scanned palm matches no registered Biom ID, no money can be sent — even if you have an account and a balance. Your own palm authorises the send.</p>
+      <p class="balanceline">Your balance: <b id="wSendBalance">BDT 0</b></p>
+      <label>Amount (BDT)</label>
+      <input id="wSendAmount" type="number" min="1" placeholder="e.g. 200">
+      <div class="chips" data-chips="wSendAmount">
+        <button type="button" class="chip" data-amt="100">BDT 100</button>
+        <button type="button" class="chip" data-amt="500">BDT 500</button>
+        <button type="button" class="chip" data-amt="1000">BDT 1,000</button>
+        <button type="button" class="chip" data-amt="5000">BDT 5,000</button>
+      </div>
+      <div id="wSendMsg" style="margin-top:12px"></div>
+      <button class="btn primary big" id="wSendScanReceiver" style="margin-top:12px">Scan the Receiver's Palm</button>
+      <div id="wSendConfirm" class="hidden" style="margin-top:14px"></div>
+      <button class="btn" id="wSendBack" style="margin-top:12px">Back</button>
+    </div>
+
+    <div id="walletScanCard" class="card hidden">
+      <h2 id="wScanTitle">Palm scan</h2>
+      <p class="sub" id="wScanPrompt"></p>
+      <div class="camtoggle" data-cam-toggle="walletAct" role="group" aria-label="Wallet scan camera choice">
+        <button type="button" data-facing="user" class="on">Front camera</button>
+        <button type="button" data-facing="environment">Back camera</button>
+      </div>
+      <div class="camtoggle flashtoggle" data-flash-toggle="walletAct" role="group" aria-label="Wallet scan flash choice">
+        <button type="button" data-flash="off" class="on">Flash Off</button>
+        <button type="button" data-flash="on">Flash On</button>
+      </div>
+      <p class="camnote flashnote" data-flash-note="walletAct"></p>
+      <div class="scanpill" id="wScanPill"><span class="scanpill-dot"></span><span id="wScanPillText">Ready</span></div>
+      <div class="camwrap"><video id="wScanVideo" autoplay playsinline muted></video>
+        <div class="corners" aria-hidden="true"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i></div>
+        <div class="camstatus" id="wScanStatus">Camera not started.</div></div>
+      <div class="scaninds">
+        <div class="scanind" id="wIndHand"><span class="dot"></span><span class="indtxt">Hand detected</span></div>
+        <div class="scanind" id="wIndLight"><span class="dot"></span><span class="indtxt">Good light</span></div>
+        <div class="scanind" id="wIndSteady"><span class="dot"></span><span class="indtxt">Holding steady</span></div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <div><button class="btn" id="wScanStart">Start Camera</button></div>
+        <div><button class="btn primary" id="wScanRun" disabled>Scan</button></div>
+      </div>
+      <div id="wScanMsg" style="margin-top:12px"></div>
+      <div id="wScanDiag"></div>
+      <button class="btn" id="wScanCancel" style="margin-top:12px">Cancel</button>
+    </div>
+  </section>
+
+  <!-- MY ACCOUNT (v52) -->
+  <section class="page" id="page-account">
+    <div class="acctbar">
+      <button class="backbtn" id="acBack" aria-label="Back to wallet"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></button>
+      <h1>My Account</h1>
+    </div>
+
+    <div id="accountLocked" class="card">
+      <h2>No wallet is open</h2>
+      <p class="sub" style="margin:0">Your account details live behind your palm. Open your wallet first — the scan is the key.</p>
+      <button class="btn primary big" id="acOpenWallet" style="margin-top:14px">Go to My Wallet</button>
+    </div>
+
+    <div id="accountOpen" class="hidden">
+      <div class="card accthead">
+        <div class="avatarbig" id="acAvatar">--</div>
+        <div class="accthead-txt">
+          <div class="acctname" id="acName"></div>
+          <div class="acctphone" id="acPhone"></div>
+          <div id="acVerified" style="margin-top:6px"></div>
+        </div>
+      </div>
+
+      <div class="card seccard palmcard">
+        <div class="palmcard-head">
+          <span class="palmchip"><svg viewBox="0 0 24 24" aria-hidden="true" class="palmicon"><path d="M7 11.8V6.2a1.5 1.5 0 0 1 3 0v4.3m0-5.8a1.5 1.5 0 0 1 3 0v5.3m0-4.8a1.5 1.5 0 0 1 3 0v5.8m0-3.6a1.5 1.5 0 0 1 3 0v4.7c0 4.3-3 6.9-6.9 6.9-3.4 0-5.7-1.9-7.1-5L3.7 12c-.4-.9.7-1.8 1.5-1.2L7 12.4"/></svg></span>
+          <h2 style="margin:0">My Palm Identity</h2>
+          <span id="acPalmStatus" style="margin-left:auto"></span>
+        </div>
+        <div class="kv" style="margin-top:12px">
+          <b>Biom ID:</b> <span id="acBiomId"></span><br>
+          <b>Registered palm:</b> <span id="acPalmHand"></span>
+        </div>
+        <div id="acPalmActions" class="row" style="margin-top:14px"></div>
+      </div>
+
+      <div class="card seccard">
+        <h2>Account Settings</h2>
+        <div class="setlist">
+          <button class="setrow" data-acct-toggle="info"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.6"/><path d="M5 20c.7-3.4 3.4-5.2 7-5.2s6.3 1.8 7 5.2"/></svg></span><span class="setlbl">Personal Information</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
+          <div class="setdetail hidden" id="acDetail-info"><div class="kv" id="acInfoBody"></div></div>
+          <button class="setrow" id="acRowLinked"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10.5h18"/><circle cx="16.6" cy="15" r="1.1"/></svg></span><span class="setlbl">Linked Wallets</span><span class="setval" id="acLinkedVal"></span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
+          <button class="setrow" data-acct-toggle="limits"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 14a8 8 0 1 1 16 0"/><path d="M12 14l4-4"/><path d="M3 19h18"/></svg></span><span class="setlbl">Daily Limit</span><span class="setval" id="acLimitsVal"></span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
+          <div class="setdetail hidden" id="acDetail-limits"><div class="kv" id="acLimitsBody"></div></div>
+          <button class="setrow" data-acct-toggle="security"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 2.8v5.4c0 4.6-3 8-7 9.8-4-1.8-7-5.2-7-9.8V5.8Z"/><path d="M9.2 12l2 2 3.6-3.8"/></svg></span><span class="setlbl">Security</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
+          <div class="setdetail hidden" id="acDetail-security"><div class="kv" id="acSecBody"></div></div>
+          <button class="setrow" data-acct-toggle="notif"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 10a6 6 0 0 1 12 0c0 4 1.4 5.6 2.4 6.6H3.6C4.6 15.6 6 14 6 10Z"/><path d="M10 20a2.2 2.2 0 0 0 4 0"/></svg></span><span class="setlbl">Notifications</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
+          <div class="setdetail hidden" id="acDetail-notif"><p class="sub" style="margin:0">TSG Biom sends no notifications. Scan results are announced on screen and by voice on this device. If Scan Sync is on (More → Scan Sync), the scan record is also posted to your own TSG Biom server in the background.</p></div>
+          <button class="setrow" data-acct-toggle="lang"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M3.4 12h17.2M12 3.4c2.4 2.3 3.6 5.2 3.6 8.6s-1.2 6.3-3.6 8.6c-2.4-2.3-3.6-5.2-3.6-8.6s1.2-6.3 3.6-8.6Z"/></svg></span><span class="setlbl">Language</span><span class="setval">English</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
+          <div class="setdetail hidden" id="acDetail-lang"><p class="sub" style="margin:0">The app interface is English. Bangla is not available in this build.</p></div>
+          <button class="setrow" data-go="more"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8a7 7 0 0 1 12 3M17 16a7 7 0 0 1-12-3"/><path d="M19 4v5h-5M5 20v-5h5"/></svg></span><span class="setlbl">Scan Sync</span><span class="setval">More</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
+          <button class="setrow" id="acRowHelp"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M9.6 9.4A2.5 2.5 0 1 1 12 12.4V14"/><circle cx="12" cy="17" r=".4"/></svg></span><span class="setlbl">Help and Support</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
+          <button class="setrow danger" id="acLogout"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"/><path d="M10 8l-4 4 4 4M6 12h11"/></svg></span><span class="setlbl">Log Out</span></button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- DESK (HOME) -->
+  <section class="page" id="page-dashboard">
+    <h1>TSG Biom Desk</h1>
+    <p class="sub">Registration desk and payment counter for this store. Everything is stored <b>on this device</b> — enroll and verify on the same device.</p>
+    <div class="desk-actions">
+      <button class="bigaction register" data-go="enroll">
+        <span class="ba-title">Register Person</span>
+        <span class="ba-sub">New customer or staff — one palm scan is all it takes</span>
+      </button>
+      <button class="bigaction pay" data-go="terminal">
+        <span class="ba-title">Verify &amp; Pay</span>
+        <span class="ba-sub">Scan to confirm identity, or take a Biom Pay payment (bKash / Nagad)</span>
+      </button>
+    </div>
+    <div class="statsstrip">
+      <div class="sstat"><div class="num" id="statPeople">0</div><div class="lbl">People</div></div>
+      <div class="sstat"><div class="num" id="statVerifs">0</div><div class="lbl">Scans today</div></div>
+      <div class="sstat"><div class="num" id="statRate">—</div><div class="lbl">Verified rate</div></div>
+      <div class="sstat"><div class="num" id="statWallets">0</div><div class="lbl">Wallets linked</div></div>
+      <div class="sstat"><div class="num" id="statVolume">BDT 0</div><div class="lbl">Biom Pay today</div></div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h2>Live modes</h2>
+      <p style="margin:0 0 8px"><span class="badge ok">Palm Loyalty — LIVE</span> <span class="sub">Verified palm scans earn loyalty points automatically (1 point per BDT 10 paid, 5 points for a visit scan).</span></p>
+      <p style="margin:0"><span class="badge warn">Palm Pay — Biometric Authorised — Pending Provider Settlement</span> <span class="sub">Payments are authorised by the biometric scan and recorded on this device; money moves only when the official bKash / Nagad merchant connection is live.</span></p>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h2>Recent activity</h2>
+      <div id="liveFeed" class="kv">No activity yet on this device.</div>
+    </div>
+    <div class="desklinks">
+      <button class="btn" data-go="wallet">My Wallet</button>
+      <button class="btn" data-go="registry">People Registry</button>
+      <button class="btn" data-go="logs">Transactions / Logs</button>
+      <button class="btn" data-go="stores">Store Modes</button>
+      <button class="btn" data-go="more">More</button>
+    </div>
+  </section>
+
+  <!-- MORE -->
+  <section class="page" id="page-more">
+    <h1>More</h1>
+    <p class="sub">Everything else in TSG Biom, one tap away.</p>
+    <div class="morelinks">
+      <button class="morelink" data-go="account"><span>My Account</span><small>Your palm identity, linked wallets, limits and settings</small></button>
+      <button class="morelink" data-go="stores"><span>Store Modes</span><small>CVS / Pharmacy, Supermarket, Retail, Mall terminal setups</small></button>
+      <button class="morelink" data-go="logs"><span>Transactions / Logs</span><small>Every scan result and Biom Pay record on this device</small></button>
+      <button class="morelink" data-go="partner"><span>Partner Integration</span><small>bKash / Nagad merchant connection status</small></button>
+      <button class="morelink" data-go="registry"><span>People Registry</span><small>Everyone enrolled on this device</small></button>
+    </div>
+    <div class="card" style="margin-top:16px"><h2>Field Test Mode</h2>
+      <label class="check"><input type="checkbox" id="fieldModeToggle2"> Field Test Mode — record GAR / FAR / spoof metrics for the 20-person, 200-scan validation</label>
+      <label class="check"><input type="checkbox" id="fieldExhaustiveToggle2"> Exhaustive shift logging — evaluate all five shifts per comparison and log them in the scan record</label>
+      <p class="sub" style="margin:8px 0 0">The full field-test panel, live metrics and the CSV export live under Transactions / Logs.</p>
+    </div>
+    <div class="card" style="margin-top:16px"><h2>Scan Sync</h2>
+      <p class="sub" style="margin:0 0 10px">Mirror every scan on this device to your own TSG Biom server, so real scans can be reviewed off-device. Each scan posts a small record (who, which hand, the scores, the result) and each palm-bank change posts the encoded palm codes — <b>never a palm image</b>. The codes are encoded, not yet encrypted; encryption arrives in the security release. Matching always stays on this device; sync runs in the background and never delays a scan. Off by default.</p>
+      <label>Server endpoint URL</label>
+      <input id="syncEndpoint" placeholder="https://your-project.vercel.app" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <label style="margin-top:10px">Device key</label>
+      <input id="syncDeviceKey" type="password" placeholder="The DEVICE_KEY you set on the server" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <p class="sub" style="margin:6px 0 0">The key is stored only in this device's settings — it is never synced and never written to a log.</p>
+      <label style="margin-top:10px">Device label</label>
+      <input id="syncLabel" placeholder="Chairman phone" autocomplete="off" spellcheck="false">
+      <label class="check" style="margin-top:12px"><input type="checkbox" id="syncOn"> Sync ON — post scan records and palm banks to the server above</label>
+      <div class="kv" style="margin-top:10px"><b>Status:</b> <span id="syncStatus">Off</span></div>
+      <div class="row" style="margin-top:10px">
+        <div><button class="btn primary" id="syncSaveBtn">Save settings</button></div>
+        <div><button class="btn" id="syncNowBtn">Sync now</button></div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px"><h2>Delete all data</h2>
+      <p class="sub" style="margin:0 0 10px">Erase everything stored on this device — all registered people, palm templates, wallets, balances, statements, linked accounts, transactions and logs — and return the app to an empty first-run state. App updates never do this; this button is the only erase, and only when you choose it. <b>It cannot be undone.</b> This wipe erases this device only — copies already synced to your TSG Biom server stay on the server; server-side removal arrives in the security release.</p>
+      <button class="btn danger" id="wipeDataBtn">Delete All Data</button>
+      <div id="wipeConfirm" class="hidden" style="margin-top:12px">
+        <div class="error"><b>This will permanently delete all data on this device.</b><br><span id="wipeCounts"></span><br>It cannot be undone.</div>
+        <label style="margin-top:12px">To confirm, type DELETE in the box:</label>
+        <input id="wipeConfirmInput" placeholder="DELETE" autocomplete="off" autocapitalize="characters">
+        <div class="row" style="margin-top:10px">
+          <div><button class="btn danger solid" id="wipeConfirmBtn" disabled>Delete everything</button></div>
+          <div><button class="btn" id="wipeCancelBtn">Cancel</button></div>
+        </div>
+      </div>
+      <div id="wipeMsg" style="margin-top:10px"></div>
+    </div>
+    <div class="card" style="margin-top:16px"><h2>How the real scanning works</h2>
+      <p class="sub" style="margin:0">
+        TSG Biom is palm-only. MediaPipe landmarks locate the palm, a 96&times;96 palm patch is cut out and aligned from the wrist and knuckle anchors, and an EDCC palmprint encoder reads the palm's own print pattern — the method family used by real palmprint systems.
+        Enrolment runs one 900&nbsp;ms burst and banks the three sharpest time-spaced templates, bit-packed. At verification the live patch is packed the same way and a five-shift popcount matcher scores it against the enrolled templates — the best match decides.
+        Nothing here is simulated — if no hand or no clear print is seen, the scan fails openly.
+        Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.
+      </p>
+    </div>
+  </section>
+
+  <!-- ENROLL -->
+  <section class="page" id="page-enroll">
+    <h1>regBIOM — Customer Registration</h1>
+    <p class="sub">One registration creates one TSG Biom ID, from one palm enrolment. Wallet linking is optional.</p>
+    <div class="progresslabel" id="enrollProgress">Step 1 of 3 — Details + Wallet</div>
+    <div class="progress" style="margin:10px 0 16px"><i id="enrollProgressBar" style="width:33%"></i></div>
+
+    <div id="enroll-details" class="card">
+      <div class="row">
+        <div><label>Full name</label><input id="enName" placeholder="e.g. Rahim Uddin"></div>
+        <div><label>Phone</label><input id="enPhone" placeholder="01XXXXXXXXX" inputmode="tel"></div>
+      </div>
+      <div class="row">
+        <div><label>Person type</label>
+          <select id="enType"><option>Customer</option><option>Staff</option><option>VIP</option><option>Visitor</option></select></div>
+        <div><label>Home store</label>
+          <select id="enStore"></select></div>
+      </div>
+      <h2 style="margin-top:18px">Linked wallet — Biom Pay</h2>
+      <div class="row">
+        <div><label>Wallet provider</label>
+          <select id="enWalletProvider"><option value="">None</option><option>bKash</option><option>Nagad</option></select></div>
+        <div><label>Wallet number</label><input id="enWalletNumber" placeholder="01XXXXXXXXX" inputmode="tel"></div>
+      </div>
+      <p class="sub" style="margin-top:10px">The wallet number is normalised (+880 / 880 become 01…) and only ever shown masked, e.g. 01933-***706.</p>
+      <h2 style="margin-top:18px">Biometric-only payment limits — optional</h2>
+      <div class="row">
+        <div><label>Per-transaction limit (BDT)</label><input id="enLimitPerTx" type="number" min="0" placeholder="e.g. 1000 — blank = no limit"></div>
+        <div><label>Daily limit (BDT)</label><input id="enLimitDaily" type="number" min="0" placeholder="e.g. 5000 — blank = no limit"></div>
+      </div>
+      <p class="sub" style="margin-top:10px">Above a limit, a Palm Pay payment is not created on palm alone — PIN confirmation is required. Leave blank for no limit.</p>
+      <div id="enrollDetailsError"></div>
+      <button class="btn primary" id="enrollDetailsNext">Continue to Palm Scan</button>
+    </div>
+
+    <div id="enroll-palm" class="card hidden">
+      <h2>Step 2 — Palm scan (real palmprint)</h2>
+      <p class="sub">The camera opens when this step opens — nothing is captured until you tap <b>Scan Palm</b>. Position your open hand in the frame, anywhere in view, at a natural distance — there is nothing to line up: the app finds the hand by itself. On the tap, the app watches live, and the moment a sharp open palm is seen, a single 900&nbsp;ms capture burst runs, and the app banks the three sharpest time-spaced templates from it. Liveness is checked across the burst: a real hand drifts naturally by a tiny amount and its landmarks carry real depth variance — a photo or a screen cannot, so a single photo is never accepted. A palm pressed right against the lens cannot be read, so keep a natural distance. The palm square is cut out and aligned from the hand landmarks, and an <b>EDCC palmprint encoder</b> reads the palm's own print pattern — the templates are stored bit-packed on this device. Labelled honestly: this is <b>Palm — Palmprint</b>, the print-pattern method real palmprint systems use. Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.</p>
+      <div class="camtoggle" data-cam-toggle="enrollPalm" role="group" aria-label="Palm camera choice">
+        <button type="button" data-facing="user" class="on">Front camera</button>
+        <button type="button" data-facing="environment">Back camera</button>
+      </div>
+      <p class="camnote">Front camera = self-scan. Back camera = a cashier scans a customer across the counter. This choice applies to this step only.</p>
+      <div class="camtoggle flashtoggle" data-flash-toggle="enrollPalm" role="group" aria-label="Palm flash choice">
+        <button type="button" data-flash="off" class="on">Flash Off</button>
+        <button type="button" data-flash="on">Flash On</button>
+      </div>
+      <p class="camnote flashnote" data-flash-note="enrollPalm"></p>
+      <div class="camwrap"><video id="palmVideo" autoplay playsinline muted></video>
+        <div class="corners" aria-hidden="true"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i></div>
+        <div class="camstatus" id="palmStatus">Camera not started.</div>
+        <div id="palmBurstRing" class="burstring hidden"><span>0%</span></div></div>
+      <div class="row" style="margin-top:12px">
+        <div><button class="btn" id="palmStart">Start Camera</button></div>
+        <div><button class="btn primary" id="palmCapture" disabled>Scan Palm</button></div>
+      </div>
+      <div id="palmMsg" style="margin-top:12px"></div>
+    </div>
+
+    <div id="enroll-done" class="card hidden">
+      <h2>Enrollment complete</h2>
+      <div id="enrollDoneBody" class="kv"></div>
+      <button class="btn" id="enrollDoneRegistry">Open People Registry</button>
+      <button class="btn primary" id="enrollDoneWallet">Open My Wallet</button>
+      <button class="btn" id="enrollDoneTerminal">Verify This Person</button>
+    </div>
+  </section>
+
+  <!-- TERMINAL -->
+  <section class="page" id="page-terminal">
+    <h1>takeBIOM — Merchant Terminal</h1>
+    <p class="sub">Find the person — the camera opens and the terminal arms. The customer positions an open palm in the frame, then tap SCAN: nothing is scanned until the tap. After each verdict, Next Customer resets and re-arms the terminal for the next person. Add an amount only when this is a payment. Palm Loyalty is LIVE; Palm Pay is Biometric Authorised — Pending Provider Settlement.</p>
+    <div class="card">
+      <label>Find person</label>
+      <input id="termSearch" placeholder="Type a name, Biom ID or phone number" style="margin-bottom:10px">
+      <div class="row">
+        <div><label>Person</label><select id="termPerson" size="4" class="personlist"></select></div>
+      </div>
+      <div class="row">
+        <div><label>Store</label><select id="termStore"></select></div>
+        <div><label>Scan with</label>
+          <p class="scanwith">Palm — Palmprint</p>
+          <p class="camnote" id="termMethodNote"></p></div>
+      </div>
+      <div class="row">
+        <div><label>Payment amount (BDT) — only for Biom Pay, leave empty for a plain identity check</label><input id="termAmount" type="number" min="1" placeholder="e.g. 500"></div>
+      </div>
+      <div class="row hidden" id="fieldRow">
+        <div><label>Field test — attempt type for this scan</label>
+          <select id="fieldAttemptTag"><option value="real_hand">Genuine — real hand</option><option value="photo_spoof">Photo spoof attempt</option><option value="video_replay">Video replay attempt</option></select>
+          <p class="camnote">Field Test Mode is ON: this scan will be recorded in the field-test metrics and CSV.</p>
+          <label class="check"><input type="checkbox" id="fieldExhaustiveToggle"> Exhaustive shift logging — evaluate all five shifts per comparison and log them in the scan record</label></div>
+      </div>
+      <div class="camtoggle" data-cam-toggle="terminal" role="group" aria-label="Terminal camera choice">
+        <button type="button" data-facing="user" class="on">Front camera</button>
+        <button type="button" data-facing="environment">Back camera</button>
+      </div>
+      <p class="camnote">Front camera = self-scan. Back camera = a cashier scans a customer across the counter. This choice applies to the terminal.</p>
+      <div class="camtoggle flashtoggle" data-flash-toggle="terminal" role="group" aria-label="Terminal flash choice">
+        <button type="button" data-flash="off" class="on">Flash Off</button>
+        <button type="button" data-flash="on">Flash On</button>
+      </div>
+      <p class="camnote flashnote" data-flash-note="terminal"></p>
+      <div class="camwrap" style="margin-top:14px"><video id="termVideo" autoplay playsinline muted></video>
+        <div class="corners" aria-hidden="true"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i></div>
+        <div class="camstatus" id="termStatus">Camera not started.</div></div>
+      <div class="row" style="margin-top:12px">
+        <div><button class="btn big" id="termStart">Start Camera</button></div>
+      </div>
+      <button class="btn primary bigscan" id="termScan" disabled>SCAN</button>
+      <button class="btn bigscan hidden" id="termNext" style="margin-top:10px">Next Customer</button>
+      <div id="termResult" style="margin-top:14px"></div>
+    </div>
+  </section>
+
+  <!-- STORE MODES -->
+  <section class="page" id="page-stores">
+    <h1>Store Modes</h1>
+    <p class="sub">The same Biom ID and the same real scans, shaped for each kind of store. Launch opens the terminal with that store selected.</p>
+    <div class="modegrid">
+      <div class="card modecard"><h3>CVS / Pharmacy</h3>
+        <p>Prescription pickup identity check, age verification for restricted items, loyalty at the counter, and Biom Pay against a linked bKash / Nagad wallet.</p>
+        <button class="btn primary" data-launch="GreenCare Pharmacy (CVS)">Launch Terminal</button></div>
+      <div class="card modecard"><h3>Supermarket</h3>
+        <p>Biom Pay checkout — the customer pays with a palm scan, no card, phone or cash in hand. Wallet: bKash / Nagad.</p>
+        <button class="btn primary" data-launch="FreshMart Supermarket">Launch Terminal</button></div>
+      <div class="card modecard"><h3>Retail Store</h3>
+        <p>Loyalty identification at till, staff attendance clock-in by palm, and Biom Pay checkout with bKash / Nagad.</p>
+        <button class="btn primary" data-launch="UrbanStyle Retail">Launch Terminal</button></div>
+      <div class="card modecard"><h3>Mall</h3>
+        <p>Entry verification, VIP lounge access, parking charges and visitor flow — one Biom ID across the whole mall, with Biom Pay where a charge applies.</p>
+        <button class="btn primary" data-launch="City Centre Mall">Launch Terminal</button></div>
+    </div>
+  </section>
+
+  <!-- REGISTRY -->
+  <section class="page" id="page-registry">
+    <h1>People Registry</h1>
+    <p class="sub">Everyone enrolled on this device. Wallet numbers are masked.</p>
+    <input id="registrySearch" placeholder="Search by name, Biom ID or phone">
+    <div class="card" style="margin-top:14px;overflow-x:auto"><table>
+      <thead><tr><th>Person</th><th>Biom ID</th><th>Type / Store</th><th>Palm</th><th>Wallet</th><th></th></tr></thead>
+      <tbody id="registryBody"></tbody>
+    </table></div>
+  </section>
+
+  <!-- ADD ANGLES (v43) -->
+  <section class="page" id="page-topup">
+    <h1 id="topTitle">Add Angles — widen a palm profile</h1>
+    <p class="sub" id="topSub">Runs the same burst capture as enrolment and adds diverse sharp templates to this person's stored profile — or re-banks the palm in the current format when it was enrolled in the previous one. Their Biom ID, wallet, balance, statement, linked accounts and loyalty points do not change — only the palm profile gains templates.</p>
+    <div class="card">
+      <div id="topWho" class="kv"></div>
+      <div class="camtoggle" data-cam-toggle="topup" role="group" aria-label="Add-angles camera choice">
+        <button type="button" data-facing="user" class="on">Front camera</button>
+        <button type="button" data-facing="environment">Back camera</button>
+      </div>
+      <p class="camnote">Front camera = self-scan. Back camera = a cashier scans the customer across the counter. This choice applies to this capture only.</p>
+      <div class="camtoggle flashtoggle" data-flash-toggle="topup" role="group" aria-label="Add-angles flash choice">
+        <button type="button" data-flash="off" class="on">Flash Off</button>
+        <button type="button" data-flash="on">Flash On</button>
+      </div>
+      <p class="camnote flashnote" data-flash-note="topup"></p>
+      <div class="camwrap"><video id="topVideo" autoplay playsinline muted></video>
+        <div class="corners" aria-hidden="true"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i></div>
+        <div class="camstatus" id="topStatus">Camera not started.</div></div>
+      <div class="row" style="margin-top:12px">
+        <div><button class="btn" id="topStart">Start Camera</button></div>
+        <div><button class="btn primary" id="topCapture" disabled>Run Guided Capture</button></div>
+      </div>
+      <div id="topMsg" style="margin-top:12px"></div>
+      <div id="topRereg" class="hidden" style="margin-top:12px">
+        <div class="error"><b>Re-register this palm — this replaces the stored palm bank for this profile.</b><br><span id="topReregCounts"></span><br>It cannot be undone. Only continue with this person's own palm, live in front of the camera.</div>
+        <label style="margin-top:12px">To confirm, type REPLACE in the box:</label>
+        <input id="topReregInput" placeholder="REPLACE" autocomplete="off" autocapitalize="characters">
+        <div class="row" style="margin-top:10px">
+          <div><button class="btn danger solid" id="topReregConfirm" disabled>Re-register this palm</button></div>
+          <div><button class="btn" id="topReregCancel">Cancel</button></div>
+        </div>
+      </div>
+      <button class="btn" id="topBack" style="margin-top:12px">Back to Registry</button>
+    </div>
+  </section>
+
+  <!-- LOGS -->
+  <section class="page" id="page-logs">
+    <h1>Transactions / Logs</h1>
+    <p class="sub">Every verification attempt and every Biom Pay authorization recorded on this device, with its real measured distance or score.</p>
+    <div class="card" style="margin-bottom:14px"><h2>Daily cashier sheet — today</h2><div id="dailySheet" class="kv">No transactions yet today.</div></div>
+    <div class="card" style="margin-bottom:14px"><h2>Field Test Mode — 20 people / 200 scans gate</h2>
+      <label class="check"><input type="checkbox" id="fieldModeToggle"> Field Test Mode — record every palm scan for the real-hand validation</label>
+      <div id="fieldStats" class="kv" style="margin-top:10px">Field test metrics will appear here once scans are recorded.</div>
+      <p class="sub" style="margin:10px 0">GAR = genuine real-hand attempts verified. FAR = genuine attempts whose highest score against any OTHER enrolled palm reached the match threshold. Spoof Rejection = photo / video spoof attempts rejected. Lighting and camera are recorded automatically per scan; set the attempt type at the terminal before each test scan.</p>
+      <button class="btn primary" id="fieldExportBtn">Export Field Test CSV</button>
+    </div>
+    <div class="card" style="overflow-x:auto"><h2>Biom Pay transactions</h2><table>
+      <thead><tr><th>Record ID</th><th>Time</th><th>Person</th><th>Provider</th><th>Wallet</th><th>Store</th><th>Amount</th><th>Status</th></tr></thead>
+      <tbody id="txBody"></tbody>
+    </table></div>
+    <div class="card" style="margin-top:14px;overflow-x:auto"><h2>Verification logs</h2><table>
+      <thead><tr><th>Time</th><th>Person</th><th>Store</th><th>Method</th><th>Measured</th><th>Result</th></tr></thead>
+      <tbody id="logBody"></tbody>
+    </table></div>
+  </section>
+
+  <!-- PARTNER -->
+  <section class="page" id="page-partner">
+    <h1>Partner Integration</h1>
+    <p class="sub">Biom Pay authorizes a payment biometrically on this terminal. Real money moves only through the official bKash / Nagad merchant APIs, after TwoSide Group signs the collaboration and the store adds its merchant credentials here. Until then, transactions are recorded truthfully as biometric-authorized, pending partner settlement — TSG Biom never invents a bKash / Nagad transaction ID.</p>
+    <div class="grid">
+      <div class="card"><h2>bKash — Tokenized Checkout API</h2>
+        <p><span class="badge warn">Not connected — merchant credentials required</span></p>
+        <label>Merchant number</label><input disabled placeholder="Added after partnership approval">
+        <label>API credentials</label><input disabled placeholder="App key / secret are entered in the connected version">
+      </div>
+      <div class="card"><h2>Nagad — Payment Gateway API</h2>
+        <p><span class="badge warn">Not connected — merchant credentials required</span></p>
+        <label>Merchant number</label><input disabled placeholder="Added after partnership approval">
+        <label>API credentials</label><input disabled placeholder="Merchant keys are entered in the connected version">
+      </div>
+    </div>
+    <div class="card" style="margin-top:14px"><h2>Install TSG Biom as an app</h2>
+      <p class="sub" style="margin:0 0 10px">Android Chrome: tap <b>Install App</b> above, or open the browser menu and choose <b>Add to Home screen / Install app</b>. iPhone Safari: tap <b>Share</b>, then <b>Add to Home Screen</b>. The app then opens full-screen from its own home-screen icon, like a normal store app.</p>
+      <button class="btn primary" id="installBtn2">Install App</button>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  TSG Biom — TwoSide Group (TS Technologies / TS Intelligence). Real scanning only: no simulated results.<br>
+  Camera access needs a secure (HTTPS) page and your permission. Biometric descriptors on this terminal stay on this device.
+</footer>
+
+<div id="toast" class="hidden" style="position:fixed;left:50%;transform:translateX(-50%);bottom:22px;background:var(--surface2);border:1px solid var(--accent);color:var(--text);padding:12px 18px;border-radius:12px;z-index:99;font-size:14px;max-width:92vw"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

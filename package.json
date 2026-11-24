@@ -17,6 +17,8 @@
     "cap:open-ios": "npx cap open ios",
     "cap:sync": "npm run stage && cap sync",
     "stage": "node stage-www.js",
+    "check-www": "node check-www.js",
+    "test": "node tests/run-all.js",
     "cap:add:android": "npm run stage && cap add android"
   },
   "version": "1.0.0"

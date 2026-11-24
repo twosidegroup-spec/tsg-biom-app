@@ -133,9 +133,14 @@ check('FALLBACK mid-scan camera swap after 18 analysed frames is untouched (veri
 
 /* ---------- (d) version coherence ---------- */
 const appVer = (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1];
-check('VERSION app, shell and chain agree at v58',
-  appVer === 'v58' && swSrc.indexOf('tsg-biom-shell-v58') !== -1 &&
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v58');
+/* v59 pin conversion (named, per the v55/v56/v57 precedent):
+   this check pinned v58 absolutely; from v59 it is a COHERENCE
+   check — app version, shell and newest chain link agree,
+   whatever the current version is. The v58-specific facts
+   (the step exists and is the identity) stay pinned below. */
+check('VERSION app data version, shell and newest migration link agree (coherence form since v59)',
+  !!appVer && swSrc.indexOf('tsg-biom-shell-' + appVer) !== -1 &&
+  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === appVer);
 const mig58probeSrc = '{"people":[],"logs":[],"transactions":[],"meta":[]}';
 const mig58probe = B.migrateBiomData(JSON.parse(mig58probeSrc), 'v57', 'v58');
 check('VERSION v58 migration step is the identity (applies, changes nothing)',
