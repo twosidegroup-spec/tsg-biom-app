@@ -174,7 +174,7 @@ function writeChecks() {
 /* ---------------- 4. score parity (performance-only proof) ----- */
 function parityChecks() {
   check('CONSTANTS every decision constant is at its v49 value',
-    B.PALMPRINT_THRESHOLD === 0.32 && B.PALMNET_THRESHOLD === 0.5773 &&
+    B.PALMPRINT_THRESHOLD === 0.32 && B.PALMNET_THRESHOLD === 0.5895 &&
     B.MONEY_MARGIN_EDCC === 0.10 && B.MONEY_MARGIN_NEURAL === 0.15 &&
     B.SCAN_TIME_BUDGET_MS === 6000 && B.PALM_OPEN_MIN > 0);
   const profileA = enrolProfile(PALM_A, 61, 15);

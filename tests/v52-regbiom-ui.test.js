@@ -166,7 +166,7 @@ check('DRIFT the quick Scan Palm action is a PLAIN verify (authorises nothing)',
       slice.indexOf('moves no money') !== -1;
   })());
 check('DRIFT thresholds untouched in the engine (0.32 EDCC bar; PalmNet fusion constants present)',
-  fs.readFileSync(path.join(__dirname, '..', 'biometrics.js'), 'utf8').indexOf('0.5773') !== -1);
+  fs.readFileSync(path.join(__dirname, '..', 'biometrics.js'), 'utf8').indexOf('0.5895') !== -1);
 
 /* ---------------- no mockup data, palm icon only -------------- */
 check('MOCKUP none of the design images\' figures or names appear in the app sources',

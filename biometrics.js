@@ -2905,12 +2905,26 @@
      tilt, EDCC's known failure mode (bench report:
      ~/workspace/palmnet-bench/results.md, verified 20/20).
 
-     The model: MobileNetV3-Small, full fine-tune with an ArcFace
-     head, trained fresh on the Tongji Contactless Palmprint
-     dataset (480 TRAIN palms; 9,600 unique real training images,
-     153,600 augmented samples seen). Input: a 128x128 grayscale
-     palm ROI. Output: a 256-d L2-normalised embedding; identity
+     The model: MobileNetV3-Small with an ArcFace head (the head
+     is discarded at export). Input: a 128x128 grayscale palm
+     ROI. Output: a 256-d L2-normalised embedding; identity
      score = cosine similarity between embeddings.
+
+     v54 MODEL: the PalmNet Round 3 network — initialised from
+     the Round 1 production weights and hard-fine-tuned on the
+     Round 3 combined corpus (13,780 unique real images / 897
+     palms; 11,380 images / 777 palms TRAIN), snapshotted at the
+     trainer's selected best epoch 12 (136,560 samples seen at
+     that point; clean EVAL EER 0.0012%, Rank-1 100%) and
+     integrated early by the Chairman's order 2026-11-24, while
+     Round 3 training continued in the background to its own
+     stop rule. It replaces the Round 1 model v47 shipped
+     (Tongji-only training — 480 TRAIN palms, 9,600 unique real
+     images, 153,600 augmented samples seen; clean EER 0.004%,
+     bar 0.5773). Measurement record:
+     ~/workspace/palmnet-bench/round3/integration-v54/measurement.md.
+     Embeddings from different models are NOT comparable — see
+     MODEL STAMPING at the storage paragraph below.
 
      This section is the PURE half — preprocessing, the embedding
      codec, profile banking and the fused decision — so Node tests
@@ -2941,30 +2955,57 @@
      no banked neural embeddings verifies EDCC-only, exactly as
      before.
 
-     PALMNET_THRESHOLD = 0.5773 — SOURCE: the EER threshold of the
-     PalmNet-Bench EVAL clean protocol, computed by
-     code/04_eval_export.py from 360 genuine and 42,840 impostor
-     cosine scores (session-1 gallery captures 1-3 averaged into
-     per-palm templates; probes = captures 4-6) and saved in
-     ~/workspace/palmnet-bench/logs/neural_results.json
-     (clean.eer_threshold = 0.5773, EER 0.004%). Independently
-     recomputed from the same EVAL scores during the v47 build —
-     same number. This is a LAB-DERIVED STARTING POINT, measured
-     on Tongji lab ROIs (pre-extracted, controlled), NOT a proven
-     phone threshold: phone frames are a different input
-     distribution, and the Field Test gate (20 people / 200 scans,
-     zero false accepts) is what calibrates it for real use. The
-     genuine distribution at this bar: median 0.8950, p05 0.7414,
-     min 0.5773; impostor: median 0.0337, p95 0.2791, max 0.5996.
+     PALMNET_THRESHOLD = 0.5895 — SOURCE: the EER threshold of
+     the Round 3 model on the SAME PalmNet-Bench EVAL clean
+     protocol the Round 1 bar came from, computed by
+     round3/code (r3_common.eval_sets full_metrics) from 360
+     genuine and 42,840 impostor cosine scores (session-1
+     gallery captures 1-3 averaged into per-palm templates;
+     probes = captures 4-6) and recorded in
+     ~/workspace/palmnet-bench/round3/integration-v54/measurement.md
+     (clean EER 0.0012%, eer_threshold 0.5895, Rank-1 100%).
+     The snapshot's clean EER first reproduced the trainer's
+     recorded best_eer EXACTLY (abs diff 0.0) through the
+     trainer's own evaluation path before the bar was taken.
+     This is a LAB-DERIVED STARTING POINT, measured on Tongji
+     lab ROIs (pre-extracted, controlled), NOT a proven phone
+     threshold: phone frames are a different input distribution,
+     and the Field Test gate (20 people / 200 scans, zero false
+     accepts) is what calibrates it for real use. The genuine
+     distribution at this bar: median 0.8983, p05 0.7353,
+     min 0.5895; impostor: median 0.0506, p95 0.3056,
+     max 0.5909. (The Round 1 bar it replaces was 0.5773, from
+     logs/neural_results.json — each model's bar is its own
+     EER point, derived the same way, never carried over.)
 
      STORAGE: embeddings live INSIDE the existing palm profile
      object as profile.neural = { v: 1, dim: 256,
-     model: 'palmnet-v1', embeddings: [base64 float32 LE, ...] }.
+     model: PALMNET_MODEL_ID, embeddings: [base64 float32 LE, ...] }.
      No store shape changes; the v47 migration step is a pure
      adoption (see the chain below) and profiles written before
      v47 simply have no .neural field — they verify EDCC-only and
      the Registry offers a "Neural scan" capture that banks
-     embeddings for them. Score rule inside the neural path: MAX
+     embeddings for them.
+
+     MODEL STAMPING (v54): every bank written from v54 on is
+     stamped with the running model's id (PALMNET_MODEL_ID =
+     'palmnet-r3-ep12', the Round 3 snapshot's best epoch). A
+     bank whose stamp differs from the running model's id —
+     including every 'palmnet-v1' bank written under the Round 1
+     model and any bank carrying no stamp at all — holds
+     embeddings from a DIFFERENT model and is NOT comparable:
+     palmnetProfileEmbeddings returns null for it (no neural
+     evidence), so the profile verifies EDCC-only, the Registry
+     and My Account show the "Neural scan needed" state, and the
+     banking guard's neural leg treats it as uncheckable (its
+     EDCC leg judges as always). A Neural Scan re-bank goes
+     through the existing guarded top-up flow: the merge ignores
+     a stale bank's embeddings and stamps its output with the
+     current model id. Stored banks are NEVER rewritten by a
+     version update — staleness is judged at read time, which
+     is why the v54 migration step is a pure adoption.
+
+     Score rule inside the neural path: MAX
      cosine over banked embeddings x probe embeddings (the same
      score-level max discipline the EDCC side adopted in v33).
      Probes are embedded in BOTH orientations (ROI + mirror twin,
@@ -2974,7 +3015,11 @@
      enrolment banks the palm as captured. */
   var PALMNET_INPUT_SIZE = 128;
   var PALMNET_EMBED_DIM = 256;
-  var PALMNET_THRESHOLD = 0.5773;
+  /* v54: the running model is the Round 3 snapshot; its id is
+     stamped into every bank written from now on, and its bar is
+     its own measured EER threshold (derivation above). */
+  var PALMNET_MODEL_ID = 'palmnet-r3-ep12';
+  var PALMNET_THRESHOLD = 0.5895;
   var PALMNET_MEAN = [0.485, 0.456, 0.406];
   var PALMNET_STD = [0.229, 0.224, 0.225];
   var PALMNET_PROFILE_MAX_EMBEDDINGS = 6;
@@ -3084,14 +3129,35 @@
       return palmnetEmbeddingSane(emb) ? palmnetNormaliseEmbedding(emb) : null;
     } catch (e) { return null; }
   }
+  /* The model id stamped on a stored profile's neural bank, or
+     null when the profile carries no (readable) bank object.
+     The stamp is metadata only — this reader never judges it;
+     palmnetProfileEmbeddings below is where staleness bites. */
+  function palmnetProfileModelId(stored) {
+    if (!stored || typeof stored !== 'object') return null;
+    var bank = stored.neural;
+    if (!bank || typeof bank !== 'object') return null;
+    return typeof bank.model === 'string' && bank.model ? bank.model : null;
+  }
   /* The banked embeddings of a stored palm profile (the profile
      object itself, person.palmProfile), decoded and sane only.
      Returns an array (possibly empty) or null when the profile
-     carries no neural bank at all. */
+     carries no neural bank at all.
+     v54 STALENESS: a bank stamped by a different model than the
+     running one (PALMNET_MODEL_ID) — including every Round 1
+     'palmnet-v1' bank and any unstamped bank — holds embeddings
+     that are NOT comparable to this model's probes, so it reads
+     as NO BANK AT ALL: null here means every consumer (verify,
+     identify, impostor-max, the banking guard, the needs-scan
+     state) sees no neural evidence for the profile, exactly as
+     for a profile that never banked. The stored bank itself is
+     left byte-identical; a Neural Scan re-bank replaces it
+     through the guarded top-up flow. */
   function palmnetProfileEmbeddings(stored) {
     if (!stored || typeof stored !== 'object') return null;
     var bank = stored.neural;
     if (!bank || typeof bank !== 'object' || !Array.isArray(bank.embeddings)) return null;
+    if (bank.model !== PALMNET_MODEL_ID) return null;
     var out = [];
     bank.embeddings.forEach(function (b64) {
       var emb = palmnetEmbeddingFromBase64(b64);
@@ -3124,7 +3190,7 @@
       if (b64) enc.push(b64);
     });
     if (!enc.length) return null;
-    return { v: 1, dim: PALMNET_EMBED_DIM, model: 'palmnet-v1', embeddings: enc };
+    return { v: 1, dim: PALMNET_EMBED_DIM, model: PALMNET_MODEL_ID, embeddings: enc };
   }
   /* Merge new candidate embeddings into an existing bank (the
      Add Angles / Neural scan path): a candidate within
@@ -3135,7 +3201,19 @@
      added the returned bank is the existing object by identity. */
   function mergePalmnetEmbeddings(existingBank, candidateEmbeddings) {
     var banked = [];
-    if (existingBank && typeof existingBank === 'object' && Array.isArray(existingBank.embeddings)) {
+    /* v54: a STALE existing bank (stamped by another model, or
+       unstamped) contributes NOTHING to the merge — its
+       embeddings live in a different model's space, so dedupe
+       against them would be meaningless and carrying them over
+       would poison the new bank. The merge starts empty and
+       palmnetBankFromEmbeddings stamps the result with the
+       current model id: this is the re-bank that replaces the
+       stamp. A CURRENT bank merges exactly as before. When
+       nothing is added the existing bank object is returned by
+       identity (a stale bank then stays stale and keeps reading
+       as no-bank until a capture actually banks). */
+    if (existingBank && typeof existingBank === 'object' && Array.isArray(existingBank.embeddings) &&
+        existingBank.model === PALMNET_MODEL_ID) {
       existingBank.embeddings.forEach(function (b64) {
         var emb = palmnetEmbeddingFromBase64(b64);
         if (emb) banked.push(emb);
@@ -3235,7 +3313,7 @@
         merge, the session's captured palm must verify against
         the profile's existing readable bank at the standard
         fused bars — EDCC >= 0.32 and/or PalmNet cosine >=
-        0.5773, the same OR rule as verification. The check is
+        PALMNET_THRESHOLD, the same OR rule as verification. The check is
         computed offline from the session's own captured
         templates/embeddings against the stored bank; no extra
         camera session. Where NO readable bank exists (the
@@ -3369,7 +3447,10 @@
          sane packed probes: verifyPackedProbes decides.
        Neural checkable — the profile carries a readable neural
          bank and the session produced embeddings:
-         palmnetScoreEmbeddings decides against 0.5773.
+         palmnetScoreEmbeddings decides against
+         PALMNET_THRESHOLD. (v54: the bank is read through
+         palmnetProfileEmbeddings, so a stale-model bank makes
+         this leg uncheckable, never misjudged.)
      Returns { status, via, edccChecked, edccScore,
      neuralChecked, neuralScore }:
        'pass'        — at least one checkable system verified
@@ -4583,8 +4664,25 @@
      profile shape v45-v52 enrolment writes). The step is
      therefore the identity, and a v52 store — neural banks,
      hand stamps, wallet balance, statement and linked
-     accounts included — opens under v53 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53'];
+     accounts included — opens under v53 byte-identical.
+
+     v53 -> v54 is an ADOPTION: v54 changes no stored field.
+     It swaps the PalmNet MODEL (the Round 3 snapshot,
+     'palmnet-r3-ep12', bar 0.5895) for the Round 1 model
+     ('palmnet-v1', bar 0.5773) and adds model stamping:
+     banks written from v54 on carry the running model's id,
+     and a bank stamped by any other model reads as no neural
+     evidence (its embeddings belong to a different model's
+     space). Crucially, staleness is judged AT READ TIME —
+     stored banks are never rewritten, re-stamped or deleted
+     by the update, so a Round 1 bank survives in storage
+     byte-identical and simply stops being scored until a
+     Neural Scan re-banks the palm under the current model.
+     The step is therefore the identity, and a v53 store —
+     neural banks of either stamp, hand stamps, wallet
+     balance, statement and linked accounts included — opens
+     under v54 byte-identical. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -4600,6 +4698,7 @@
     'v51': function (snap) { return snap; },
     'v52': function (snap) { return snap; },
     'v53': function (snap) { return snap; },
+    'v54': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
@@ -4827,6 +4926,8 @@
     PALMNET_INPUT_SIZE: PALMNET_INPUT_SIZE,
     PALMNET_EMBED_DIM: PALMNET_EMBED_DIM,
     PALMNET_THRESHOLD: PALMNET_THRESHOLD,
+    PALMNET_MODEL_ID: PALMNET_MODEL_ID,
+    palmnetProfileModelId: palmnetProfileModelId,
     PALMNET_MEAN: PALMNET_MEAN,
     PALMNET_STD: PALMNET_STD,
     PALMNET_PROFILE_MAX_EMBEDDINGS: PALMNET_PROFILE_MAX_EMBEDDINGS,

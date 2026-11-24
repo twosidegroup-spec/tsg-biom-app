@@ -41,7 +41,7 @@
      is skipped, nothing is deleted, and the next launch retries —
      the app boots on the un-migrated data either way, because its
      readers fail closed per record. */
-  var APP_DATA_VERSION = 'v53';
+  var APP_DATA_VERSION = 'v54';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -1832,7 +1832,7 @@
        analysed frame's ROI is embedded off-thread (PalmNet) and
        the score lands in frameNeural whenever it lands; the fused
        decision (B.fusePalmVerifyResults — EDCC at its 0.32 bar OR
-       PalmNet at its 0.5773 bar) is taken per frame from whichever
+       PalmNet at its PALMNET_THRESHOLD bar) is taken per frame from whichever
        evidence has arrived, in tryWin. A profile with no banked
        embeddings (neuralBanked null) or a failed neural runtime
        leaves every frame's neural slot null, and the scan is then
@@ -3137,6 +3137,13 @@
           rec.neuralScore = typeof neural.neuralScore === 'number' ? neural.neuralScore : null;
           rec.neuralImpostorMax = typeof neural.neuralImpostorMax === 'number' ? neural.neuralImpostorMax : null;
           rec.acceptedBy = neural.acceptedBy || null;
+          // v54: the running neural model's id rides the record
+          // the same way (extra field only — the pinned CSV
+          // columns are untouched): after a model swap, the
+          // pentest can tell which model's evidence a record's
+          // neural scores are, and records written under the
+          // Round 1 model simply lack the field.
+          rec.neuralModel = B.PALMNET_MODEL_ID;
           // v49: the strict money rule's outcome rides the record
           // the same way — the record's result above stays the
           // PLAIN fused verdict Field Test Mode measures, and the

@@ -137,7 +137,7 @@ g = B.bankingGuardCheck(profileNeuralDecides, { edccProbes: candA, neuralEmbeddi
 check('GUARD neural-decides profile: EDCC side checked and failed, neural side passes => pass via palmnet',
   g.status === 'pass' && g.via === 'palmnet' && g.edccChecked === true && g.neuralChecked === true,
   'edcc ' + (g.edccScore && g.edccScore.toFixed(3)) + ' neural ' + (g.neuralScore && g.neuralScore.toFixed(3)));
-check('GUARD the neural pass is at/above the standing 0.5773 bar', g.neuralScore >= B.PALMNET_THRESHOLD, String(g.neuralScore));
+check('GUARD the neural pass is at/above the standing PalmNet bar', g.neuralScore >= B.PALMNET_THRESHOLD, String(g.neuralScore));
 
 g = B.bankingGuardCheck(profileDual, { edccProbes: candA, neuralEmbeddings: [embA2] });
 check('GUARD dual-bank + same palm on both systems => pass via both', g.status === 'pass' && g.via === 'both');

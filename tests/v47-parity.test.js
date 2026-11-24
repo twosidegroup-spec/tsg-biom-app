@@ -18,7 +18,9 @@
         resampler is the identity here, so this isolates the
         normalisation + runtime numerics.
         Tolerance: max |diff| <= 1e-4, cosine >= 0.999999.
-        (Measured at build time: 4.6e-07 / 0.99999998.)
+        (Measured at v47 build time: 4.6e-07 / 0.99999998;
+         re-measured for the v54 Round 3 model: 5.6e-07 /
+         0.99999973.)
      B  the app's real input shape: the same palm as a 96x96
         patch (the v45 affine ROI size). JS preprocesses the
         float patch (its own bilinear 96->128); Python gets the
@@ -26,7 +28,8 @@
         — the residual is PIL's fixed-point resampler vs the
         float one, stated honestly.
         Tolerance: max |diff| <= 2e-2, cosine >= 0.999.
-        (Measured at build time: 7.6e-03 / 0.99922.)
+        (Measured at v47 build time: 7.6e-03 / 0.99922;
+         re-measured for v54: 4.9e-03 / 0.99970.)
      C  a synthetic deterministic 128x128 pattern, native path —
         parity that does not depend on the bench dataset files.
 
@@ -57,7 +60,13 @@ function skip(name, why) { skipped++; console.log('SKIP  ' + name + '  [' + why 
 
 const BENCH = path.join(os.homedir(), 'workspace', 'palmnet-bench');
 const PY = process.env.PALMNET_BENCH_PYTHON || path.join(BENCH, 'venv', 'bin', 'python');
-const PY_MODEL = path.join(BENCH, 'models', 'palmnet.onnx');
+/* v54: the Python reference model is the Round 3 snapshot ONNX
+   the app now ships (round3/integration-v54/palmnet_r3_snapshot
+   .onnx) — the suite compares the SHIPPED model, reassembled
+   from the repo's parts, against the same file under Python
+   onnxruntime. The v47 Round 1 model this originally pointed at
+   (models/palmnet.onnx) is retired from the app. */
+const PY_MODEL = path.join(BENCH, 'round3', 'integration-v54', 'palmnet_r3_snapshot.onnx');
 const GRAY_DIR = path.join(BENCH, 'data', 'gray_eval');
 
 let ort = null;

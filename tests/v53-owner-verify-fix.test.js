@@ -35,7 +35,7 @@
      hand instead of showing green (source pin).
    - DIAGNOSIS (B.scanDiagnosisLines): the panel under a
      failed scan's message carries the best palm score vs
-     0.32, the PalmNet score vs 0.5773 (or 'no neural
+     0.32, the PalmNet score vs its bar (or 'no neural
      evidence'), the hand read, and — when the hand gate
      decided the rejection — the plain gate sentence. The
      values are the log record's values: the fixture below
@@ -71,6 +71,13 @@
    OR rule, the strict money rule and its three sites, the
    banking guard bars and the v51 hand gate are all pinned by
    their own suites, which pass unmodified.
+   (v54 note: the PalmNet bar has since moved to the Round 3
+   model's own measured EER threshold, 0.5895 — an ordered
+   model swap pinned in v54-palmnet-r3.test.js. The diagnosis
+   panel prints the RUNNING bar, so the DIAG check below names
+   its current rendering; every other rule named here is
+   unchanged, and this suite's version pins were converted to
+   the coherence form when v54 shipped.)
    All numbers here are RIG numbers; the phone is the verdict. */
 'use strict';
 const fs = require('fs');
@@ -208,8 +215,8 @@ check('GUIDE without a frameIssue the pre-v53 framing mapping is untouched',
   const lines = B.scanDiagnosisLines(diag);
   check('DIAG the panel prints the log record\'s palm score against the 0.32 bar',
     lines.some(function (l) { return l.indexOf(rec.genuineScore.toFixed(3)) !== -1 && l.indexOf('0.32') !== -1; }), lines.join(' | '));
-  check('DIAG the panel prints the log record\'s PalmNet score against the 0.5773 bar',
-    lines.some(function (l) { return l.indexOf(rec.palmnetScore.toFixed(3)) !== -1 && l.indexOf('0.58') !== -1; }));
+  check('DIAG the panel prints the log record\'s PalmNet score against the running bar (0.59 at 2dp)',
+    lines.some(function (l) { return l.indexOf(rec.palmnetScore.toFixed(3)) !== -1 && l.indexOf(B.PALMNET_THRESHOLD.toFixed(2)) !== -1; }));
   check('DIAG the panel states the hand read', lines.indexOf('Hand read: left.') !== -1);
   check('DIAG no gate sentence when the gate did not decide',
     !lines.some(function (l) { return l.indexOf('different identity') !== -1; }));
@@ -323,10 +330,17 @@ check('RECOVERY the confirmation is Delete-All-Data style: named profile, bank c
 })();
 
 /* ---------------- versions + migration -------------------------- */
-check('VERSION app data version is v53', appSrc.indexOf("APP_DATA_VERSION = 'v53'") !== -1);
-check('VERSION shell is v53', swSrc.indexOf('tsg-biom-shell-v53') !== -1);
-check('VERSION v53 is the newest link in the chain',
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v53');
+// v54: the three absolute pins below were converted to the
+// version-coherence form (the v48/v49/v50/v51/v52 pattern) when
+// v54 shipped — v53 remains IN the chain as an adoption step;
+// the living current-version pins are in v38-migration + the
+// v54 suite. The v53 proofs in this suite are unchanged.
+check('VERSION app data version and shell version agree', (function () {
+  const dv = (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1];
+  const sv = (swSrc.match(/tsg-biom-shell-(v\d+)/) || [])[1];
+  return !!dv && dv === sv;
+})());
+check('VERSION v53 remains in the chain as an adoption step', B.BIOM_DATA_VERSIONS.indexOf('v53') !== -1);
 (function () {
   const store = { people: [{ id: 'TSG-BIO-1', name: 'Rig', limits: { perTx: 1000, daily: 5000 }, loyaltyPoints: 9,
     wallet: { balance: 450, statement: [{ kind: 'add', amount: 450, ref: 'DEMO-1' }], linkedAccounts: [{ id: 'a1', type: 'bKash', label: 'Rig bKash' }] },

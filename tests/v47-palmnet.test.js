@@ -1,8 +1,11 @@
 /* TSG BIOM v47 — PalmNet neural matcher: pure logic + wiring pins.
 
    Proven here (all in biometrics.js, the shipping pure layer):
-   - The accept threshold is the PalmNet-Bench EVAL clean EER
-     threshold, 0.5773, with its source stated in the code.
+   - The accept threshold is the running model's PalmNet-Bench
+     EVAL clean EER threshold, with its source stated in the
+     code. (v54: the Round 3 model's bar, 0.5895 — the Round 1
+     model's 0.5773 derivation this suite originally pinned is
+     recorded in git history and in the v54 measurement.)
    - palmnetPreprocessRoi replicates the bench eval preprocessing
      (128x128 grayscale -> /255 -> 3 channels -> ImageNet
      MEAN/STD normalisation), at the native size and from the
@@ -13,7 +16,7 @@
      dedupes and caps; fixture enrolment + matching accepts a
      genuine probe and rejects an impostor at the derived bar.
    - THE FUSED DECISION: EDCC at its untouched 0.32 bar OR
-     PalmNet at 0.5773; no neural evidence => the EDCC verdict
+     PalmNet at its bar; no neural evidence => the EDCC verdict
      stands alone (the v46 behaviour, bit-for-bit).
    - Legacy fallback: a packed96 profile without a neural bank
      is EDCC-only and reports "Neural scan needed"; corrupt
@@ -42,10 +45,10 @@ function check(name, cond, detail) {
 function approx(a, b, eps) { return Math.abs(a - b) <= eps; }
 
 /* ---------- threshold + provenance ---------- */
-check('THRESHOLD PalmNet accept bar is the bench EER threshold 0.5773', B.PALMNET_THRESHOLD === 0.5773, String(B.PALMNET_THRESHOLD));
+check('THRESHOLD PalmNet accept bar is the bench EER threshold 0.5895 (v54: Round 3 model)', B.PALMNET_THRESHOLD === 0.5895, String(B.PALMNET_THRESHOLD));
 const bioSrc = fs.readFileSync(path.join(__dirname, '..', 'biometrics.js'), 'utf8');
-check('THRESHOLD source is stated in the code (neural_results.json, EVAL clean)',
-  bioSrc.indexOf('neural_results.json') !== -1 && bioSrc.indexOf('0.5773') !== -1 && bioSrc.indexOf('42,840') !== -1);
+check('THRESHOLD source is stated in the code (integration-v54 measurement, EVAL clean)',
+  bioSrc.indexOf('integration-v54/measurement.md') !== -1 && bioSrc.indexOf('0.5895') !== -1 && bioSrc.indexOf('42,840') !== -1);
 check('THRESHOLD is labelled a lab-derived starting point, not a phone threshold',
   bioSrc.indexOf('LAB-DERIVED STARTING POINT') !== -1);
 check('EDCC bar untouched at 0.32', B.PALMPRINT_THRESHOLD === 0.32);
@@ -116,8 +119,8 @@ check('CODEC rejects garbage and wrong-length payloads',
 const embA1 = e1;
 const embA2 = mixCos(e1, e2, 0.95); // a second capture of the same palm
 const bank = B.palmnetBankFromEmbeddings([embA1, embA2]);
-check('BANK builds a v1 palmnet bank from enrolment embeddings',
-  !!bank && bank.v === 1 && bank.dim === 256 && bank.model === 'palmnet-v1' && bank.embeddings.length === 2);
+check('BANK builds a current-stamp palmnet bank from enrolment embeddings',
+  !!bank && bank.v === 1 && bank.dim === 256 && bank.model === B.PALMNET_MODEL_ID && bank.embeddings.length === 2);
 const many = [];
 for (let i = 0; i < 8; i++) many.push(basis(i));
 const bankCapped = B.palmnetBankFromEmbeddings(many);
@@ -151,7 +154,7 @@ check('PROFILE corrupt neural payload is ignored, never thrown on',
 
 /* ---------- matching on fixture embeddings ---------- */
 const genuineProbe = mixCos(e1, e3, 0.85);
-const tiltProbe = mixCos(e1, e3, 0.62);   // the rescue band: EDCC fails tilt, neural at 0.62 clears 0.5773
+const tiltProbe = mixCos(e1, e3, 0.62);   // the rescue band: EDCC fails tilt, neural at 0.62 clears the 0.5895 bar
 const belowProbe = mixCos(e1, e3, 0.50);
 const impostorProbe = e4;
 check('SCORE genuine probe vs bank is its best cosine', approx(B.palmnetScoreProfile(profileBanked, [genuineProbe]), 0.85, 1e-5),
@@ -171,7 +174,7 @@ function edcc(sim) {
 let f = B.fusePalmVerifyResults(edcc(0.20), B.palmnetScoreProfile(profileBanked, [genuineProbe]));
 check('FUSION neural rescues an EDCC fail (acceptedBy palmnet, EDCC score reported unchanged)',
   f.verified === true && f.acceptedBy === 'palmnet' && f.similarity === 0.20 && f.threshold === 0.32 &&
-  approx(f.neuralScore, 0.85, 1e-5) && f.neuralThreshold === 0.5773);
+  approx(f.neuralScore, 0.85, 1e-5) && f.neuralThreshold === 0.5895);
 f = B.fusePalmVerifyResults(edcc(0.20), B.palmnetScoreProfile(profileBanked, [tiltProbe]));
 check('FUSION the tilt band (neural 0.62) accepts where EDCC cannot', f.verified === true && f.acceptedBy === 'palmnet');
 f = B.fusePalmVerifyResults(edcc(0.20), B.palmnetScoreProfile(profileBanked, [belowProbe]));
@@ -235,7 +238,7 @@ const shellBlock = swSrc.slice(swSrc.indexOf('const SHELL'), swSrc.indexOf('];',
 check('SW shell does NOT precache the model (install can never fail on it)', shellBlock.indexOf('palmnet') === -1 && shellBlock.indexOf('models/') === -1);
 const man = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'models', 'palmnet', 'manifest.json'), 'utf8'));
 check('MODEL manifest is coherent (parts exist, sizes add up)',
-  man.bytes === 4577641 && typeof man.sha256 === 'string' && man.sha256.length === 64 &&
+  man.bytes === 4317738 && typeof man.sha256 === 'string' && man.sha256.length === 64 &&
   man.parts.length === 7 && man.parts.every(function (p) { return fs.existsSync(path.join(__dirname, '..', 'models', 'palmnet', p)); }));
 
 console.log(fail === 0 ? 'ALL v47 PALMNET TESTS PASSED (' + pass + ')' : fail + ' FAILURES, ' + pass + ' passed');

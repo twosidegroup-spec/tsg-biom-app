@@ -145,7 +145,20 @@
    opens under v53 byte-identical, and the full chain still
    preserves everything end to end. (No "Extended for v52"
    paragraph was added at the v52 bump; the v52 section in the
-   body carries its note.) */
+   body carries its note.)
+
+   Extended for v54 (2026-11-24): the chain gains 'v54' — an
+   ADOPTION step. v54 changes no stored field; it swaps the
+   PalmNet model (Round 3 snapshot 'palmnet-r3-ep12', bar
+   0.5895) for the Round 1 model ('palmnet-v1', bar 0.5773)
+   and adds model stamping, judged AT READ TIME: stored banks
+   are never rewritten, so a v53 store — including a bank
+   stamped by the retired model — opens under v54
+   byte-identical, and that bank then reads as no neural
+   evidence until a Neural Scan re-banks it (the read-time
+   proof lives in v54-palmnet-r3.test.js; the section below
+   proves the byte-identical opening and the intact wallet).
+   The full chain still preserves everything end to end. */
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -267,8 +280,8 @@ check('MIGRATE a store with a missing logs array keeps the people', Array.isArra
    its migration step is an adoption like v38's. A store written by
    v38 (and one written by v37, through both steps) must open under
    v39 with the person, codes and points intact and still verify. */
-check('CHAIN v53 is the newest link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v53' &&
-  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40,v41,v42,v43,v44,v45,v46,v47,v48,v49,v50,v51,v52,v53', B.BIOM_DATA_VERSIONS.join(','));
+check('CHAIN v54 is the newest link', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v54' &&
+  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40,v41,v42,v43,v44,v45,v46,v47,v48,v49,v50,v51,v52,v53,v54', B.BIOM_DATA_VERSIONS.join(','));
 const mig39 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v38', 'v39');
 check('MIGRATE v38->v39 runs the v39 step', mig39.appliedSteps.indexOf('v39') !== -1, mig39.appliedSteps.join(','));
 check('MIGRATE v38->v39 is an adoption: no store rewritten', mig39.changed === false && mig39.changedStores.length === 0,
@@ -706,6 +719,35 @@ const migAgain53 = B.migrateBiomData(mig53.snapshot, 'v53', 'v53');
 check('MIGRATE is idempotent at v53', migAgain53.appliedSteps.length === 0 && migAgain53.changed === false &&
   migAgain53.snapshot.people[0].wallet.balance === 450);
 
+/* ---------- v54: model swap, staleness judged at read time -------
+   The store is the v47 neural fixture's shape: a wallet-carrying
+   profile whose neural bank is stamped 'palmnet-v1' — the Round 1
+   model v54 retires. The adoption must leave the store (bank,
+   stamp and all) byte-identical; that the surviving bank then
+   reads as no neural evidence is the read-time staleness rule,
+   proven functionally in v54-palmnet-r3.test.js. */
+const v54Store = JSON.parse(JSON.stringify(v47NeuralStore));
+v54Store.people[0].palmProfile.hand = 'left';
+const v54Before = JSON.stringify(v54Store);
+const mig54 = B.migrateBiomData(v54Store, 'v53', 'v54');
+check('MIGRATE v53->v54 runs the v54 step', mig54.appliedSteps.indexOf('v54') !== -1, mig54.appliedSteps.join(','));
+check('MIGRATE v53->v54 rewrites NOTHING (pure adoption — the stale bank is NOT re-stamped or deleted)', mig54.changed === false && JSON.stringify(mig54.snapshot) === v54Before,
+  'changedStores=' + JSON.stringify(mig54.changedStores));
+check('SURVIVE v54 wallet, statement, linked account, neural bank (old stamp intact) and hand stamp intact',
+  mig54.snapshot.people[0].wallet.balance === 450 && mig54.snapshot.people[0].wallet.statement.length === 1 &&
+  mig54.snapshot.people[0].wallet.linkedAccounts.length === 1 &&
+  mig54.snapshot.people[0].palmProfile.neural.model === 'palmnet-v1' &&
+  mig54.snapshot.people[0].palmProfile.neural.embeddings[0] === 'QUJD' &&
+  B.palmProfileHand(mig54.snapshot.people[0].palmProfile) === 'left');
+const migChain54 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v37', 'v54');
+check('MIGRATE v37->v54 runs all seventeen steps in order', migChain54.appliedSteps.join(',') === 'v38,v39,v40,v41,v42,v43,v44,v45,v46,v47,v48,v49,v50,v51,v52,v53,v54', migChain54.appliedSteps.join(','));
+check('MIGRATE v37->v54 keeps the person, gains the wallet, flags the palm',
+  migChain54.snapshot.people.length === 1 && migChain54.snapshot.people[0].loyaltyPoints === 137 &&
+  migChain54.snapshot.people[0].wallet.balance === 0 && migChain54.snapshot.people[0].palmProfile.format === 'legacy');
+const migAgain54 = B.migrateBiomData(mig54.snapshot, 'v54', 'v54');
+check('MIGRATE is idempotent at v54', migAgain54.appliedSteps.length === 0 && migAgain54.changed === false &&
+  migAgain54.snapshot.people[0].wallet.balance === 450);
+
 /* ---------- the shipped app source carries no AUTOMATIC wipe -------
    v46 note: the only erase in the app is the owner's confirmed
    Delete All Data action (DB.clearAll + B.wipeBiomData, wired in
@@ -713,12 +755,12 @@ check('MIGRATE is idempotent at v53', migAgain53.appliedSteps.length === 0 && mi
    and is still pinned here: deleting the whole database and
    removing store keys, the retired update-time wipe mechanics. */
 const appSrc = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
-check('APP declares the current data version (v53)', appSrc.indexOf("APP_DATA_VERSION = 'v53'") !== -1);
+check('APP declares the current data version (v54)', appSrc.indexOf("APP_DATA_VERSION = 'v54'") !== -1);
 check('APP startup runs the migration', appSrc.indexOf('migrateBiomData') !== -1 && appSrc.indexOf('migrateDbStores') !== -1);
 check('APP contains no database deletion (the retired wipe)', appSrc.indexOf('deleteDatabase') === -1);
 check('APP contains no store-key removal (the retired wipe)', !/removeItem\(\s*'tsgbiom_/.test(appSrc));
 const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
-check('APP shell is v53', swSrc.indexOf('tsg-biom-shell-v53') !== -1);
+check('APP shell is v54', swSrc.indexOf('tsg-biom-shell-v54') !== -1);
 
 console.log(fail === 0 ? 'ALL MIGRATION TESTS PASSED (' + pass + ')' : fail + ' FAILURES, ' + pass + ' passed');
 process.exit(fail === 0 ? 0 : 1);
