@@ -203,8 +203,17 @@ input,select{padding:14px;font-size:16px;min-height:52px}
    activity rows, My Account, corner-bracket scan frame with live
    status indicators, amount chips. Solid colours only, one stroke
    icon family (the nav set's), soft shadows, calm transitions. */
-section.page.active{animation:pagein var(--dur-page) var(--ease-std) both}
-@keyframes pagein{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+section.page.active{animation:pagein var(--dur-page) var(--ease-std) backwards}
+/* v66 gate fix: the retained keyframe must not carry a transform.
+   With fill mode 'both', a transform in the 'to' keyframe (even
+   'none', computed as the identity matrix) stays applied forever
+   and makes the page section the containing block for its fixed
+   descendants — the desktop money-flow sheets then centre on the
+   section instead of the viewport and render with their heading
+   above the visible area. Omitting transform from 'to' lets it
+   fall back to the base value (none) once the entrance ends; the
+   slide itself is unchanged during the animation. */
+@keyframes pagein{from{opacity:0;transform:translateY(8px)}to{opacity:1}}
 .btn,.qa-tile,.chip,.profilecard,.setrow{transition:border-color var(--dur-state) var(--ease-std),background var(--dur-state) var(--ease-std),box-shadow var(--dur-state) var(--ease-std),transform var(--dur-state) var(--ease-std)}
 .balcard{background:var(--blue);color:#fff;border-radius:26px;padding:22px 22px 20px;
   box-shadow:0 16px 34px rgba(8,58,124,.30),0 3px 8px rgba(8,58,124,.18)}
