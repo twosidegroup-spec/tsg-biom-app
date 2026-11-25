@@ -314,11 +314,19 @@
     </div>
     <div class="card" style="margin-top:16px"><h2>Scan Sync</h2>
       <p class="sub" style="margin:0 0 10px">Mirror every scan on this device to your own TSG Biom server, so real scans can be reviewed off-device. Each scan posts a small record (who, which hand, the scores, the result) and each palm-bank change posts the palm codes — <b>never a palm image</b>. From v61 the codes are sealed on this device under its Biom Vault key before they are stored or posted, once the vault is set up (More → Biom Vault); a bank the vault has not sealed yet posts in its encoded form, and the vault card above shows which banks are sealed. Matching always stays on this device; sync runs in the background and never delays a scan. Off by default.</p>
+      <p class="sub" style="margin:0 0 10px">From v62 this device registers its <b>own credential</b> with the server and signs its writes: the shared key below is used once to register this device (and by older app versions), after which the device credential further down does the work and can be revoked on its own if this device is ever lost. Bank writes are version-checked on the server, so a stale device can no longer overwrite a newer bank.</p>
       <label>Server endpoint URL</label>
       <input id="syncEndpoint" placeholder="https://your-project.vercel.app" autocomplete="off" autocapitalize="off" spellcheck="false">
-      <label style="margin-top:10px">Device key</label>
+      <label style="margin-top:10px">Shared key (registration only)</label>
       <input id="syncDeviceKey" type="password" placeholder="The DEVICE_KEY you set on the server" autocomplete="off" autocapitalize="off" spellcheck="false">
-      <p class="sub" style="margin:6px 0 0">The key is stored only in this device's settings — it is never synced and never written to a log.</p>
+      <button class="btn" id="syncDeviceKeyToggle" type="button" style="margin-top:6px">Show</button>
+      <p class="sub" style="margin:6px 0 0">Used once to register this device, and by older app versions. It is stored only in this device's settings — never synced and never written to a log.</p>
+      <label style="margin-top:10px">This device's ID (registered automatically)</label>
+      <input id="syncDeviceId" placeholder="Registered on first sync" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <label style="margin-top:10px">This device's secret (registered automatically)</label>
+      <input id="syncDeviceSecret" type="password" placeholder="Registered on first sync" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button class="btn" id="syncDeviceSecretToggle" type="button" style="margin-top:6px">Show</button>
+      <p class="sub" style="margin:6px 0 0">This device's own server credential, shown once by the server at registration and stored only here. Clear both fields and save to register again.</p>
       <label style="margin-top:10px">Device label</label>
       <input id="syncLabel" placeholder="Chairman phone" autocomplete="off" spellcheck="false">
       <label class="check" style="margin-top:12px"><input type="checkbox" id="syncOn"> Sync ON — post scan records and palm banks to the server above</label>
@@ -326,10 +334,12 @@
       <div class="row" style="margin-top:10px">
         <div><button class="btn primary" id="syncSaveBtn">Save settings</button></div>
         <div><button class="btn" id="syncNowBtn">Sync now</button></div>
+        <div><button class="btn" id="syncTestBtn">Test connection</button></div>
       </div>
+      <div class="sub" id="syncTestResult" style="margin-top:8px"></div>
     </div>
     <div class="card" style="margin-top:16px"><h2>Delete all data</h2>
-      <p class="sub" style="margin:0 0 10px">Erase everything stored on this device — all registered people, palm templates, wallets, balances, statements, linked accounts, transactions and logs — and return the app to an empty first-run state. App updates never do this; this button is the only erase, and only when you choose it. <b>It cannot be undone.</b> This wipe erases this device only — copies already synced to your TSG Biom server stay on the server; server-side removal arrives in the security release.</p>
+      <p class="sub" style="margin:0 0 10px">Erase everything stored on this device — all registered people, palm templates, wallets, balances, statements, linked accounts, transactions and logs — and return the app to an empty first-run state. App updates never do this; this button is the only erase, and only when you choose it. <b>It cannot be undone.</b> When Scan Sync is on, this wipe also marks this device's palm banks deleted on your TSG Biom server, and other devices remove their copies when they next sync; if the server cannot be reached, the deletion requests are kept and complete on the next sync.</p>
       <button class="btn danger" id="wipeDataBtn">Delete All Data</button>
       <div id="wipeConfirm" class="hidden" style="margin-top:12px">
         <div class="error"><b>This will permanently delete all data on this device.</b><br><span id="wipeCounts"></span><br>It cannot be undone.</div>
@@ -382,7 +392,7 @@
         <div><label>Per-transaction limit (BDT)</label><input id="enLimitPerTx" type="number" min="0" placeholder="e.g. 1000 — blank = no limit"></div>
         <div><label>Daily limit (BDT)</label><input id="enLimitDaily" type="number" min="0" placeholder="e.g. 5000 — blank = no limit"></div>
       </div>
-      <p class="sub" style="margin-top:10px">Above a limit, a Palm Pay payment is not created on palm alone — PIN confirmation is required. Leave blank for no limit.</p>
+      <p class="sub" style="margin-top:10px">Above a limit, a Palm Pay payment is not created on palm alone — it is refused. Leave blank for no limit.</p>
       <div id="enrollDetailsError"></div>
       <button class="btn primary" id="enrollDetailsNext">Continue to Palm Scan</button>
     </div>

@@ -4547,6 +4547,26 @@
       result: typeof fields.result === 'string' ? fields.result : ''
     };
   }
+  /* v62 (Phase B step 2.2, shape only): the bKash wallet link
+     shape. A person MAY carry a walletLink once the tokenised
+     Agreement linking ceremony exists (Phase E) — until then no
+     code writes one, and this validator is the single shape both
+     the sync emit below and the server whitelist enforce:
+     { provider:'bkash', agreementRef, maskedWallet, linkedTs,
+       linkMethod:'agreement' }. Returns a clean capped copy, or
+     null for anything that is not exactly that shape. */
+  function syncWalletLinkShape(v) {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+    if (v.provider !== 'bkash' || v.linkMethod !== 'agreement') return null;
+    return {
+      provider: 'bkash',
+      agreementRef: typeof v.agreementRef === 'string' ? v.agreementRef.slice(0, 128) : '',
+      maskedWallet: typeof v.maskedWallet === 'string' ? v.maskedWallet.slice(0, 32) : '',
+      linkedTs: typeof v.linkedTs === 'number' && isFinite(v.linkedTs) && v.linkedTs > 0 ? v.linkedTs : null,
+      linkMethod: 'agreement'
+    };
+  }
+
   function syncProfileRecord(person, updatedTs) {
     if (!person || typeof person !== 'object' || !person.id) return null;
     var prof = person.palmProfile;
@@ -4555,7 +4575,7 @@
     var neural = prof.neural && typeof prof.neural === 'object' ? prof.neural : null;
     var embs = neural && Array.isArray(neural.embeddings) ? neural.embeddings.filter(function (c) { return typeof c === 'string'; }) : [];
     if (!codes.length && !embs.length) return null; // no bank — nothing to upsert
-    return {
+    var rec = {
       biomId: person.id,
       name: typeof person.name === 'string' ? person.name : '',
       hand: palmProfileHand(prof),
@@ -4564,6 +4584,12 @@
       neuralModel: neural && typeof neural.model === 'string' ? neural.model : '',
       updatedTs: typeof updatedTs === 'number' && isFinite(updatedTs) ? updatedTs : null
     };
+    /* Additive (v62): the walletLink rides only when the person
+       actually carries a valid one, so every existing emit stays
+       byte-identical. */
+    var link = syncWalletLinkShape(person.walletLink);
+    if (link) rec.walletLink = link;
+    return rec;
   }
 
   /* ================= Envelope encryption (v61, Phase B item B1) =====
@@ -5359,7 +5385,22 @@
      re-run. A v60 store — banks of either stamp, hand stamps,
      wallet, and a queued sync outbox row included — opens
      under v61 with every non-template field byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61'];
+  /* v61 -> v62 is an ADOPTION: v62 changes no stored field's
+     shape. It is the Phase B server-trust release: the sync
+     engine gains per-device credentials with signed requests,
+     compare-and-swap bank versions, tombstones and a sync pull
+     (all app.js + server behaviour — the versions map and the
+     device credential live in device prefs / a meta row whose
+     VALUE this chain never interprets), and the profile shape
+     gains ONE additive optional field, walletLink (the bKash
+     Agreement shape above), which is introduced semantically:
+     absent means unlinked, nothing materialises it on existing
+     persons, and no linking ceremony exists yet. Tombstone
+     state likewise lives on the SERVER copy of a bank, never in
+     these stores. The step is therefore the identity, and a v61
+     store — sealed banks, hand stamps, wallet, and a queued
+     sync outbox row included — opens under v62 byte-identical. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -5383,6 +5424,7 @@
     'v59': function (snap) { return snap; },
     'v60': function (snap) { return snap; },
     'v61': function (snap) { return snap; },
+    'v62': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
@@ -5681,6 +5723,7 @@
     migrateBiomData: migrateBiomData,
     syncScanRecord: syncScanRecord,
     syncProfileRecord: syncProfileRecord,
+    syncWalletLinkShape: syncWalletLinkShape,
     BANK_ENC_PREFIX: BANK_ENC_PREFIX,
     bankEncAvailable: bankEncAvailable,
     bankEncBytesToB64: bankEncBytesToB64,

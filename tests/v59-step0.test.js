@@ -104,8 +104,9 @@ check('COPY My Account sync lines name the vault sealing in both states (v61 nam
 /* ---------- 0.1 Delete All Data copy is true about the server ---------- */
 check('COPY Delete All intro no longer claims there is no copy anywhere else',
   htmlSrc.indexOf('there is no copy anywhere else') === -1);
-check('COPY Delete All intro states synced copies stay on the server',
-  htmlSrc.indexOf('copies already synced to your TSG Biom server stay on the server; server-side removal arrives in the security release.') !== -1);
+check('COPY Delete All intro states the v62 tombstone truth (v62 named pin change: server-side removal HAS arrived)',
+  htmlSrc.indexOf('this wipe also marks this device\'s palm banks deleted on your TSG Biom server') !== -1 &&
+  htmlSrc.indexOf('server-side removal arrives in the security release') === -1);
 check('COPY Delete All result states the wipe did not erase server copies',
   appSrc.indexOf('Copies already synced to your TSG Biom server are not erased by this wipe') !== -1);
 

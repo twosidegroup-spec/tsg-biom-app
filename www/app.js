@@ -139,8 +139,40 @@
      gating and the v60 wallet entry are all untouched, and
      any future template-content change requires a full
      calibration re-run. The migration step is the identity
-     (representation, not shape — see biometrics.js). */
-  var APP_DATA_VERSION = 'v61';
+     (representation, not shape — see biometrics.js).
+
+     v62 (2026-11-25) is the Phase B SERVER TRUST batch (Seat 2
+     Specs B2–B5 + B7, Seat 1's dashboard summary switch and the
+     key-UI revision): the sync connection stops trusting a
+     single shared key and a last-writer-wins server. This
+     device registers its OWN credential with the server (the
+     shared key is used once, as a bootstrap, and stays working
+     for v61 devices — nobody is bricked mid-rollout), signs its
+     writes with a per-device sequence (replay and desync are
+     refused server-side), and writes banks compare-and-swap:
+     every bank carries the version this device last saw, a
+     stale write is refused with a 409 instead of silently
+     overwriting a newer bank, and ownership is stamped by the
+     server. Delete All Data becomes true for the whole system:
+     the wipe queues a tombstone for every synced bank and the
+     server drops the templates; other devices pull the
+     tombstone and remove their copy. The server adds its fraud
+     penalty regime (auth lockouts, rate limits, denied-payment
+     velocity holds, revocation as a blacklist) and this app
+     surfaces those states honestly in the sync status line.
+     The profile shape gains the additive walletLink field
+     (shape only — no linking ceremony, no bKash calls), and
+     the copy that promised a PIN confirmation flow stops
+     promising it: the Chairman deferred the PIN fallback
+     (2026-11-25), so above-limit payments are simply refused,
+     and the copy now says exactly that. Matching is untouched:
+     thresholds 0.32 / 0.5895, the model, fusion, the hand
+     gate, the frame rule, the banking guard, the strict money
+     rule and its three sites, flash, the v57 camera switching,
+     the v58 manual gating, the v60 wallet entry and the v61
+     envelope + CODEC FREEZE all stand exactly as they were.
+     The migration step is the identity (see biometrics.js). */
+  var APP_DATA_VERSION = 'v62';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -263,6 +295,29 @@
         req.onerror = function () { reject(req.error); };
       }), DB_OP_TIMEOUT_MS);
     },
+    /* v62: remove ONE row by key (people/logs/transactions by
+       id, meta by key) on whichever backend is live, under the
+       same timeout discipline as put. Used by the sync pull:
+       when the server says a bank was tombstoned on another
+       device, this device removes its copy of that person.
+       Removal is by key only — the row is never read, so a
+       sealed bank needs no vault key to be removed. */
+    remove: function (store, id) {
+      var self = this;
+      if (this.useLS || !this.db) {
+        var rows = this.lsGet(store).filter(function (r) {
+          return store === 'meta' ? r.key !== id : r.id !== id;
+        });
+        this.lsSet(store, rows);
+        return Promise.resolve();
+      }
+      return B.withTimeout(new Promise(function (resolve, reject) {
+        var tx = self.db.transaction(store, 'readwrite');
+        var req = tx.objectStore(store).delete(id);
+        req.onsuccess = function () { resolve(); };
+        req.onerror = function () { reject(req.error); };
+      }), DB_OP_TIMEOUT_MS);
+    },
     getMeta: function (key, fallback) {
       return this.all('meta').then(function (rows) {
         var row = rows.find(function (r) { return r.key === key; });
@@ -381,7 +436,48 @@
        a meta row, so DB.clearAll erases it with everything else,
        and wireWipeData also clears the sync prefs and resets
        this engine — a queued record would be wiped unsent
-       anyway, so the wipe stays exactly the v46 wipe. */
+       anyway, so the wipe stays exactly the v46 wipe.
+
+     v62 rewrites the trust side of this engine (Phase B items
+     B2–B5 + B7; the queueing discipline above is unchanged and
+     still pinned by tests/v56-sync.test.js, whose rig drives
+     this factory WITHOUT the new deps — every v62 dep is
+     optional and defaults to the v56 behaviour):
+     - Per-device credential (B2): when the prefs carry no
+       device credential but do carry the shared key, the first
+       flush registers this device once (POST /api/devices) and
+       stores the returned credential; from then on the shared
+       key is never sent again. Devices still on v61 keep using
+       the shared key — the server accepts it as a bootstrap
+       credential, so the rollout bricks nobody.
+     - Signing + replay defence (B4): with a credential and a
+       signRequest dep, every write carries x-device-id /
+       x-device-seq / x-device-sig (HMAC over the canonical
+       request, lib/canonical.js on the server, the SYNC-SIGNER
+       block below here). The sequence is committed locally
+       only when the server answers past authentication, so a
+       lost network request burns nothing; a server desync
+       answer triggers ONE automatic re-registration (a fresh
+       credential, sequence restarts) before the engine latches
+       the honest "needs re-registering" state.
+     - Compare-and-swap banks (B3): with the versions deps
+       wired, profile and tombstone bodies gain baseVersion at
+       SEND time (queued items stay byte-identical to v61) and
+       the acknowledged version is stored per Biom ID. A 409
+       drops the stale item, adopts the server's version and
+       surfaces "Bank changed on another device" — a stale
+       device can no longer overwrite a newer bank.
+     - Tombstones + pull (B7): queueTombstones (the wipe) posts
+       {deleted:true} per bank; pull() reads the summary
+       endpoint and applies server tombstones newer than the
+       version this device knows, removing the local copy.
+       Delete All Data is now true for the whole system — see
+       wireWipeData for the exact flow and its honest fallbacks.
+     - Server penalties, surfaced honestly: a 403 latches
+       "revoked" (the blacklist), a 429 backs off honouring
+       Retry-After and never latches, and the settings card's
+       Test connection button reads /api/devices/me and says in
+       plain words what the server answered. */
   /* SYNC-ENGINE-BEGIN — createBiomSync is a pure factory over its
      deps (no DOM, no globals beyond Date/JSON/setTimeout) so the
      test suite can extract and drive it with stub deps. */
@@ -391,13 +487,22 @@
     var saveChain = Promise.resolve();
     var flushing = false;
     var keyRejected = false;
+    var revoked = false;     // v62: the server has revoked (blacklisted) this device
+    var seqDesync = false;   // v62: signing sequence out of step and re-registration failed
     var lastSyncTs = 0;
     var lastError = '';
     var flushTimer = null;
+    var retryTimer = null;
+    var versions = null;     // v62: biomId -> last server-acknowledged bank version
+    var versionsPromise = null;
+    var bootstrapping = null;
+    var tombstonedIds = {};  // v62: biomIds this engine knows are tombstoned server-side
 
     function prefs() { return deps.getPrefs(); }
-    function configured() { var p = prefs(); return !!(p.endpoint && p.deviceKey); }
-    function active() { var p = prefs(); return !!(p.on && p.endpoint && p.deviceKey); }
+    function hasCred(p) { return !!(p.deviceKey || (p.deviceId && p.deviceSecret)); }
+    function configured() { var p = prefs(); return !!(p.endpoint && hasCred(p)); }
+    function active() { var p = prefs(); return !!(p.on && p.endpoint && hasCred(p)); }
+    function credentialed(p) { return !!(p.deviceId && p.deviceSecret); }
 
     function ensureLoaded() {
       if (queue !== null) return Promise.resolve(queue);
@@ -417,6 +522,11 @@
     function scheduleFlush() {
       if (flushTimer) return;
       flushTimer = setTimeout(function () { flushTimer = null; flush(); }, 900);
+    }
+    function scheduleRetry(seconds) {
+      if (retryTimer) return;
+      var wait = typeof seconds === 'number' && isFinite(seconds) && seconds > 0 ? Math.min(seconds, 300) : 30;
+      retryTimer = setTimeout(function () { retryTimer = null; flush(); }, wait * 1000);
     }
     function fillRecord(core, ts) {
       var p = prefs();
@@ -476,35 +586,179 @@
       }).catch(function () {});
       return true;
     }
+
+    /* ---------- v62: versions, bootstrap, signing ---------- */
+    function ensureVersions() {
+      if (!deps.loadVersions) return Promise.resolve(null);
+      if (versions) return Promise.resolve(versions);
+      if (!versionsPromise) {
+        versionsPromise = Promise.resolve().then(function () { return deps.loadVersions(); })
+          .then(function (v) { versions = v && typeof v === 'object' ? v : {}; return versions; })
+          .catch(function () { versions = {}; return versions; });
+      }
+      return versionsPromise;
+    }
+    function knownVersion(biomId) {
+      return versions && typeof versions[biomId] === 'number' ? versions[biomId] : 0;
+    }
+    function persistVersions() {
+      if (!deps.saveVersions || !versions) return;
+      try { deps.saveVersions(JSON.parse(JSON.stringify(versions))); } catch (e) {}
+    }
+    function readJsonSafe(res) {
+      if (!res || typeof res.json !== 'function') return Promise.resolve(null);
+      return res.json().catch(function () { return null; });
+    }
+    /* Register this device once, from the shared key. Resolves
+       true when a credential is now held. The wiring's
+       saveCredential writes the prefs, so prefs() changes under
+       us — callers re-read them. */
+    function bootstrap() {
+      var p = prefs();
+      if (!deps.saveCredential || !p.deviceKey || !p.endpoint) return Promise.resolve(false);
+      if (bootstrapping) return bootstrapping;
+      var base = String(p.endpoint || '').replace(/\/+$/, '');
+      bootstrapping = Promise.resolve().then(function () {
+        return deps.fetchFn(base + '/api/devices', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-device-key': p.deviceKey },
+          body: JSON.stringify({ label: p.label || '' })
+        });
+      }).then(function (res) {
+        if (!res || res.status < 200 || res.status >= 300) return false;
+        return readJsonSafe(res).then(function (j) {
+          if (j && j.deviceId && j.deviceKey) {
+            deps.saveCredential(j.deviceId, j.deviceKey);
+            if (deps.setSeq) deps.setSeq(0);
+            seqDesync = false;
+            return true;
+          }
+          return false;
+        });
+      }).catch(function () { return false; })
+        .then(function (ok) { bootstrapping = null; return ok; });
+      return bootstrapping;
+    }
+    /* Build the auth headers for one request. In credentialed
+       mode with a signer dep, the request is signed with the
+       NEXT sequence; the caller commits that sequence via
+       commitSeq only when the server answers past auth, so a
+       request the network swallowed burns nothing. GET requests
+       pass sign:false — the server does not verify signatures
+       on reads, and no sequence is spent on them. */
+    function authHeaders(item, bodyObj, sign) {
+      var p = prefs();
+      if (credentialed(p)) {
+        var headers = { 'Content-Type': 'application/json', 'x-device-id': p.deviceId, 'x-device-key': p.deviceSecret };
+        if (!sign || !deps.signRequest) return Promise.resolve({ headers: headers, seq: null });
+        var seq = (deps.getSeq ? deps.getSeq() : 0) + 1;
+        var path = item.type === 'scan' ? '/api/scans' : '/api/profiles';
+        return Promise.resolve()
+          .then(function () { return deps.signRequest(p.deviceSecret, p.deviceId, seq, 'POST', path, bodyObj); })
+          .then(function (sig) {
+            if (sig) { headers['x-device-seq'] = String(seq); headers['x-device-sig'] = sig; return { headers: headers, seq: seq }; }
+            return { headers: headers, seq: null };
+          })
+          .catch(function () { return { headers: headers, seq: null }; });
+      }
+      return Promise.resolve({ headers: { 'Content-Type': 'application/json', 'x-device-key': p.deviceKey }, seq: null });
+    }
+    function commitSeq(seq) {
+      if (seq !== null && seq !== undefined && deps.setSeq) deps.setSeq(seq);
+    }
+    function retryAfterOf(res, body) {
+      try {
+        if (res && res.headers && typeof res.headers.get === 'function') {
+          var h = Number(res.headers.get('Retry-After'));
+          if (isFinite(h) && h > 0) return h;
+        }
+      } catch (e) {}
+      if (body && typeof body.retryAfter === 'number' && body.retryAfter > 0) return body.retryAfter;
+      return null;
+    }
+
     function flush() {
-      if (flushing || keyRejected || !active()) return Promise.resolve(state());
+      if (flushing || keyRejected || revoked || seqDesync || !active()) return Promise.resolve(state());
       flushing = true;
-      return ensureLoaded().then(async function () {
+      return ensureLoaded().then(function () { return ensureVersions(); }).then(async function () {
         var p = prefs();
         var base = String(p.endpoint || '').replace(/\/+$/, '');
+        if (!credentialed(p) && p.deviceKey && deps.saveCredential) {
+          await bootstrap();
+          p = prefs();
+        }
+        var reissued = false;
         while (queue.length) {
           var item = queue[0];
-          var url = base + (item.type === 'profile' ? '/api/profiles' : '/api/scans');
+          var isProfile = item.type === 'profile' || item.type === 'tombstone';
+          var url = base + (isProfile ? '/api/profiles' : '/api/scans');
+          var bodyObj = item.record;
+          if (isProfile && deps.loadVersions) {
+            bodyObj = Object.assign({}, item.record, { baseVersion: knownVersion(item.record.biomId) });
+            if (item.type === 'profile' && tombstonedIds[item.record.biomId]) bodyObj.reenrol = true;
+          }
+          var auth = await authHeaders(item, bodyObj, true);
           var res = null;
           try {
-            res = await deps.fetchFn(url, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'x-device-key': p.deviceKey },
-              body: JSON.stringify(item.record)
-            });
+            res = await deps.fetchFn(url, { method: 'POST', headers: auth.headers, body: JSON.stringify(bodyObj) });
           } catch (e) {
             lastError = 'network unreachable — will retry';
             break;
           }
           if (res && res.status >= 200 && res.status < 300) {
+            commitSeq(auth.seq);
             queue.shift();
             lastSyncTs = deps.now();
             lastError = '';
+            if (isProfile && versions) {
+              var ack = await readJsonSafe(res);
+              versions[item.record.biomId] = ack && typeof ack.version === 'number' ? ack.version : (bodyObj.baseVersion || 0) + 1;
+              if (item.type === 'tombstone') tombstonedIds[item.record.biomId] = true;
+              if (item.type === 'profile') delete tombstonedIds[item.record.biomId];
+              persistVersions();
+            }
             await persist();
             continue;
           }
-          if (res && res.status === 401) { keyRejected = true; lastError = 'key rejected'; }
-          else lastError = 'server answered ' + (res ? res.status : 'no response') + ' — will retry';
+          var errBody = await readJsonSafe(res);
+          if (res && res.status === 409 && isProfile) {
+            /* CAS conflict (or a tombstone state): this device's
+               item is stale. Drop it, adopt the server's version,
+               and surface the divergence — the bank is re-emitted
+               by the next local change, now based on the truth. */
+            commitSeq(auth.seq);
+            queue.shift();
+            if (errBody && typeof errBody.currentVersion === 'number' && versions) {
+              versions[item.record.biomId] = errBody.currentVersion;
+              persistVersions();
+            }
+            if (errBody && errBody.deleted) tombstonedIds[item.record.biomId] = true;
+            lastError = 'Bank changed on another device — re-checking before update';
+            if (deps.onProfileConflict) { try { deps.onProfileConflict(item.record.biomId, errBody); } catch (e) {} }
+            await persist();
+            continue;
+          }
+          if (res && res.status === 403) {
+            revoked = true;
+            lastError = 'device revoked';
+            break;
+          }
+          if (res && res.status === 401) {
+            if (errBody && errBody.code === 'SEQ_DESYNC' && !reissued && deps.saveCredential && prefs().deviceKey) {
+              reissued = true;
+              var ok = await bootstrap();
+              if (ok) continue; // retry the same item under the fresh credential
+            }
+            if (errBody && errBody.code === 'SEQ_DESYNC') { seqDesync = true; lastError = 'signing sequence out of step'; }
+            else { keyRejected = true; lastError = 'key rejected'; }
+            break;
+          }
+          if (res && res.status === 429) {
+            lastError = 'server is rate-limiting this device — will retry';
+            scheduleRetry(retryAfterOf(res, errBody));
+            break;
+          }
+          lastError = 'server answered ' + (res ? res.status : 'no response') + ' — will retry';
           break;
         }
         flushing = false;
@@ -512,39 +766,204 @@
         return state();
       }).catch(function () { flushing = false; return state(); });
     }
+
+    /* B7 pull: read the counts-only summary and apply server
+       tombstones newer than the version this device knows —
+       the local copy of a wiped bank is removed here. Live-row
+       version drift is deliberately NOT adopted: if this device
+       later writes that bank, the CAS conflict path surfaces
+       the divergence instead of silently rebasing. Runs only
+       when the wiring provides applyTombstone. */
+    function pull() {
+      if (!active() || !deps.applyTombstone) return Promise.resolve(state());
+      return ensureLoaded().then(function () { return ensureVersions(); }).then(async function () {
+        var p = prefs();
+        var base = String(p.endpoint || '').replace(/\/+$/, '');
+        if (!credentialed(p) && p.deviceKey && deps.saveCredential) {
+          await bootstrap();
+          p = prefs();
+        }
+        var auth = await authHeaders({ type: 'summary' }, null, false);
+        var res = null;
+        try {
+          res = await deps.fetchFn(base + '/api/profiles?summary=1', { method: 'GET', headers: auth.headers });
+        } catch (e) { return state(); }
+        if (res && res.status === 403) { revoked = true; deps.onStatus(); return state(); }
+        if (!res || res.status !== 200) return state();
+        var j = await readJsonSafe(res);
+        var rows = j && Array.isArray(j.profiles) ? j.profiles : [];
+        for (var i = 0; i < rows.length; i++) {
+          var row = rows[i];
+          if (!row || !row.biomId || typeof row.version !== 'number') continue;
+          if (row.deleted && row.version > knownVersion(row.biomId)) {
+            tombstonedIds[row.biomId] = true;
+            try { await deps.applyTombstone(row.biomId); } catch (e) {}
+            if (versions) { versions[row.biomId] = row.version; persistVersions(); }
+          } else if (row.deleted) {
+            tombstonedIds[row.biomId] = true;
+          }
+        }
+        return state();
+      }).catch(function () { return state(); });
+    }
+
+    /* Queue one tombstone per person (the Delete All Data flow).
+       Resolves the number queued. Existing queued profile items
+       for the same Biom ID are replaced — a tombstone is the
+       newest truth about that bank. */
+    function queueTombstones(people) {
+      if (!active()) return Promise.resolve(0);
+      var list = Array.isArray(people) ? people : [];
+      return ensureLoaded().then(function () {
+        var n = 0;
+        list.forEach(function (person) {
+          if (!person || !person.id) return;
+          queue = queue.filter(function (it) { return !(it.type !== 'scan' && it.record && it.record.biomId === person.id); });
+          queue.push({ type: 'tombstone', record: { biomId: person.id, deleted: true, deletedTs: deps.now() } });
+          n++;
+        });
+        if (n) persist();
+        return n;
+      });
+    }
+    function pendingItems() { return queue ? queue.slice() : []; }
+
+    /* The settings card's Test connection: ask the server who
+       this device is (GET /api/devices/me — a read that writes
+       nothing and reveals nothing about other devices) and
+       answer in plain words. In shared-key mode there is no
+       credential to test yet — the honest answer says the
+       device registers on its next sync. */
+    function testConnection() {
+      var p = prefs();
+      if (!p.endpoint) return Promise.resolve({ ok: false, message: 'No server endpoint is set yet.' });
+      var base = String(p.endpoint || '').replace(/\/+$/, '');
+      var start = Promise.resolve(false);
+      if (!credentialed(p) && p.deviceKey && deps.saveCredential) start = bootstrap();
+      return start.then(async function () {
+        p = prefs();
+        if (!credentialed(p)) {
+          if (p.deviceKey) return { ok: true, message: 'Shared-key mode: this device registers its own credential on the next sync — tap Sync now to register it now.' };
+          return { ok: false, message: 'No device credential and no shared key are set.' };
+        }
+        var res = null;
+        try {
+          res = await deps.fetchFn(base + '/api/devices/me', {
+            method: 'GET',
+            headers: { 'x-device-id': p.deviceId, 'x-device-key': p.deviceSecret }
+          });
+        } catch (e) {
+          return { ok: false, message: 'Network unreachable — check the endpoint URL and try again.' };
+        }
+        if (res && res.status === 200) {
+          var j = await readJsonSafe(res);
+          return { ok: true, message: 'Connected — this device is registered' + (j && j.label ? ' as "' + j.label + '"' : '') + ' and is not revoked.' };
+        }
+        if (res && res.status === 403) {
+          revoked = true;
+          deps.onStatus();
+          return { ok: false, message: 'This device has been revoked on the server. Sync is stopped until the server admin un-revokes it, or you register again with the shared key.' };
+        }
+        if (res && res.status === 401) return { ok: false, message: 'The server refused this device credential — check the device ID and secret, or clear them and register again with the shared key.' };
+        return { ok: false, message: 'The server answered ' + (res ? res.status : 'no response') + ' — try again shortly.' };
+      });
+    }
+
     function state() {
       return {
         on: !!prefs().on, configured: configured(),
         queued: queue ? queue.length : 0,
-        keyRejected: keyRejected, lastSyncTs: lastSyncTs, lastError: lastError
+        keyRejected: keyRejected, revoked: revoked, seqDesync: seqDesync,
+        lastSyncTs: lastSyncTs, lastError: lastError
       };
     }
     function statusText() {
       var s = state();
       if (!s.on) return 'Off';
       if (!s.configured) return 'On — endpoint URL and device key needed';
+      if (s.revoked) return 'This device has been revoked on the server — sync is stopped until the server admin un-revokes it or this device registers again';
       if (s.keyRejected) return 'Key rejected by the server — check the device key, then Save settings';
+      if (s.seqDesync) return 'This device needs re-registering — its signing sequence is out of step. Save settings, then tap Sync now';
       var base = s.lastSyncTs ? ('Last synced ' + new Date(s.lastSyncTs).toLocaleTimeString()) : 'Not synced yet';
       return base + ' · ' + s.queued + ' queued' + (s.lastError ? ' · ' + s.lastError : '');
     }
-    function settingsChanged() { keyRejected = false; if (lastError === 'key rejected') lastError = ''; deps.onStatus(); }
+    function settingsChanged() {
+      keyRejected = false;
+      revoked = false;
+      seqDesync = false;
+      if (lastError === 'key rejected' || lastError === 'device revoked' || lastError === 'signing sequence out of step') lastError = '';
+      deps.onStatus();
+    }
     function reset() {
       queue = [];
       keyRejected = false;
+      revoked = false;
+      seqDesync = false;
+      versions = null;
+      versionsPromise = null;
+      tombstonedIds = {};
       lastSyncTs = 0;
       lastError = '';
       if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
       // Persist AFTER any in-flight persist of the old queue, so
       // the emptied outbox is the final state (see wireWipeData).
       persist();
     }
     return {
-      noteScan: noteScan, noteProfile: noteProfile, flush: flush,
+      noteScan: noteScan, noteProfile: noteProfile, flush: flush, pull: pull,
+      queueTombstones: queueTombstones, pendingItems: pendingItems,
+      testConnection: testConnection,
       scheduleFlush: scheduleFlush, state: state, statusText: statusText,
       settingsChanged: settingsChanged, reset: reset, ensureLoaded: ensureLoaded
     };
   }
+
   /* SYNC-ENGINE-END */
+
+  /* SYNC-SIGNER-BEGIN — the app-side request signer (v62, B4).
+     Must produce byte-identical signatures to the server's
+     lib/canonical.js; tests/v62-server-trust.test.js pins one
+     HMAC test vector through BOTH implementations. Canonical
+     JSON: object keys sorted recursively, arrays in order, no
+     whitespace. The HMAC key is the raw SHA-256 of the device
+     secret; the signed message is
+       deviceId \n seq \n METHOD \n path \n sha256hex(canonical body)
+     The secret itself never leaves the device — only the
+     signature does. WebCrypto only; without it the signer
+     returns null and the engine sends the credential unsigned
+     (the server then refuses, if the device requires signing,
+     and the status line says so — fail-closed, never silent). */
+  function biomCanonicalJson(v) {
+    if (v === null || v === undefined) return 'null';
+    if (typeof v === 'number' || typeof v === 'boolean') return JSON.stringify(v);
+    if (typeof v === 'string') return JSON.stringify(v);
+    if (Array.isArray(v)) return '[' + v.map(biomCanonicalJson).join(',') + ']';
+    if (typeof v === 'object') {
+      return '{' + Object.keys(v).sort().map(function (k) {
+        return JSON.stringify(k) + ':' + biomCanonicalJson(v[k]);
+      }).join(',') + '}';
+    }
+    return 'null';
+  }
+  function biomHex(buf) {
+    return Array.prototype.map.call(new Uint8Array(buf), function (b) {
+      return ('0' + b.toString(16)).slice(-2);
+    }).join('');
+  }
+  function biomSignRequest(secret, deviceId, seq, method, path, body) {
+    if (!window.crypto || !crypto.subtle || !window.TextEncoder) return Promise.resolve(null);
+    var enc = new TextEncoder();
+    return crypto.subtle.digest('SHA-256', enc.encode(String(secret))).then(function (keyBytes) {
+      return crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    }).then(function (key) {
+      return crypto.subtle.digest('SHA-256', enc.encode(body === null || body === undefined ? '' : biomCanonicalJson(body))).then(function (bodyHash) {
+        var msg = String(deviceId) + '\n' + String(seq) + '\n' + String(method) + '\n' + String(path) + '\n' + biomHex(bodyHash);
+        return crypto.subtle.sign('HMAC', key, enc.encode(msg)).then(function (sig) { return biomHex(sig); });
+      });
+    }).catch(function () { return null; });
+  }
+  /* SYNC-SIGNER-END */
 
   function syncPrefGet(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
   function syncPrefSet(k, v) { try { if (v) localStorage.setItem(k, v); else localStorage.removeItem(k); } catch (e) {} }
@@ -564,11 +983,41 @@
         on: syncPrefGet('biomSyncOn') === '1',
         endpoint: syncPrefGet('biomSyncEndpoint'),
         deviceKey: syncPrefGet('biomSyncDeviceKey'),
+        deviceId: syncPrefGet('biomSyncDeviceId'),
+        deviceSecret: syncPrefGet('biomSyncDeviceSecret'),
         label: syncPrefGet('biomSyncLabel') || 'Chairman phone'
       };
     },
     loadOutbox: function () { return DB.getMeta('syncOutbox', []); },
     saveOutbox: function (items) { return DB.setMeta('syncOutbox', items); },
+    /* v62: the bank versions this device last saw acknowledged
+       by the server, one meta row beside the outbox. */
+    loadVersions: function () { return DB.getMeta('syncVersions', {}); },
+    saveVersions: function (v) { return DB.setMeta('syncVersions', v); },
+    /* v62: the signing sequence is a device pref — it must
+       survive restarts exactly, or every boot would desync. */
+    getSeq: function () { var n = parseInt(syncPrefGet('biomSyncSeq'), 10); return isFinite(n) && n > 0 ? n : 0; },
+    setSeq: function (n) { syncPrefSet('biomSyncSeq', String(n)); },
+    saveCredential: function (deviceId, secret) {
+      syncPrefSet('biomSyncDeviceId', deviceId);
+      syncPrefSet('biomSyncDeviceSecret', secret);
+      if ($('syncDeviceId')) $('syncDeviceId').value = deviceId;
+      if ($('syncDeviceSecret')) $('syncDeviceSecret').value = secret;
+    },
+    signRequest: function (secret, deviceId, seq, method, path, body) {
+      return biomSignRequest(secret, deviceId, seq, method, path, body);
+    },
+    /* v62 (B7): the server says this bank was wiped on another
+       device — remove this device's copy and say so. */
+    applyTombstone: function (biomId) {
+      return DB.remove('people', biomId).then(function () {
+        renderDashboard();
+        fillTerminalPeople();
+        renderWallet();
+        toast('A palm bank was deleted on another device and has been removed here too.');
+      });
+    },
+    onProfileConflict: function () { renderSyncStatus(); },
     fetchFn: function (url, opts) { return fetch(url, opts); },
     now: function () { return Date.now(); },
     uuid: syncUuid,
@@ -582,15 +1031,19 @@
   function fillSyncSettings() {
     if ($('syncEndpoint')) $('syncEndpoint').value = syncPrefGet('biomSyncEndpoint');
     if ($('syncDeviceKey')) $('syncDeviceKey').value = syncPrefGet('biomSyncDeviceKey');
+    if ($('syncDeviceId')) $('syncDeviceId').value = syncPrefGet('biomSyncDeviceId');
+    if ($('syncDeviceSecret')) $('syncDeviceSecret').value = syncPrefGet('biomSyncDeviceSecret');
     if ($('syncLabel')) $('syncLabel').value = syncPrefGet('biomSyncLabel');
     if ($('syncOn')) $('syncOn').checked = syncPrefGet('biomSyncOn') === '1';
     renderSyncStatus();
   }
   function wireSyncSettings() {
-    var save = $('syncSaveBtn'), nowBtn = $('syncNowBtn');
+    var save = $('syncSaveBtn'), nowBtn = $('syncNowBtn'), testBtn = $('syncTestBtn');
     if (save) save.addEventListener('click', function () {
       syncPrefSet('biomSyncEndpoint', $('syncEndpoint').value.trim());
       syncPrefSet('biomSyncDeviceKey', $('syncDeviceKey').value.trim());
+      syncPrefSet('biomSyncDeviceId', $('syncDeviceId') ? $('syncDeviceId').value.trim() : '');
+      syncPrefSet('biomSyncDeviceSecret', $('syncDeviceSecret') ? $('syncDeviceSecret').value.trim() : '');
       syncPrefSet('biomSyncLabel', $('syncLabel').value.trim());
       syncPrefSet('biomSyncOn', $('syncOn').checked ? '1' : '');
       Sync.settingsChanged();
@@ -599,7 +1052,26 @@
       Sync.flush();
     });
     if (nowBtn) nowBtn.addEventListener('click', function () {
-      Sync.flush().then(function () { renderSyncStatus(); });
+      Sync.flush().then(function () { return Sync.pull(); }).then(function () { renderSyncStatus(); });
+    });
+    if (testBtn) testBtn.addEventListener('click', function () {
+      var out = $('syncTestResult');
+      if (out) out.textContent = 'Testing…';
+      Sync.testConnection().then(function (r) {
+        if (out) out.textContent = r.message;
+        renderSyncStatus();
+      });
+    });
+    /* Show/hide toggles for the two secret fields — the values
+       stay on this device either way; the toggle only changes
+       whether they are visible on this screen. */
+    [['syncDeviceKeyToggle', 'syncDeviceKey'], ['syncDeviceSecretToggle', 'syncDeviceSecret']].forEach(function (pair) {
+      var t = $(pair[0]), field = $(pair[1]);
+      if (t && field) t.addEventListener('click', function () {
+        var show = field.type === 'password';
+        field.type = show ? 'text' : 'password';
+        t.textContent = show ? 'Hide' : 'Show';
+      });
     });
   }
 
@@ -4188,10 +4660,12 @@
               });
             };
             // Biometric-only limits set at registration (regBIOM): above
-            // a limit the palm alone does not create a payment - PIN
-            // confirmation is required, so nothing is recorded as paid.
+            // a limit the palm alone does not create a payment, so
+            // nothing is recorded as paid. (v62 copy truth: there is
+            // no PIN confirmation flow — the Chairman deferred it —
+            // so the refusal copy promises nothing beyond refusal.)
             if (person.limits && person.limits.perTx && amount > person.limits.perTx) {
-              $('termResult').innerHTML = html + loyaltyLine + '<div class="error" style="margin-top:10px">Biom Pay not created: BDT ' + amount.toLocaleString() + ' exceeds this customer\'s biometric-only per-transaction limit of BDT ' + person.limits.perTx.toLocaleString() + '. PIN confirmation is required above the limit.</div>';
+              $('termResult').innerHTML = html + loyaltyLine + '<div class="error" style="margin-top:10px">Biom Pay not created: BDT ' + amount.toLocaleString() + ' exceeds this customer\'s biometric-only per-transaction limit of BDT ' + person.limits.perTx.toLocaleString() + '. Payments above the limit are not created.</div>';
               Snd.speak('Palm recognized');
               return;
             }
@@ -4200,7 +4674,7 @@
                 var dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
                 var todaySum = txs.filter(function (t) { return t.personId === person.id && t.ts >= dayStart.getTime(); }).reduce(function (s, t) { return s + Number(t.amount || 0); }, 0);
                 if (todaySum + amount > person.limits.daily) {
-                  $('termResult').innerHTML = html + loyaltyLine + '<div class="error" style="margin-top:10px">Biom Pay not created: this payment would take today\'s total to BDT ' + (todaySum + amount).toLocaleString() + ', above this customer\'s biometric-only daily limit of BDT ' + person.limits.daily.toLocaleString() + '. PIN confirmation is required above the limit.</div>';
+                  $('termResult').innerHTML = html + loyaltyLine + '<div class="error" style="margin-top:10px">Biom Pay not created: this payment would take today\'s total to BDT ' + (todaySum + amount).toLocaleString() + ', above this customer\'s biometric-only daily limit of BDT ' + person.limits.daily.toLocaleString() + '. Payments above the limit are not created.</div>';
                   Snd.speak('Palm recognized');
                   return;
                 }
@@ -4838,7 +5312,7 @@
       $('acLimitsBody').innerHTML =
         '<b>Per-transaction limit:</b> ' + (lim.perTx ? fmtBDT(lim.perTx) : 'No limit') + '<br>' +
         '<b>Daily limit:</b> ' + (lim.daily ? fmtBDT(lim.daily) : 'No limit') + '<br>' +
-        '<span style="color:var(--muted)">Limits are chosen at registration. Above a limit, a Biom Pay payment is not created on palm alone — PIN confirmation is required.</span>';
+        '<span style="color:var(--muted)">Limits are chosen at registration. Above a limit, a Biom Pay payment is not created on palm alone — it is refused.</span>';
       /* v61 (B1): the security lines state THIS bank's actual
          state — sealed under the vault key, sealed under another
          key, or still in its encoded form — never a blanket
@@ -5582,22 +6056,72 @@
          saved recovery sheet stays valid. */
       loadSnapshot().then(function (snap) {
         var wiped = B.wipeBiomData(snap);
-        return DB.clearAll().then(function () { return wiped; });
-      }).then(function (wiped) {
-        // v56: the wipe also clears the Scan Sync prefs and the
-        // in-memory outbox (the persisted outbox is a meta row,
-        // already erased by clearAll above). NO delete-all record
-        // is sent: the queue that would carry it is wiped with
-        // everything else, by design (see the Sync section).
-        ['biomSyncEndpoint', 'biomSyncDeviceKey', 'biomSyncLabel', 'biomSyncOn'].forEach(function (k) { try { localStorage.removeItem(k); } catch (e) {} });
-        Sync.reset();
+        /* v62 (B7): the wipe is now true for the WHOLE system.
+           Before anything is erased locally, every person with a
+           palm bank gets a tombstone queued and a flush is
+           attempted: the server drops the bank's templates and
+           keeps only the deletion marker, and other devices
+           remove their copies when they next pull. Tombstones
+           that cannot be delivered (offline, server down) are
+           captured from the queue and re-saved after clearAll,
+           with the sync settings KEPT, so the removal completes
+           on the next successful sync — the result copy below
+           says exactly which of the three outcomes happened. No
+           delete-all scan record is sent (there is none — the
+           tombstones are profile writes, not scan records). */
+        var banked = snap.people.filter(function (p) {
+          return p && p.palmProfile && (
+            (Array.isArray(p.palmProfile.codes) && p.palmProfile.codes.length) ||
+            (p.palmProfile.neural && Array.isArray(p.palmProfile.neural.embeddings) && p.palmProfile.neural.embeddings.length) ||
+            (Array.isArray(p.palmProfile.legacyCodes) && p.palmProfile.legacyCodes.length));
+        });
+        var st = Sync.state();
+        var syncActive = !!(st.on && st.configured);
+        var versionsBefore = null;
+        var stage = Promise.resolve();
+        if (syncActive) {
+          stage = DB.getMeta('syncVersions', {}).then(function (v) { versionsBefore = v; })
+            .then(function () { return Sync.queueTombstones(banked); })
+            .then(function () { return Sync.flush(); });
+        }
+        return stage.then(function () {
+          var pendingTombstones = syncActive ? Sync.pendingItems().filter(function (it) { return it.type === 'tombstone'; }) : [];
+          return DB.clearAll().then(function () {
+            if (pendingTombstones.length) {
+              return DB.setMeta('syncOutbox', pendingTombstones)
+                .then(function () { return DB.setMeta('syncVersions', versionsBefore || {}); })
+                .then(function () { return { wiped: wiped, server: 'pending' }; });
+            }
+            return { wiped: wiped, server: syncActive && banked.length ? 'tombstoned' : 'inactive' };
+          });
+        });
+      }).then(function (outcome) {
+        var wiped = outcome.wiped;
+        if (outcome.server === 'pending') {
+          /* The sync prefs are KEPT on purpose: the tombstones
+             still queued in the outbox are the only record that
+             the server copies must be deleted, and they send on
+             the next boot's flush. */
+        } else {
+          // v56: the wipe also clears the Scan Sync prefs and the
+          // in-memory outbox (the persisted outbox is a meta row,
+          // already erased by clearAll above). v62 extends the
+          // pref list with this device's own credential + sequence.
+          ['biomSyncEndpoint', 'biomSyncDeviceKey', 'biomSyncLabel', 'biomSyncOn', 'biomSyncDeviceId', 'biomSyncDeviceSecret', 'biomSyncSeq'].forEach(function (k) { try { localStorage.removeItem(k); } catch (e) {} });
+          Sync.reset();
+        }
         try { localStorage.setItem(DV_KEY, APP_DATA_VERSION); } catch (e) {}
         try { localStorage.setItem(DBV_KEY, APP_DATA_VERSION); } catch (e) {}
         closePanel();
         cancelBtn.disabled = false;
+        var serverLine = outcome.server === 'tombstoned'
+          ? 'The palm banks that were synced to your TSG Biom server have been marked deleted there too.'
+          : outcome.server === 'pending'
+            ? 'Removal from your TSG Biom server could not be confirmed just now — the deletion requests are kept and complete on the next sync.'
+            : 'Copies already synced to your TSG Biom server are not erased by this wipe — Scan Sync was off, so no server removal was sent.';
         msg.innerHTML = '<div class="success">All data deleted — ' + wiped.removedTotal +
           (wiped.removedTotal === 1 ? ' stored record' : ' stored records') +
-          ' removed. This device now holds an empty registry. Copies already synced to your TSG Biom server are not erased by this wipe — server-side removal arrives in the security release. Reloading…</div>';
+          ' removed. This device now holds an empty registry. ' + serverLine + ' Reloading…</div>';
         toast('All data deleted. The app is empty.');
         setTimeout(function () { location.reload(); }, 1500);
       }).catch(function () {
@@ -5658,5 +6182,7 @@
       fillSyncSettings();
       renderVaultCard();
       return Sync.ensureLoaded();
-    }).then(function () { return Sync.flush(); }).catch(function () {});
+    }).then(function () { return Sync.flush(); })
+    .then(function () { return Sync.pull(); }) // v62 (B7): apply any server tombstones after the flush
+    .catch(function () {});
 })();

@@ -307,8 +307,8 @@ check('MIGRATE a store with a missing logs array keeps the people', Array.isArra
    its migration step is an adoption like v38's. A store written by
    v38 (and one written by v37, through both steps) must open under
    v39 with the person, codes and points intact and still verify. */
-check('CHAIN v61 is the newest link (v61 named pin change: B1 appends the envelope step)', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v61' &&
-  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40,v41,v42,v43,v44,v45,v46,v47,v48,v49,v50,v51,v52,v53,v54,v55,v56,v57,v58,v59,v60,v61', B.BIOM_DATA_VERSIONS.join(','));
+check('CHAIN v62 is the newest link (v62 named pin change: the server-trust step)', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v62' &&
+  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40,v41,v42,v43,v44,v45,v46,v47,v48,v49,v50,v51,v52,v53,v54,v55,v56,v57,v58,v59,v60,v61,v62', B.BIOM_DATA_VERSIONS.join(','));
 const mig39 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v38', 'v39');
 check('MIGRATE v38->v39 runs the v39 step', mig39.appliedSteps.indexOf('v39') !== -1, mig39.appliedSteps.join(','));
 check('MIGRATE v38->v39 is an adoption: no store rewritten', mig39.changed === false && mig39.changedStores.length === 0,
@@ -993,6 +993,36 @@ check('B1 the envelope conversion entry points exist on B', typeof B.convertBank
   typeof B.bankEncryptPerson === 'function' && typeof B.bankDecryptPerson === 'function' &&
   typeof B.bankEncryptProfileCore === 'function' && B.BANK_ENC_PREFIX === 'enc.v1.');
 
+/* ---------- v62: the server-trust adoption --------------------
+   v62 changes no stored shape: per-device credentials, bank
+   versions and tombstone state live in device prefs, one meta
+   row and the SERVER copies — never in these four stores — and
+   the one new profile field (walletLink) is additive and
+   absent-means-unlinked, so nothing is materialised on
+   existing persons. The step is the identity; the chain
+   carries a v61 store (sealed banks included) to v62
+   byte-identical, outbox row and all. */
+const v62Store = JSON.parse(JSON.stringify(v61Store));
+const v62Before = JSON.stringify(v62Store);
+const mig62 = B.migrateBiomData(v62Store, 'v61', 'v62');
+check('MIGRATE v61->v62 runs the v62 step', mig62.appliedSteps.indexOf('v62') !== -1, mig62.appliedSteps.join(','));
+check('MIGRATE v61->v62 is a pure adoption: persons byte-identical, nothing rewritten',
+  mig62.changed === false && JSON.stringify(mig62.snapshot) === v62Before,
+  'changedStores=' + JSON.stringify(mig62.changedStores));
+check('SURVIVE v62 the sealed-era banks, hands and outbox row are intact',
+  mig62.snapshot.people.length === 2 &&
+  mig62.snapshot.meta.some(function (r) { return r.key === 'syncOutbox' && r.value.length === 1 && r.value[0].record.id === 'q1'; }));
+check('SHAPE a v62 person gains NO walletLink field from the migration (absent = unlinked)',
+  mig62.snapshot.people.every(function (p) { return !('walletLink' in p); }));
+const migChain62 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v37', 'v62');
+check('MIGRATE v37->v62 runs all twenty-five steps in order', migChain62.appliedSteps.join(',') === 'v38,v39,v40,v41,v42,v43,v44,v45,v46,v47,v48,v49,v50,v51,v52,v53,v54,v55,v56,v57,v58,v59,v60,v61,v62', migChain62.appliedSteps.join(','));
+check('MIGRATE v37->v62 keeps the person, gains the wallet, flags the palm',
+  migChain62.snapshot.people.length === 1 && migChain62.snapshot.people[0].loyaltyPoints === 137 &&
+  migChain62.snapshot.people[0].wallet.balance === 0 && migChain62.snapshot.people[0].palmProfile.format === 'legacy');
+const migAgain62 = B.migrateBiomData(mig62.snapshot, 'v62', 'v62');
+check('MIGRATE is idempotent at v62', migAgain62.appliedSteps.length === 0 && migAgain62.changed === false &&
+  migAgain62.snapshot.people[0].wallet.balance === 450);
+
 /* ---------- the shipped app source carries no AUTOMATIC wipe -------
    v46 note: the only erase in the app is the owner's confirmed
    Delete All Data action (DB.clearAll + B.wipeBiomData, wired in
@@ -1000,12 +1030,12 @@ check('B1 the envelope conversion entry points exist on B', typeof B.convertBank
    and is still pinned here: deleting the whole database and
    removing store keys, the retired update-time wipe mechanics. */
 const appSrc = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
-check('APP declares the current data version (v61 — named pin change at the B1 bump)', appSrc.indexOf("APP_DATA_VERSION = 'v61'") !== -1);
+check('APP declares the current data version (v62 — named pin change at the server-trust bump)', appSrc.indexOf("APP_DATA_VERSION = 'v62'") !== -1);
 check('APP startup runs the migration', appSrc.indexOf('migrateBiomData') !== -1 && appSrc.indexOf('migrateDbStores') !== -1);
 check('APP contains no database deletion (the retired wipe)', appSrc.indexOf('deleteDatabase') === -1);
 check('APP contains no store-key removal (the retired wipe)', !/removeItem\(\s*'tsgbiom_/.test(appSrc));
 const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
-check('APP shell is v61 (named pin change at the B1 bump)', swSrc.indexOf('tsg-biom-shell-v61') !== -1);
+check('APP shell is v62 (named pin change at the server-trust bump)', swSrc.indexOf('tsg-biom-shell-v62') !== -1);
 
 console.log(fail === 0 ? 'ALL MIGRATION TESTS PASSED (' + pass + ')' : fail + ' FAILURES, ' + pass + ' passed');
 process.exit(fail === 0 ? 0 : 1);

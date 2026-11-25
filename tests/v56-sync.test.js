@@ -225,7 +225,14 @@ async function e2eTest() {
       wo.deviceLabel === 'Chairman phone' && wo.modelId === 'palmnet-r3-ep12' && wo.appVersion === 'v56' && wo.profileName === 'Rig Person');
     const profRes = await fetch('http://127.0.0.1:' + PORT + '/api/profiles', { headers: { 'x-read-key': 'v56-read-key' } });
     const profJson = await profRes.json();
-    check('E2E the bank reads back verbatim', profJson.count === 1 && deepEq(profJson.profiles[0], B.syncProfileRecord(PERSON, 1764000000000)));
+    /* v62 NAMED PIN CHANGE: the server now stamps version,
+       ownerDeviceId and receivedTs on the stored bank (B3/B4) —
+       the client-sent fields still read back verbatim. */
+    const bankBack = Object.assign({}, profJson.profiles[0]);
+    delete bankBack.version; delete bankBack.ownerDeviceId; delete bankBack.receivedTs;
+    check('E2E the bank reads back verbatim', profJson.count === 1 && deepEq(bankBack, B.syncProfileRecord(PERSON, 1764000000000)));
+    check('E2E the v62 server stamped version 1 + the legacy owner on the bank',
+      profJson.profiles[0].version === 1 && profJson.profiles[0].ownerDeviceId === 'legacy');
   } finally {
     child.kill('SIGTERM');
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) {}
@@ -246,9 +253,18 @@ async function e2eTest() {
     appSrc.indexOf("DB.getMeta('syncOutbox', [])") !== -1 && appSrc.indexOf("DB.setMeta('syncOutbox', items)") !== -1);
   check('WIRING Delete All Data clears the four sync prefs and resets the engine',
     appSrc.indexOf("'biomSyncEndpoint', 'biomSyncDeviceKey', 'biomSyncLabel', 'biomSyncOn'") !== -1 && appSrc.indexOf('Sync.reset();') !== -1);
+  /* v62 NAMED PIN CHANGE: the bound rises 6 -> 12. The shared
+     key gains ONE new legitimate role in v62 — it is the
+     bootstrap credential that registers this device's own
+     credential (POST /api/devices) and the desync recovery
+     path — so the engine names it in the bootstrap and its
+     guards as well as in the two header sends. The invariant
+     the pin exists for is unchanged and still checked here:
+     the key is read from prefs and sent ONLY as the
+     x-device-key header — never in a body, never in a log. */
   check('WIRING the device key is read from prefs and sent ONLY as the x-device-key header',
     appSrc.indexOf("'x-device-key': p.deviceKey") !== -1 &&
-    (appSrc.match(/deviceKey/g) || []).length <= 6,
+    (appSrc.match(/deviceKey/g) || []).length <= 12,
     'deviceKey mentions=' + (appSrc.match(/deviceKey/g) || []).length);
   /* v60 PIN CHANGE (named openly): 'wallet-open' leaves the
      app-callsite list — wallet entry is no longer a scan (the
