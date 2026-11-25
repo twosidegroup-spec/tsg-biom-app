@@ -241,8 +241,14 @@ async function e2eTest() {
 
 /* ---------------- source pins ---------------------------------- */
 (function () {
-  check('UI the More page carries the Sync card (endpoint, PASSWORD device key, label, toggle, status, both buttons)',
-    htmlSrc.indexOf('id="syncEndpoint"') !== -1 && htmlSrc.indexOf('id="syncDeviceKey" type="password"') !== -1 &&
+  /* v63 PIN CHANGE (named openly): the shared-key field is
+     GONE from the card — the app registers itself with the
+     built-in registration-only bootstrap key, so there is no
+     key for the owner to type. The card keeps the endpoint,
+     the device credential fields, label, toggle, status and
+     both buttons, and the shared-key input must stay absent. */
+  check('UI the More page carries the Sync card (endpoint, label, toggle, status, both buttons; v63: no shared-key field)',
+    htmlSrc.indexOf('id="syncEndpoint"') !== -1 && htmlSrc.indexOf('id="syncDeviceKey"') === -1 &&
     htmlSrc.indexOf('id="syncLabel"') !== -1 && htmlSrc.indexOf('id="syncOn"') !== -1 &&
     htmlSrc.indexOf('id="syncStatus"') !== -1 && htmlSrc.indexOf('id="syncSaveBtn"') !== -1 && htmlSrc.indexOf('id="syncNowBtn"') !== -1);
   check('UI My Account settings link to the Sync card on More',

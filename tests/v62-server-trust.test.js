@@ -43,10 +43,10 @@ const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
 
 /* ---------------- version + shape ------------------------------ */
 (function () {
-  check('VERSION app, shell and chain agree at v62',
-    (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v62' &&
-    swSrc.indexOf('tsg-biom-shell-v62') !== -1 &&
-    B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v62');
+  check('VERSION app, shell and chain agree at v63 (v63 named pin change)',
+    (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v63' &&
+    swSrc.indexOf('tsg-biom-shell-v63') !== -1 &&
+    B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v63');
 
   const person = { id: 'TSG-BIO-9', name: 'Rig', palmProfile: { v: 4, format: 'packed96', codes: ['QUJD'] } };
   check('SHAPE a person without a walletLink emits the v61 record byte-identical',
@@ -295,12 +295,18 @@ async function engineTests() {
 
 /* ---------------- source pins ---------------------------------- */
 (function () {
-  check('UI the settings card carries the credential fields, toggles, test button and result line',
+  /* v63 PIN CHANGE (named openly): the shared-key field and
+     its toggle are removed — registration is automatic via the
+     built-in registration-only key, and the card says so. The
+     device credential fields, the secret toggle, the test
+     button and the result line stay. */
+  check('UI the settings card carries the credential fields, the secret toggle, test button and result line (v63 named pin change)',
     htmlSrc.indexOf('id="syncDeviceId"') !== -1 && htmlSrc.indexOf('id="syncDeviceSecret" type="password"') !== -1 &&
-    htmlSrc.indexOf('id="syncDeviceKeyToggle"') !== -1 && htmlSrc.indexOf('id="syncDeviceSecretToggle"') !== -1 &&
+    htmlSrc.indexOf('id="syncDeviceKeyToggle"') === -1 && htmlSrc.indexOf('id="syncDeviceSecretToggle"') !== -1 &&
     htmlSrc.indexOf('id="syncTestBtn"') !== -1 && htmlSrc.indexOf('id="syncTestResult"') !== -1);
-  check('UI the shared key is relabelled honestly (registration only; older versions)',
-    htmlSrc.indexOf('Shared key (registration only)') !== -1);
+  check('UI registration is automatic and the card says so honestly (v63 named pin change)',
+    htmlSrc.indexOf('Shared key (registration only)') === -1 &&
+    htmlSrc.indexOf('registration key') !== -1 && htmlSrc.indexOf('On by default from v63') !== -1);
   check('WIRING the pull runs at boot after the flush, and Sync now pulls too',
     appSrc.indexOf('Sync.pull()') !== -1 && appSrc.indexOf("DB.getMeta('syncVersions', {})") !== -1);
   check('WIRING DB.remove exists for the pull (key-only removal, both backends)',

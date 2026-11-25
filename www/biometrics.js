@@ -4532,7 +4532,7 @@
      stored bank's packed EDCC codes and PalmNet embeddings (the
      base64 strings already on the person record) plus the model
      stamp — exactly what the API's profile shape whitelists. */
-  var SYNC_SCAN_KINDS = ['enrol', 'verify', 'identify', 'wallet-open', 'money-auth', 'topup', 're-register', 'delete-all', 'field-test'];
+  var SYNC_SCAN_KINDS = ['enrol', 'verify', 'identify', 'wallet-open', 'money-auth', 'topup', 're-register', 'delete-all', 'field-test', 'owner-unlock'];
   function syncScoreOrNull(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
   function syncScanRecord(fields) {
     if (!fields || typeof fields !== 'object') return null;
@@ -5400,7 +5400,20 @@
      these stores. The step is therefore the identity, and a v61
      store — sealed banks, hand stamps, wallet, and a queued
      sync outbox row included — opens under v62 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62'];
+  /* v62 -> v63 is an ADOPTION: v63 is the TWO-FACE release — the
+     app gains a customer face (wallet only) and an owner face
+     (every control, behind an owner-palm unlock), and Scan Sync
+     turns ON by default behind a baked-in endpoint and a
+     registration-only bootstrap key. The one new stored field is
+     the profile's owner flag (person.owner === true), and it is
+     additive and absent-means-false: the bootstrap claim or an
+     owner-mode Registry action writes it on a live record, the
+     migration materialises NOTHING on existing persons. Owner
+     mode itself is a session state, never stored. The step is
+     therefore the identity, and a v62 store — sealed banks, hand
+     stamps, wallet, points, and a queued sync outbox row
+     included — opens under v63 byte-identical. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62', 'v63'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -5425,6 +5438,7 @@
     'v60': function (snap) { return snap; },
     'v61': function (snap) { return snap; },
     'v62': function (snap) { return snap; },
+    'v63': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {

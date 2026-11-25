@@ -171,8 +171,57 @@
      rule and its three sites, flash, the v57 camera switching,
      the v58 manual gating, the v60 wallet entry and the v61
      envelope + CODEC FREEZE all stand exactly as they were.
-     The migration step is the identity (see biometrics.js). */
-  var APP_DATA_VERSION = 'v62';
+     The migration step is the identity (see biometrics.js).
+
+     v63 (2026-11-25) is the TWO-FACE release (the Chairman's
+     order, 2026-11-25 10:36 + the 10:47 scope additions; Seat 1
+     front-end design, Seat 2 sync/bootstrap). One app, two
+     faces. The CUSTOMER face is the default: entry resolves
+     exactly as v60 (one profile straight to its wallet home,
+     several tap-to-choose, none to registration), and a
+     customer session sees only the wallet home, the money
+     flows, their own activity and a light My Account — the
+     Desk, Registry, terminal/store modes, global logs,
+     partner integration, Field Test Mode, Biom Vault, Scan
+     Sync settings and Delete All Data are not rendered and
+     not reachable (their DOM is detached at boot and the
+     navigation gate refuses their pages). The OWNER face is
+     everything the app has today, opened by a discreet unlock
+     (five taps on the My Account version line, or a long-press
+     on the app logo): a manual-gated palm scan at plain verify
+     bars whose match must carry the new profile owner flag
+     (person.owner === true). If no profile carries the flag,
+     the first successful match CLAIMS it (first claim wins,
+     written to Logs); granting or revoking it afterwards
+     lives only in owner mode (Registry). Owner mode lasts for
+     the session until Lock or app close. Registration is
+     presented as the one-time wallet form it is — name, phone
+     number, then the palm step — with the owner-only fields
+     (person type, home store, wallet linking, limits) hidden
+     on the customer face. Send Money runs in the Chairman's
+     order: receiver's palm first, then the amount, then the
+     sender's own palm authorises. The wallet gains a Biom Pay
+     flow: choose a partner store, enter the amount, scan your
+     own palm — a fourth strict-money site, added by the
+     Chairman's explicit order (2026-11-25 10:47); it creates
+     the same BIOM-PAY record, limits and points behaviour as
+     the terminal payment it mirrors. Sync is ON by default:
+     the endpoint is baked in and the app ships a
+     registration-only bootstrap key whose ONLY server power
+     is POST /api/devices — the device registers itself, then
+     signs with its own credential exactly as v62; the legacy
+     shared key is gone from the app entirely. Until the
+     server's BOOTSTRAP_KEY env var is set, registration fails
+     closed and the queue simply holds (honest status, no
+     misleading key-rejected latch, nothing blocked). Matching
+     is untouched: thresholds 0.32 / 0.5895, the model, fusion,
+     the hand gate, the frame rule, the banking guard, flash,
+     the v57 camera switching, the v58 manual gating, the v60
+     wallet entry, the v61 envelope + CODEC FREEZE and the v62
+     signing/CAS/tombstones/penalty regime all stand exactly
+     as they were. The migration step is the identity (see
+     biometrics.js). */
+  var APP_DATA_VERSION = 'v63';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -687,6 +736,22 @@
           await bootstrap();
           p = prefs();
         }
+        if (!credentialed(p) && deps.registrationOnlyKey) {
+          /* v63: the only key this build ships is
+             registration-only — it can register this device
+             and nothing else. When registration produced no
+             credential (the server's BOOTSTRAP_KEY env var is
+             not set yet, or the network is down), the queue
+             simply HOLDS: no write is attempted with the
+             bootstrap key, and no misleading "key rejected"
+             latch is set. Registration retries on the next
+             flush; scanning and the wallet are never blocked. */
+          lastError = 'device not registered yet — scans are queued safely on this device';
+          scheduleRetry(120);
+          flushing = false;
+          deps.onStatus();
+          return state();
+        }
         var reissued = false;
         while (queue.length) {
           var item = queue[0];
@@ -783,6 +848,11 @@
           await bootstrap();
           p = prefs();
         }
+        if (!credentialed(p) && deps.registrationOnlyKey) {
+          /* v63: a registration-only key cannot read the
+             summary either — pull waits for a credential. */
+          return state();
+        }
         var auth = await authHeaders({ type: 'summary' }, null, false);
         var res = null;
         try {
@@ -843,6 +913,7 @@
       return start.then(async function () {
         p = prefs();
         if (!credentialed(p)) {
+          if (deps.registrationOnlyKey) return { ok: false, message: 'This device could not register with the server yet. Registration is automatic and retries in the background — scans stay queued safely on this device meanwhile, and nothing is lost.' };
           if (p.deviceKey) return { ok: true, message: 'Shared-key mode: this device registers its own credential on the next sync — tap Sync now to register it now.' };
           return { ok: false, message: 'No device credential and no shared key are set.' };
         }
@@ -974,15 +1045,29 @@
       return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
     });
   }
+  /* v63 (Seat 2): sync is ON by default and zero-setup. The
+     endpoint is baked in (it is not a secret), and the app
+     ships a REGISTRATION-ONLY bootstrap key: its only server
+     power is POST /api/devices, after which this device signs
+     with its own credential exactly as v62. The legacy shared
+     DEVICE_KEY is no longer read by the app at all — a stored
+     biomSyncDeviceKey pref from v62 is ignored (the credential
+     it registered is what the device uses). The bootstrap key
+     value below must match the BOOTSTRAP_KEY env var on the
+     API project; until that env var exists, registration fails
+     closed and the sync queue holds (see the engine guard). */
+  var SYNC_DEFAULT_ENDPOINT = 'https://tsg-biom-api.vercel.app';
+  var SYNC_BOOTSTRAP_KEY = '7d969f9a4e4a3a232477d952cbfe3c2a4271d41d83071aec';
   var Sync = createBiomSync({
     B: B,
     modelId: B.PALMNET_MODEL_ID,
     appVersion: APP_DATA_VERSION,
+    registrationOnlyKey: true,
     getPrefs: function () {
       return {
-        on: syncPrefGet('biomSyncOn') === '1',
-        endpoint: syncPrefGet('biomSyncEndpoint'),
-        deviceKey: syncPrefGet('biomSyncDeviceKey'),
+        on: syncPrefGet('biomSyncOn') !== '0',
+        endpoint: syncPrefGet('biomSyncEndpoint') || SYNC_DEFAULT_ENDPOINT,
+        deviceKey: SYNC_BOOTSTRAP_KEY,
         deviceId: syncPrefGet('biomSyncDeviceId'),
         deviceSecret: syncPrefGet('biomSyncDeviceSecret'),
         label: syncPrefGet('biomSyncLabel') || 'Chairman phone'
@@ -1029,23 +1114,23 @@
     if (el) el.textContent = Sync.statusText();
   }
   function fillSyncSettings() {
-    if ($('syncEndpoint')) $('syncEndpoint').value = syncPrefGet('biomSyncEndpoint');
-    if ($('syncDeviceKey')) $('syncDeviceKey').value = syncPrefGet('biomSyncDeviceKey');
+    if ($('syncEndpoint')) $('syncEndpoint').value = syncPrefGet('biomSyncEndpoint') || SYNC_DEFAULT_ENDPOINT;
     if ($('syncDeviceId')) $('syncDeviceId').value = syncPrefGet('biomSyncDeviceId');
     if ($('syncDeviceSecret')) $('syncDeviceSecret').value = syncPrefGet('biomSyncDeviceSecret');
     if ($('syncLabel')) $('syncLabel').value = syncPrefGet('biomSyncLabel');
-    if ($('syncOn')) $('syncOn').checked = syncPrefGet('biomSyncOn') === '1';
+    if ($('syncOn')) $('syncOn').checked = syncPrefGet('biomSyncOn') !== '0';
     renderSyncStatus();
   }
   function wireSyncSettings() {
     var save = $('syncSaveBtn'), nowBtn = $('syncNowBtn'), testBtn = $('syncTestBtn');
     if (save) save.addEventListener('click', function () {
       syncPrefSet('biomSyncEndpoint', $('syncEndpoint').value.trim());
-      syncPrefSet('biomSyncDeviceKey', $('syncDeviceKey').value.trim());
       syncPrefSet('biomSyncDeviceId', $('syncDeviceId') ? $('syncDeviceId').value.trim() : '');
       syncPrefSet('biomSyncDeviceSecret', $('syncDeviceSecret') ? $('syncDeviceSecret').value.trim() : '');
       syncPrefSet('biomSyncLabel', $('syncLabel').value.trim());
-      syncPrefSet('biomSyncOn', $('syncOn').checked ? '1' : '');
+      /* v63: sync defaults ON, so OFF must be stored explicitly
+         ('0') — an absent pref means ON. */
+      syncPrefSet('biomSyncOn', $('syncOn').checked ? '1' : '0');
       Sync.settingsChanged();
       renderSyncStatus();
       toast(Sync.state().on ? 'Scan Sync settings saved.' : 'Scan Sync is off. Settings saved.');
@@ -1062,10 +1147,12 @@
         renderSyncStatus();
       });
     });
-    /* Show/hide toggles for the two secret fields — the values
-       stay on this device either way; the toggle only changes
-       whether they are visible on this screen. */
-    [['syncDeviceKeyToggle', 'syncDeviceKey'], ['syncDeviceSecretToggle', 'syncDeviceSecret']].forEach(function (pair) {
+    /* Show/hide toggle for the device secret field — the value
+       stays on this device either way; the toggle only changes
+       whether it is visible on this screen. (v63: the shared-key
+       field and its toggle are gone — registration is automatic
+       via the built-in registration-only key.) */
+    [['syncDeviceSecretToggle', 'syncDeviceSecret']].forEach(function (pair) {
       var t = $(pair[0]), field = $(pair[1]);
       if (t && field) t.addEventListener('click', function () {
         var show = field.type === 'password';
@@ -4049,7 +4136,14 @@
 
   /* ---------------- Navigation ------------------------------------------- */
   function go(page) {
-    var navPage = page === 'topup' ? 'registry' : page === 'account' ? 'wallet' : (page === 'stores' || page === 'logs' || page === 'partner') ? 'more' : page;
+    /* v63 two-face gate: in customer mode the owner pages do
+       not exist (their DOM is detached) and navigation to them
+       resolves to the wallet instead. The 'activity' target is
+       the wallet page scrolled to its activity card. */
+    if (!FaceMode.isOwner() && FaceMode.OWNER_PAGES.indexOf(page) !== -1) page = 'wallet';
+    var scrollActivity = page === 'activity';
+    if (scrollActivity) page = 'wallet';
+    var navPage = scrollActivity ? 'activity' : page === 'topup' ? 'registry' : page === 'account' ? (FaceMode.isOwner() ? 'wallet' : 'account') : (page === 'stores' || page === 'logs' || page === 'partner') ? 'more' : page;
     document.querySelectorAll('#mainNav button').forEach(function (b) { b.classList.toggle('active', b.dataset.page === navPage); });
     document.querySelectorAll('section.page').forEach(function (s) { s.classList.toggle('active', s.id === 'page-' + page); });
     if (page !== 'enroll' && page !== 'terminal') { Cam.stop(); }
@@ -4069,6 +4163,12 @@
     if (page === 'terminal') { fillTerminalPeople().then(function () { maybeArmTerminal(); }); Pipeline.enterScanView(); }
     if (page === 'enroll') { Pipeline.enterScanView(); maybeArmEnroll(); }
     window.scrollTo(0, 0);
+    if (scrollActivity) {
+      setTimeout(function () {
+        var card = $('wActivityCard');
+        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 350);
+    }
   }
   document.querySelectorAll('#mainNav button').forEach(function (b) {
     b.addEventListener('click', function () { go(b.dataset.page); });
@@ -4082,6 +4182,9 @@
 
   /* ---------------- Dashboard -------------------------------------------- */
   function renderDashboard() {
+    /* v63: the Desk is an owner surface — in customer mode it is
+       detached and never rendered. */
+    if (!FaceMode.isOwner()) return Promise.resolve();
     return Promise.all([DB.all('people'), DB.all('logs'), DB.all('transactions')]).then(function (r) {
       var people = r[0], logs = r[1], txs = r[2];
       var todayLogs = logs.filter(function (l) { return isToday(l.ts); });
@@ -4160,7 +4263,7 @@
           '<b>Wallet:</b> ' + (person.walletProvider ? esc(person.walletProvider) + ' ' + esc(B.maskWalletNumber(person.walletNumber)) : 'Not linked') + '<br>' +
           '<b>Biometric-only limits:</b> ' + (person.limits.perTx ? 'BDT ' + person.limits.perTx.toLocaleString() + ' per transaction' : 'No per-transaction limit') + (person.limits.daily ? ', BDT ' + person.limits.daily.toLocaleString() + ' per day' : '') + '<br>' +
           '<b>Palm Loyalty:</b> Active — 0 points<br>' +
-          '<b>Demo wallet:</b> Created — this Biom ID is the wallet account, balance BDT 0. Open My Wallet and scan this palm to use it. Demo money inside the app, not real funds.';
+          '<b>Demo wallet:</b> Created — this Biom ID is the wallet account, balance BDT 0. Open My Wallet to use it; your palm is asked for only when money moves. Demo money inside the app, not real funds.';
         enroll = { details: null, palm: null, types: { palm: true } };
         toast('Enrolled: ' + person.id);
         // Voice verdict (v23, his order): spoken ONLY here, after the
@@ -4171,7 +4274,7 @@
     }).catch(function (e) { fail('<div class="error">Could not save enrollment on this device: ' + esc(e.message || e) + '</div>'); });
   }
   function fillStoreSelects() {
-    ['enStore', 'termStore'].forEach(function (id) {
+    ['enStore', 'termStore', 'wPayStore'].forEach(function (id) {
       $(id).innerHTML = STORES.map(function (s) { return '<option>' + esc(s) + '</option>'; }).join('');
     });
   }
@@ -4341,6 +4444,9 @@
     fillTermMethodNote();
   }
   function fillTerminalPeople() {
+    /* v63: the terminal is an owner surface — in customer mode
+       its DOM is detached and it is never populated. */
+    if (!FaceMode.isOwner()) return Promise.resolve();
     return DB.all('people').then(function (people) {
       termPeopleCache = people;
       renderTermPeople();
@@ -4811,6 +4917,7 @@
     $('wHomeAvatar').textContent = initialsOf(me.name);
     $('wHomeBalance').textContent = balanceHidden ? 'BDT ••••••••' : fmtBDT(w.balance);
     $('wBalEye').classList.toggle('off', balanceHidden);
+    if ($('wHomePoints')) $('wHomePoints').textContent = Number(me.loyaltyPoints || 0).toLocaleString() + ' pts';
     var linkRows = w.linkedAccounts.map(function (a) {
       return '<div class="linkrow"><span class="brandchip ' + brandChipClass(a.type) + '">' + esc(String(a.type || '?').charAt(0)) + '</span>' +
         '<div class="lr-main"><div class="lr-name">' + esc(a.type) + '</div><div class="lr-sub">' + esc(a.label) + '</div></div>' +
@@ -5131,10 +5238,13 @@
     });
   });
 
-  /* Send Money: amount -> RECEIVER's palm identifies them -> the
-     sender's OWN palm authorises. The store layer re-checks every
-     rule at apply time (receiver registered, not self, amount
-     within balance, authorisation is the sender). */
+  /* Send Money (v63 order, the Chairman 2026-11-25 10:47):
+     (1) the RECEIVER's palm identifies them, (2) the amount is
+     entered, (3) the sender's OWN palm authorises — then the
+     payment completes. (Before v63 the amount came first.) The
+     store layer re-checks every rule at apply time (receiver
+     registered, not self, amount within balance, authorisation
+     is the sender). */
   $('wSendOpen').addEventListener('click', function () {
     var me = walletSessionPerson();
     if (!me) return;
@@ -5143,6 +5253,9 @@
     $('walletSend').classList.remove('hidden');
     $('wSendBalance').textContent = fmtBDT(B.walletEnsurePerson(me).wallet.balance);
     $('wSendMsg').innerHTML = '';
+    $('wSendAmount').value = '';
+    $('wSendReceiverLine').innerHTML = '';
+    $('wSendAmountBlock').classList.add('hidden');
     $('wSendConfirm').classList.add('hidden');
     $('wSendConfirm').innerHTML = '';
   });
@@ -5150,9 +5263,6 @@
   $('wSendScanReceiver').addEventListener('click', function () {
     var me = walletSessionPerson();
     if (!me) return;
-    var amt = B.walletValidateAmount($('wSendAmount').value);
-    if (!amt.ok) { $('wSendMsg').innerHTML = '<div class="error">' + esc(amt.error) + '</div>'; return; }
-    sendDraft.amount = amt.amount;
     showWalletScan({
       title: 'Send money — scan the receiver\'s palm',
       syncKind: 'identify', // v56 Scan Sync kind for this context
@@ -5169,10 +5279,20 @@
             }
             sendDraft.receiverId = out.person.id;
             sendDraft.receiverName = out.person.name;
+            sendDraft.amount = null;
             Sync.noteScan({ kind: 'identify', profileName: out.person.name, biomId: out.person.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
             hideWalletScan();
             $('walletSend').classList.remove('hidden');
-            renderSendConfirm();
+            /* v63 step 2: the receiver is known — now the
+               amount is entered against their verified card. */
+            $('wSendReceiverLine').innerHTML =
+              '<div class="recvcard"><div class="rc-head"><span class="avatarbtn" style="background:var(--blue);border:none;cursor:default">' + esc(initialsOf(out.person.name)) + '</span>' +
+              '<div><div class="rc-name">' + esc(out.person.name) + '</div><div class="rc-id">' + esc(out.person.id) + '</div></div>' +
+              '<span class="badge ok" style="margin-left:auto">Palm verified</span></div></div>';
+            $('wSendAmountBlock').classList.remove('hidden');
+            $('wSendConfirm').classList.add('hidden');
+            $('wSendConfirm').innerHTML = '';
+            $('wSendMsg').innerHTML = '';
           });
         });
       }
@@ -5227,6 +5347,126 @@
       }
     });
   }
+
+  /* v63 Send step 2: the amount is entered only after the
+     receiver's palm has identified them; Continue validates it
+     and builds the review card whose button runs step 3 (the
+     sender's authorising scan, authoriseSend above). */
+  $('wSendContinue').addEventListener('click', function () {
+    var me = walletSessionPerson();
+    if (!me || !sendDraft.receiverId) return;
+    var amt = B.walletValidateAmount($('wSendAmount').value);
+    if (!amt.ok) { $('wSendMsg').innerHTML = '<div class="error">' + esc(amt.error) + '</div>'; return; }
+    $('wSendMsg').innerHTML = '';
+    sendDraft.amount = amt.amount;
+    renderSendConfirm();
+  });
+  $('wSendChangeReceiver').addEventListener('click', function () {
+    sendDraft = { amount: null, receiverId: null, receiverName: null };
+    $('wSendReceiverLine').innerHTML = '';
+    $('wSendAmountBlock').classList.add('hidden');
+    $('wSendConfirm').classList.add('hidden');
+    $('wSendConfirm').innerHTML = '';
+    $('wSendMsg').innerHTML = '';
+  });
+
+  /* ---------------- Wallet Biom Pay (v63) --------------------------
+     The Chairman's wallet Pay (2026-11-25 10:47): the customer
+     chooses a PARTNER STORE first — from the store list this app
+     already knows (the same STORES the enrolment home-store and
+     the terminal use; if that list were empty the card shows an
+     honest empty state and invents nothing) — then enters the
+     amount, then scans their OWN palm under the strict money
+     rule: a fourth strict site, added by his explicit order.
+     The payment completes exactly as a terminal Biom Pay does
+     today — same linked-wallet requirement, same biometric-only
+     limits, same BIOM-PAY record and status — and Palm Loyalty
+     points (1 per BDT 10) are credited only after the payment
+     record exists (the v59 D6 rule). */
+  $('wPayOpen').addEventListener('click', function () {
+    var me = walletSessionPerson();
+    if (!me) return;
+    $('walletHome').classList.add('hidden');
+    $('walletPay').classList.remove('hidden');
+    $('wPayBalance').textContent = fmtBDT(B.walletEnsurePerson(me).wallet.balance);
+    $('wPayMsg').innerHTML = '';
+    var hasStores = $('wPayStore').options.length > 0;
+    $('wPayEmpty').classList.toggle('hidden', hasStores);
+    $('wPayScan').disabled = !hasStores;
+  });
+  $('wPayBack').addEventListener('click', function () { renderWallet(); });
+  $('wPayScan').addEventListener('click', function () {
+    var me = walletSessionPerson();
+    if (!me) return;
+    var amt = B.walletValidateAmount($('wPayAmount').value);
+    if (!amt.ok) { $('wPayMsg').innerHTML = '<div class="error">' + esc(amt.error) + '</div>'; return; }
+    var amount = amt.amount;
+    var store = $('wPayStore').value;
+    showWalletScan({
+      title: 'Biom Pay — authorise with your palm',
+      syncKind: 'money-auth', // v56 Scan Sync kind for this context
+      prompt: 'Scan YOUR OWN palm to pay ' + fmtBDT(amount) + ' of demo money at ' + store + '. Only your palm can authorise a payment from your wallet.',
+      run: function () {
+        return DB.all('people').then(function (people) {
+          var fresh = people.find(function (p) { return p.id === me.id; }) || me;
+          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, walletSwapCamera, function () {}, walletControl, { strictMoney: true }).then(function (out) {
+            var auth = authFromVerify(out, fresh.id);
+            if (!auth.verified) { walletScanFailed(out); return; }
+            Sync.noteScan({ kind: 'money-auth', profileName: fresh.name, biomId: fresh.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
+            if (!fresh.walletProvider) {
+              $('wScanMsg').innerHTML = '<div class="error">Biom Pay not created: your profile has no linked bKash / Nagad wallet.</div>';
+              $('wScanRun').disabled = false;
+              return;
+            }
+            if (fresh.limits && fresh.limits.perTx && amount > fresh.limits.perTx) {
+              $('wScanMsg').innerHTML = '<div class="error">Biom Pay not created: ' + fmtBDT(amount) + ' exceeds your biometric-only per-transaction limit of ' + fmtBDT(fresh.limits.perTx) + '. Payments above the limit are not created.</div>';
+              $('wScanRun').disabled = false;
+              return;
+            }
+            var createWalletPay = function () {
+              return DB.nextSeq('paySeq', 1001).then(function (seq) {
+                var tx = {
+                  id: 'BIOM-PAY-' + seq, ts: Date.now(), personId: fresh.id, personName: fresh.name,
+                  provider: fresh.walletProvider, walletMasked: B.maskWalletNumber(fresh.walletNumber),
+                  store: store, amount: amount, method: 'palm', measured: out.measured, status: PAY_STATUS
+                };
+                return DB.put('transactions', tx).then(function () {
+                  /* v59 D6 rule, same as the terminal: points are
+                     credited only now, from the created
+                     transaction's amount — never the typed field. */
+                  var payPts = Math.floor(tx.amount / 10);
+                  if (payPts > 0) fresh.loyaltyPoints = (fresh.loyaltyPoints || 0) + payPts;
+                  return DB.put('people', fresh).then(function () {
+                    hideWalletScan();
+                    return renderWallet().then(function () {
+                      $('wHomeMsg').innerHTML = '<div class="success">Biom Pay complete — ' + fmtBDT(amount) + ' of demo money at ' + esc(store) + '.' +
+                        (payPts > 0 ? ' Palm Loyalty: +' + payPts + ' points awarded — balance ' + Number(fresh.loyaltyPoints || 0) + ' points.' : '') +
+                        '<br>Record ID: ' + esc(tx.id) + ' (TSG Biom record — not a ' + esc(tx.provider) + ' TrxID)<br>Status: ' + esc(tx.status) + '</div>';
+                      toast('Biom Pay complete: ' + tx.id);
+                      Snd.chime();
+                    });
+                  });
+                });
+              });
+            };
+            if (fresh.limits && fresh.limits.daily) {
+              return DB.all('transactions').then(function (txs) {
+                var dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+                var todaySum = txs.filter(function (t) { return t.personId === fresh.id && t.ts >= dayStart.getTime(); }).reduce(function (s, t) { return s + Number(t.amount || 0); }, 0);
+                if (todaySum + amount > fresh.limits.daily) {
+                  $('wScanMsg').innerHTML = '<div class="error">Biom Pay not created: this payment would take today\'s total to ' + fmtBDT(todaySum + amount) + ', above your biometric-only daily limit of ' + fmtBDT(fresh.limits.daily) + '. Payments above the limit are not created.</div>';
+                  $('wScanRun').disabled = false;
+                  return;
+                }
+                return createWalletPay();
+              });
+            }
+            return createWalletPay();
+          });
+        });
+      }
+    });
+  });
 
   /* ---------------- My Account (v52) --------------------------------
      The customer account surface: every value is read live from
@@ -5319,19 +5559,26 @@
          claim. The state comes from the at-rest store, so what
          the owner reads is what is stored. */
       Vault.statusFor(me.id).then(function (bankState) {
+        /* v63: the pointers in this copy are mode-aware — the
+           Biom Vault, Scan Sync settings and Delete All Data
+           live behind owner mode, so the customer face names
+           them as owner tools instead of pointing at a More
+           page that no longer shows them. */
+        var ownerUi = FaceMode.isOwner();
+        var vaultWhere = ownerUi ? 'More → Biom Vault' : 'owner mode → More → Biom Vault';
         var firstLine = bankState === 'sealed'
           ? 'Palm templates are stored on this device encrypted under its Biom Vault key (AES-GCM) — never a palm image. Matching always happens on this device, on the opened bank.'
           : bankState === 'sealed-other'
-          ? 'This palm bank is sealed under a different vault key, so this device cannot open it — restore the vault from its recovery sheet (More → Biom Vault). Matching always happens on this device.'
-          : 'Palm templates are stored on this device as encoded palm codes — never a palm image. This bank is not yet encrypted — the Biom Vault (More → Biom Vault) seals banks under a key held only on this device. Matching always happens on this device.';
+          ? 'This palm bank is sealed under a different vault key, so this device cannot open it — the device owner restores the vault from its recovery sheet (' + vaultWhere + '). Matching always happens on this device.'
+          : 'Palm templates are stored on this device as encoded palm codes — never a palm image. This bank is not yet encrypted — the Biom Vault (' + vaultWhere + ') seals banks under a key held only on this device. Matching always happens on this device.';
         $('acSecBody').innerHTML =
           firstLine + '<br>' +
           '<b>Scan sync:</b> ' + (Sync.state().on && Sync.state().configured
-            ? 'ON — scan records and palm codes also sync to your own TSG Biom server (More → Scan Sync), sealed under this device\'s vault key once the vault is set up, so your scans can be reviewed off-device. The palm image itself is never sent — there is no image in what syncs.'
-            : 'OFF — nothing about your palm leaves this device. If you switch Scan Sync on (More → Scan Sync), scan records and palm codes sync to your own TSG Biom server, sealed under this device\'s vault key once the vault is set up; the palm image itself is never sent.') + '<br>' +
+            ? 'ON — scan records and palm codes also sync in the background to the secure TSG Biom vault, sealed under this device\'s vault key once the vault is set up, so your scans stay backed up. The palm image itself is never sent — there is no image in what syncs. Sync settings live in owner mode.'
+            : 'OFF — the device owner has switched sync off (owner mode → More → Scan Sync), so nothing about your palm leaves this device. When sync is on, scan records and palm codes sync to the secure TSG Biom vault, sealed under this device\'s vault key once the vault is set up; the palm image itself is never sent.') + '<br>' +
           '<b>Registered palm:</b> ' + (hand ? (hand === 'left' ? 'Left' : 'Right') + ' hand' : 'hand not recorded') + '<br>' +
           '<b>Money scans:</b> Add Money, Send Money and Biom Pay use the strict money rule — a two-frame confirmation that must clearly beat every other enrolled palm.<br>' +
-          '<span style="color:var(--muted)">Erase everything on this device from More → Delete All Data.</span>';
+          '<span style="color:var(--muted)">' + (ownerUi ? 'Erase everything on this device from More → Delete All Data.' : 'Only the device owner can erase this device (owner mode → More → Delete All Data).') + '</span>';
       });
     });
   }
@@ -5400,11 +5647,11 @@
       var rows = people.filter(function (p) {
         return !q || p.name.toLowerCase().indexOf(q) >= 0 || p.id.toLowerCase().indexOf(q) >= 0 || (p.phone || '').indexOf(q) >= 0;
       }).map(function (p) {
-        return '<tr><td><b>' + esc(p.name) + '</b><br><span style="color:var(--muted)">' + esc(p.phone || '') + '</span>' + (p.loyaltyPoints ? '<br><span style="color:var(--muted)">Loyalty: ' + p.loyaltyPoints + ' pts</span>' : '') + '</td>' +
+        return '<tr><td><b>' + esc(p.name) + '</b>' + (p.owner === true ? ' <span class="badge ok">Owner</span>' : '') + '<br><span style="color:var(--muted)">' + esc(p.phone || '') + '</span>' + (p.loyaltyPoints ? '<br><span style="color:var(--muted)">Loyalty: ' + p.loyaltyPoints + ' pts</span>' : '') + '</td>' +
           '<td>' + esc(p.id) + '</td><td>' + esc(p.type) + '<br><span style="color:var(--muted)">' + esc(p.store) + '</span></td>' +
           '<td>' + (personHasMethod(p) ? '<span class="badge ok">Enrolled</span>' : (B.palmprintProfileFormat(p.palmProfile) === 'legacy' ? '<span class="badge bad">Palm re-scan needed</span>' : '<span class="badge bad">Not enrolled</span>')) + (B.palmnetNeedsScan(p.palmProfile) ? '<br><span class="badge warn">Neural scan needed</span>' : '') + (personHasMethod(p) && B.palmProfileHand(p.palmProfile) ? '<br><span style="color:var(--muted)">' + (B.palmProfileHand(p.palmProfile) === 'left' ? 'Left' : 'Right') + ' palm</span>' : '') + '</td>' +
           '<td>' + (p.walletProvider ? esc(p.walletProvider) + '<br>' + esc(B.maskWalletNumber(p.walletNumber)) : '—') + '</td>' +
-          '<td><button class="btn small" data-verify="' + esc(p.id) + '">Verify</button>' + (personHasMethod(p) ? ' <button class="btn small" data-topup="' + esc(p.id) + '">Add Angles</button>' : '') + (B.palmprintProfileFormat(p.palmProfile) === 'legacy' ? ' <button class="btn small" data-topup="' + esc(p.id) + '">Re-scan Palm</button>' : '') + (B.palmnetNeedsScan(p.palmProfile) ? ' <button class="btn small" data-neural="' + esc(p.id) + '">Neural Scan</button>' : '') + '</td></tr>';
+          '<td><button class="btn small" data-verify="' + esc(p.id) + '">Verify</button>' + (personHasMethod(p) ? ' <button class="btn small" data-topup="' + esc(p.id) + '">Add Angles</button>' : '') + (B.palmprintProfileFormat(p.palmProfile) === 'legacy' ? ' <button class="btn small" data-topup="' + esc(p.id) + '">Re-scan Palm</button>' : '') + (B.palmnetNeedsScan(p.palmProfile) ? ' <button class="btn small" data-neural="' + esc(p.id) + '">Neural Scan</button>' : '') + ' <button class="btn small" data-owner-toggle="' + esc(p.id) + '">' + (p.owner === true ? 'Remove owner' : 'Make owner') + '</button></td></tr>';
       }).join('');
       $('registryBody').innerHTML = rows || '<tr><td colspan="6" style="color:var(--muted)">No enrollments on this device yet.</td></tr>';
       document.querySelectorAll('[data-verify]').forEach(function (b) {
@@ -5421,6 +5668,24 @@
       });
       document.querySelectorAll('[data-neural]').forEach(function (b) {
         b.addEventListener('click', function () { openTopup(b.dataset.neural, 'neural'); });
+      });
+      /* v63: the owner flag is granted or revoked ONLY here —
+         inside owner mode, in the Registry. The flag is
+         device-local by design: it is not part of the synced
+         bank shape, so it never travels. */
+      document.querySelectorAll('[data-owner-toggle]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          if (!FaceMode.isOwner()) return;
+          DB.all('people').then(function (freshPeople) {
+            var p = freshPeople.find(function (x) { return x.id === b.dataset.ownerToggle; });
+            if (!p) return;
+            if (p.owner === true) { delete p.owner; } else { p.owner = true; }
+            return DB.put('people', p).then(function () {
+              toast(p.owner === true ? p.name + ' is now an owner of this device.' : p.name + ' is no longer an owner of this device.');
+              renderRegistry();
+            });
+          });
+        });
       });
     });
   }
@@ -6135,6 +6400,185 @@
   wireSyncSettings();
   wireVault();
 
+  /* FACE-MODE-BEGIN — the v63 two-face mode core: a pure factory
+     over a minimal DOM adapter, so the suite can drive the exact
+     shipped logic against a fake tree. It owns the session owner
+     state (held in memory only — never stored, so closing the
+     app always returns to the customer face), the owner-page
+     list, the detach/attach bookkeeping for owner-only surfaces,
+     and the pure owner-unlock decision. */
+  function createFaceMode(dom) {
+    var owner = false;
+    var detached = []; // [{ node, parent, next }] in document order
+    var OWNER_PAGES = ['dashboard', 'terminal', 'registry', 'stores', 'logs', 'partner'];
+    function isOwner() { return owner; }
+    function detachSurfaces() {
+      if (detached.length) return detached.length;
+      dom.ownerNodes().forEach(function (node) {
+        detached.push({ node: node, parent: dom.parentOf(node), next: dom.nextOf(node) });
+      });
+      detached.forEach(function (d) { dom.detach(d.node); });
+      return detached.length;
+    }
+    function attachSurfaces() {
+      /* Reverse order: a node's recorded next sibling is back in
+         place before the node that precedes it is re-inserted. */
+      detached.slice().reverse().forEach(function (d) { dom.attach(d.node, d.parent, d.next); });
+      detached = [];
+    }
+    function enter() { owner = true; attachSurfaces(); }
+    function lock() { owner = false; detachSurfaces(); }
+    function gate(page) { return !owner && OWNER_PAGES.indexOf(page) !== -1 ? 'wallet' : null; }
+    /* The owner-unlock decision, pure. 'no-match' — no palm
+       matched; 'refuse' — the match is not the owner and an
+       owner exists; 'claim' — the match is not flagged but NO
+       profile carries the flag yet (first claim wins);
+       'enter' — the match carries the owner flag. */
+    function unlockDecision(person, people) {
+      if (!person) return 'no-match';
+      var hasOwner = (people || []).some(function (p) { return p && p.owner === true; });
+      if (person.owner === true) return 'enter';
+      return hasOwner ? 'refuse' : 'claim';
+    }
+    return {
+      isOwner: isOwner, enter: enter, lock: lock, gate: gate,
+      detachSurfaces: detachSurfaces, attachSurfaces: attachSurfaces,
+      unlockDecision: unlockDecision, OWNER_PAGES: OWNER_PAGES
+    };
+  }
+  /* FACE-MODE-END */
+
+  var FaceMode = createFaceMode({
+    ownerNodes: function () { return Array.prototype.slice.call(document.querySelectorAll('.owner-only')); },
+    parentOf: function (n) { return n.parentNode; },
+    nextOf: function (n) { return n.nextSibling; },
+    detach: function (n) { if (n.parentNode) n.parentNode.removeChild(n); },
+    attach: function (n, parent, next) {
+      if (!parent) return;
+      if (next && next.parentNode === parent) parent.insertBefore(n, next);
+      else parent.appendChild(n);
+    }
+  });
+
+  function applyFaceChrome() {
+    var owner = FaceMode.isOwner();
+    document.body.classList.toggle('mode-owner', owner);
+    document.body.classList.toggle('mode-customer', !owner);
+    document.querySelectorAll('#mainNav button').forEach(function (b) {
+      var p = b.dataset.page;
+      var show = owner
+        ? (p !== 'activity' && p !== 'account')
+        : (p === 'wallet' || p === 'activity' || p === 'account');
+      b.classList.toggle('hidden', !show);
+    });
+    var bar = $('ownerBar');
+    if (bar) bar.classList.toggle('hidden', !owner);
+  }
+  function enterOwnerMode() {
+    FaceMode.enter();
+    applyFaceChrome();
+    renderDashboard();
+    fillTerminalPeople();
+  }
+  function lockOwnerMode() {
+    FaceMode.lock();
+    applyFaceChrome();
+    go('wallet');
+    toast('Owner mode locked.');
+  }
+  function applyInitialFace() {
+    FaceMode.detachSurfaces();
+    applyFaceChrome();
+  }
+
+  /* The owner unlock: a manual-gated palm scan (v58 rules) on
+     the shared wallet scan card, at PLAIN verify bars — this is
+     an entry gate, not money, the same posture as the old
+     wallet entry. The hand gate applies (it is inside
+     streamIdentifyPalm). Attempts are logged like other scans:
+     failures ride the card's Denied path (syncKind
+     'owner-unlock'), a non-owner match is logged and synced as
+     Denied here, a claim is written to Logs, and a successful
+     unlock is logged and synced as Verified. */
+  function openOwnerUnlock() {
+    DB.all('people').then(function (people) {
+      var withPalm = people.filter(personHasMethod);
+      if (!withPalm.length) {
+        toast('No palm is registered on this device yet — register a palm first, then claim owner access.');
+        return;
+      }
+      var hasOwner = people.some(function (p) { return p.owner === true; });
+      go('wallet');
+      showWalletScan({
+        title: hasOwner ? 'Owner access' : 'Claim owner access',
+        syncKind: 'owner-unlock', // v63 Scan Sync kind for this context
+        prompt: hasOwner
+          ? 'Scan the owner\'s palm to open owner mode. Owner mode shows every control on this device — the Desk, Registry, terminal, Biom Vault, Scan Sync settings and Delete All Data.'
+          : 'No owner is set on this device yet. Scan your palm to claim owner access — the first palm to claim it becomes the owner of this device, and only the owner palm can open owner mode afterwards.',
+        run: function () {
+          return DB.all('people').then(function (fresh) {
+            return streamIdentifyPalm($('wScanVideo'), $('wScanStatus'), fresh, walletSwapCamera, walletControl).then(function (out) {
+              if (!out || out.fail || !out.person) { walletScanFailed(out); return; }
+              var decision = FaceMode.unlockDecision(out.person, fresh);
+              var hand = out.diag ? out.diag.probeHand : null;
+              var edcc = out.diag ? out.diag.edcc : null;
+              var neural = out.diag ? out.diag.neural : null;
+              if (decision === 'refuse') {
+                DB.put('logs', { ts: Date.now(), personId: out.person.id, personName: out.person.name, store: '', method: 'palm', measured: out.measured || '', result: 'Owner Unlock Denied — Not Owner' }).catch(function () { return null; });
+                Sync.noteScan({ kind: 'owner-unlock', profileName: out.person.name, biomId: out.person.id, hand: hand, edccScore: edcc, palmnetScore: neural, result: 'Denied' });
+                $('wScanMsg').innerHTML = '<div class="error">That palm belongs to ' + esc(out.person.name) + ', who is not the owner of this device. Owner mode was not opened.</div>';
+                $('wScanRun').disabled = false;
+                Snd.buzz();
+                return;
+              }
+              var person = out.person;
+              var finish = function () {
+                Sync.noteScan({ kind: 'owner-unlock', profileName: person.name, biomId: person.id, hand: hand, edccScore: edcc, palmnetScore: neural, result: 'Verified' });
+                hideWalletScan();
+                enterOwnerMode();
+                toast(decision === 'claim' ? 'Owner access claimed. Owner mode is on.' : 'Owner mode is on.');
+                go('dashboard');
+              };
+              if (decision === 'claim') {
+                person.owner = true;
+                DB.put('logs', { ts: Date.now(), personId: person.id, personName: person.name, store: '', method: 'palm', measured: out.measured || '', result: 'Owner Claimed' }).catch(function () { return null; });
+                return DB.put('people', person).then(finish);
+              }
+              DB.put('logs', { ts: Date.now(), personId: person.id, personName: person.name, store: '', method: 'palm', measured: out.measured || '', result: 'Owner Mode Unlocked' }).catch(function () { return null; });
+              finish();
+            });
+          });
+        }
+      });
+    });
+  }
+  /* Discreet owner entry: five taps on the My Account version
+     line, or a long-press on the app logo. Neither is labelled
+     as an owner door anywhere on the customer face. */
+  (function wireOwnerEntry() {
+    var taps = 0, tapTimer = null;
+    var vl = $('versionLine');
+    if (vl) vl.addEventListener('click', function () {
+      taps++;
+      if (tapTimer) clearTimeout(tapTimer);
+      tapTimer = setTimeout(function () { taps = 0; }, 2500);
+      if (taps >= 5) { taps = 0; if (tapTimer) clearTimeout(tapTimer); openOwnerUnlock(); }
+    });
+    var brand = $('brandLogo');
+    if (brand) {
+      var pressTimer = null;
+      brand.addEventListener('pointerdown', function () {
+        if (pressTimer) clearTimeout(pressTimer);
+        pressTimer = setTimeout(openOwnerUnlock, 700);
+      });
+      ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) {
+        brand.addEventListener(ev, function () { if (pressTimer) clearTimeout(pressTimer); });
+      });
+    }
+    var lockBtn = $('ownerLockBtn');
+    if (lockBtn) lockBtn.addEventListener('click', lockOwnerMode);
+  })();
+
   /* ---------------- Install (PWA) ---------------------------------------- */
   var deferredPrompt = null;
   window.addEventListener('beforeinstallprompt', function (e) { e.preventDefault(); deferredPrompt = e; });
@@ -6184,5 +6628,6 @@
       return Sync.ensureLoaded();
     }).then(function () { return Sync.flush(); })
     .then(function () { return Sync.pull(); }) // v62 (B7): apply any server tombstones after the flush
+    .then(function () { applyInitialFace(); }) // v63: the customer face is the default — owner surfaces detach last, once every boot render has run against the intact DOM
     .catch(function () {});
 })();

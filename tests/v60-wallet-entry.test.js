@@ -204,8 +204,11 @@ check('GUARDS the typed REPLACE confirmation still gates the re-registration',
   htmlSrc.indexOf('id="topReregInput"') !== -1 && appSrc.indexOf("input.value.trim() !== 'REPLACE'") !== -1);
 
 /* ---------------- money still demands the palm ------------------- */
-check('MONEY exactly three strict-money call sites remain (terminal Biom Pay, Add Money, Send authorise)',
-  (appSrc.match(/\{ strictMoney: true \}\)/g) || []).length === 3);
+/* v63 PIN CHANGE (named openly): a fourth strict site — the
+   wallet Biom Pay — was added by the Chairman's explicit order
+   (2026-11-25 10:47); see the v49 suite's note. */
+check('MONEY exactly four strict-money call sites remain (terminal Biom Pay, Add Money, Send authorise, wallet Biom Pay — v63 named pin change)',
+  (appSrc.match(/\{ strictMoney: true \}\)/g) || []).length === 4);
 const addSrc = sliceBetween(appSrc, "$('wAddScan').addEventListener", '/* Send Money');
 check('MONEY Add Money still opens the scan card under the strict rule',
   addSrc.indexOf('showWalletScan({') !== -1 && addSrc.indexOf('{ strictMoney: true }') !== -1);

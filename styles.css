@@ -187,7 +187,7 @@ section.page.active{animation:pagein .3s ease both}
 .balholder{font-size:17px;font-weight:700;margin-top:12px}
 .balid{color:rgba(255,255,255,.8);font-size:13.5px;margin-top:2px}
 .balcard .balnote{color:#ffd98a;font-size:12.5px;font-weight:700;margin-top:12px}
-.qa-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px}
+.qa-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:16px}
 .qa-tile{background:var(--surface);border:1px solid var(--line2);border-radius:20px;box-shadow:var(--shadow);
   padding:16px 6px 13px;cursor:pointer;color:var(--text);display:flex;flex-direction:column;align-items:center;gap:8px;
   font-size:13px;font-weight:700;min-height:88px;justify-content:center}
@@ -287,5 +287,30 @@ section.page.active{animation:pagein .3s ease both}
 .diagtitle{font-weight:800;font-size:14.5px;margin-bottom:6px}
 .diagrow{font-size:13.5px;line-height:1.55;color:var(--text);margin-top:3px}
 .diagpanel .btn{margin-right:8px}
-@media (max-width:640px){ .qa-grid{grid-template-columns:repeat(4,1fr);gap:8px}
+@media (max-width:640px){ .qa-grid{grid-template-columns:repeat(5,1fr);gap:8px}
   .qa-tile{font-size:11.5px;min-height:80px;padding:13px 4px 11px} .balcard .balnum{font-size:34px} }
+
+/* ---- v63 two-face ------------------------------------------------
+   The customer face is the static default (body.mode-customer):
+   owner-marked surfaces are hidden by CSS from the first paint,
+   and at boot the app detaches them from the DOM entirely (they
+   return only inside owner mode). The enrolment form's
+   owner-configuration blocks (.cust-hide) stay in the DOM —
+   their defaults apply — but are not shown to customers. */
+body.mode-customer .owner-only{display:none!important}
+body.mode-owner [data-face="customer"]{display:none!important}
+body.mode-customer [data-face="owner"]{display:none!important}
+body.mode-customer .cust-hide{display:none!important}
+.ownerbar{position:sticky;top:0;z-index:60;display:flex;align-items:center;gap:10px;
+  background:#0b3d91;color:#fff;padding:9px 16px;font-size:13.5px;font-weight:700}
+.ownerbar span{flex:1}
+.ownerbar .btn{background:#fff;color:#0b3d91;border:none}
+.versionline{margin:22px 0 6px;text-align:center;color:var(--muted);font-size:12.5px;
+  letter-spacing:.4px;padding:10px;cursor:pointer;user-select:none;-webkit-user-select:none}
+.balpoints{display:inline-flex;align-items:center;gap:7px;margin-top:12px;
+  background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.35);
+  border-radius:999px;padding:5px 12px 5px 9px;font-weight:800;font-size:13.5px}
+.balpoints svg{width:17px;height:17px;stroke:#ffd98a;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.balpoints .balpoints-lbl{font-weight:700;color:rgba(255,255,255,.8);font-size:12px;letter-spacing:.3px}
+.qa-tile:active{transform:scale(.97)}
+.balcard{transition:box-shadow .25s ease}

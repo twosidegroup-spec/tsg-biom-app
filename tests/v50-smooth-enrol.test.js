@@ -207,8 +207,11 @@ function parityChecks() {
 /* ---------------- 5. wallet-open correction -------------------- */
 function walletChecks() {
   const strictSites = (appSrc.match(/\{ strictMoney: true \}\)/g) || []).length;
-  check('WALLET exactly three strict-money call sites remain (terminal, Add Money, Send authorise)',
-    strictSites === 3, 'found ' + strictSites);
+  /* v63 PIN CHANGE (named openly): a fourth strict site — the
+     wallet Biom Pay — was added by the Chairman's explicit
+     order (2026-11-25 10:47); see the v49 suite's note. */
+  check('WALLET exactly four strict-money call sites remain (terminal, Add Money, Send authorise, wallet Biom Pay — v63 named pin change)',
+    strictSites === 4, 'found ' + strictSites);
   /* v60 PIN CHANGE (named openly): the two checks that stood
      here pinned the wallet-open routes as plain scans (no
      strict flag). At v60 those routes are REMOVED — wallet

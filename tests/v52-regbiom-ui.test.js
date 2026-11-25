@@ -78,9 +78,14 @@ check('HOME demo honesty survives the redesign (v42 pin, restated)',
   htmlSrc.indexOf('Demo balance') !== -1 && htmlSrc.indexOf('Demo money — not real funds') !== -1);
 
 /* ---------------- structure: My Account ----------------------- */
-check('ACCOUNT the page exists and go() routes it (nav highlights Wallet)',
+/* v63 PIN CHANGE (named openly): the customer face has its own
+   My Account nav button, so go() highlights 'account' there;
+   owner mode (no account button in its nav) keeps highlighting
+   Wallet, exactly as v52 pinned. The expression below is the
+   v63 form of the same rule. */
+check('ACCOUNT the page exists and go() routes it (v63: customer nav highlights My Account, owner nav highlights Wallet)',
   htmlSrc.indexOf('<section class="page" id="page-account">') !== -1 &&
-  appSrc.indexOf("page === 'account' ? 'wallet'") !== -1 && appSrc.indexOf("if (page === 'account') { renderAccount(); }") !== -1);
+  appSrc.indexOf("page === 'account' ? (FaceMode.isOwner() ? 'wallet' : 'account')") !== -1 && appSrc.indexOf("if (page === 'account') { renderAccount(); }") !== -1);
 check('ACCOUNT profile header fields exist (avatar, name, phone, verified)',
   htmlSrc.indexOf('id="acAvatar"') !== -1 && htmlSrc.indexOf('id="acName"') !== -1 &&
   htmlSrc.indexOf('id="acPhone"') !== -1 && htmlSrc.indexOf('id="acVerified"') !== -1);
@@ -155,8 +160,11 @@ check('MONEY the Send recipient card is the real identified profile (name, Biom 
   appSrc.indexOf('sendDraft.receiverId') !== -1 && appSrc.indexOf('Palm verified') !== -1);
 
 /* ---------------- no behaviour drift -------------------------- */
-check('DRIFT exactly three strict-money call sites remain (v49/v50 rule untouched)',
-  (appSrc.match(/\{ strictMoney: true \}\)/g) || []).length === 3,
+/* v63 PIN CHANGE (named openly): a fourth strict site — the
+   wallet Biom Pay — was added by the Chairman's explicit order
+   (2026-11-25 10:47); see the v49 suite's note. */
+check('DRIFT exactly four strict-money call sites remain (v63 named pin change)',
+  (appSrc.match(/\{ strictMoney: true \}\)/g) || []).length === 4,
   'found ' + (appSrc.match(/\{ strictMoney: true \}\)/g) || []).length);
 check('DRIFT the quick Scan Palm action is a PLAIN verify (authorises nothing)',
   (function () {

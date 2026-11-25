@@ -293,8 +293,15 @@ function wiringChecks() {
   check('WIRING the strict refusal message is the exact ordered wording',
     appSrc.indexOf("var MONEY_STRICT_FAIL_MSG = 'Matched, but not clearly enough to authorise money — please scan again';") !== -1);
   const strictSites = (appSrc.match(/\{ strictMoney: true \}\)/g) || []).length;
-  check('WIRING exactly three money-moving call sites pass the strict option (terminal Biom Pay, Add Money, Send authorise)',
-    strictSites === 3, 'found ' + strictSites);
+  /* v63 PIN CHANGE (named openly): the Chairman's 2026-11-25
+     10:47 order adds a fourth money-moving call site — the
+     wallet's own Biom Pay (choose a partner store, enter the
+     amount, scan your own palm), mirroring the terminal
+     payment. The rule's intent is unchanged: the strict option
+     rides ONLY on money-moving scans, and the set is exactly
+     the four named below. */
+  check('WIRING exactly four money-moving call sites pass the strict option (terminal Biom Pay, Add Money, Send authorise, wallet Biom Pay — v63 named pin change)',
+    strictSites === 4, 'found ' + strictSites);
   const recvStart = appSrc.indexOf("$('wSendScanReceiver')");
   const recvSlice = appSrc.slice(recvStart, appSrc.indexOf('function renderSendConfirm()', recvStart));
   check('WIRING the Send RECEIVER identification stays a plain scan (identifying a person moves no money)',
