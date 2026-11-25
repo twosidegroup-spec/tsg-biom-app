@@ -5800,7 +5800,7 @@ function createTsgPalmEngine() {
      therefore the identity, and a v62 store — sealed banks, hand
      stamps, wallet, points, and a queued sync outbox row
      included — opens under v63 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62', 'v63', 'v64', 'v65', 'v66'];
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62', 'v63', 'v64', 'v65', 'v66', 'v67'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -5841,6 +5841,13 @@ function createTsgPalmEngine() {
        list–detail), no stored shape, so a v65 store opens
        byte-identical under v66. */
     'v66': function (snap) { return snap; },
+    /* v67: pure adoption — the prototype release (role choice,
+       customer Inbox, merchant Balance) adds no stored shape on
+       the banked stores: the role is a device preference in
+       localStorage and Inbox events live under their own meta
+       keys, written only by v67 code, so a v66 store opens
+       byte-identical under v67. */
+    'v67': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {

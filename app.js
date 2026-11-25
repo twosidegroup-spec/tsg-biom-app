@@ -257,8 +257,35 @@
      owner face runs at compact density. No flow, step order,
      bar, model pin, guard, strict-money site, encryption,
      signing or copy truth changes. The migration step is the
-     identity (see biometrics.js). */
-  var APP_DATA_VERSION = 'v66';
+     identity (see biometrics.js).
+
+     v67 (2026-11-26) is the PROTOTYPE release (the Chairman's
+     approved design set, v67-mobile-design): the app opens on
+     a role choice — Customer or Merchant. The customer face
+     becomes registration-first, then a wallet home with
+     exactly three actions (Add Money, Send Money, Payment —
+     the existing flows untouched), an Inbox tab fed ONLY by
+     real money events (add / send / payment / received,
+     written on the success paths and nowhere else, persisted
+     per profile in the meta store with unread state), and a
+     Settings tab (switch account, create another account,
+     use as Merchant, log out to the role choice). The
+     merchant face lands on the terminal scanner and gains a
+     Balance tab whose receipts and running balance are
+     computed from the real BIOM-PAY records. The owner face
+     and the whole live system stay intact behind the v63
+     gates — the prototype simplifies the front, it deletes
+     nothing. Scan speed programme for the Chairman's
+     2-second bar: a deep pre-warm at boot (a second landmarks
+     pass for the tracking branch and one dummy PalmNet
+     embedding, both on dummy inputs, nothing recorded) and
+     the two impostor maxima in the verify verdict now run
+     concurrently — the same values, the same v49 judgement,
+     computed in parallel instead of in sequence. No bar,
+     model pin, guard, strict-money site, encryption,
+     signing, sync or copy truth changes. The migration step
+     is the identity (see biometrics.js). */
+  var APP_DATA_VERSION = 'v67';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -2092,7 +2119,22 @@
   }
 
   var PalmProc = {
-    hands: null, pending: null, _mpLabel: null,
+    hands: null, pending: null, _mpLabel: null, _frameFailed: false, _everResulted: false,
+    /* v67: per-call detector health. lastCallFailed() tells
+       whether the most recent landmarks call actually RAN the
+       detector (its results callback fired — hand found or
+       genuinely no hand) or FAILED (the send rejected, the
+       results never arrived, the runtime would not construct).
+       Each scan stream counts its OWN consecutive failed frames
+       and ends with the honest detector message at three —
+       never a "no hand" verdict for a detector that could not
+       look. The count is deliberately per-stream, not global:
+       warm-up calls made while the runtime is still loading
+       can fail without poisoning a scan that starts later
+       (measured in the rig, 2026-11-26: boot warm-up failures
+       during the ~10 s cold load otherwise ended every first
+       scan instantly with a false detector verdict). */
+    lastCallFailed: function () { return this._frameFailed; },
     /* v51: MediaPipe's own handedness label from the most recent
        results event, exposed for the cross-check in
        analysePalmFrame (B.palmMpHandedness). Diagnostic only —
@@ -2109,6 +2151,8 @@
       // is the per-frame bottleneck on a budget phone CPU.
       this.hands.setOptions({ maxNumHands: 1, modelComplexity: 0, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
       this.hands.onResults(function (res) {
+        self._everResulted = true; // v67: the runtime finished loading and ran
+        self._frameFailed = false; // v67: this call ran the detector — healthy, hand or no hand
         var p = self.pending; self.pending = null;
         self._mpLabel = (res.multiHandedness && res.multiHandedness[0] && res.multiHandedness[0].label) || null;
         if (p) p((res.multiHandLandmarks && res.multiHandLandmarks[0]) ? res.multiHandLandmarks[0] : null);
@@ -2116,7 +2160,10 @@
     },
     landmarks: function (image) {
       var self = this;
-      this.init();
+      // v67: a runtime that failed to load (the Hands global
+      // missing) throws here — mark the call failed and answer
+      // no-landmarks, never throw into the scan.
+      try { this.init(); } catch (e) { this._frameFailed = true; return Promise.resolve(null); }
       return new Promise(function (resolve) {
         // Orphan guard: a caller still waiting when a new call arrives
         // is released with null - a silently replaced resolver would
@@ -2136,13 +2183,29 @@
         // the v21 phone enrolment stall, 2026-11-20. After 4 s the
         // frame counts as no-hand and the Hands instance is rebuilt,
         // because a wedged graph stays wedged.
+        // v67 (Chairman's scan-reliability order, 2026-11-26): the
+        // rebuild now applies ONLY to a graph that has already
+        // delivered results — a wedged live graph. An instance
+        // still in its FIRST load (runtime files still arriving:
+        // ~10 s cold on a slow device, measured in the rig) is
+        // never torn down: the rebuild's asset preload raced the
+        // first load's preload inside the shared runtime module
+        // and corrupted it, after which no construction in the
+        // page session could ever detect a hand — the detector
+        // silently reported "no hand" on every camera forever.
+        // A still-loading frame simply waits (45 s bound) and
+        // counts as no-hand if the load truly never lands; the
+        // failure counter feeds the honest detector message.
         var to = setTimeout(function () {
-          try { if (self.hands && self.hands.close) self.hands.close(); } catch (e) {}
-          self.hands = null;
+          self._frameFailed = true; // v67: results never arrived — the detector did not run
+          if (self._everResulted) {
+            try { if (self.hands && self.hands.close) self.hands.close(); } catch (e) {}
+            self.hands = null;
+          }
           finish(null);
-        }, 4000);
+        }, self._everResulted ? 4000 : 45000);
         self.pending = finish;
-        self.hands.send({ image: analysisImage(image) }).catch(function () { finish(null); });
+        self.hands.send({ image: analysisImage(image) }).catch(function () { self._frameFailed = true; finish(null); });
       });
     }
   };
@@ -2947,6 +3010,30 @@
       ctx.fillStyle = '#888888'; ctx.fillRect(0, 0, 96, 96);
       PalmProc.landmarks(c).then(function () {}, function () {});
     } catch (e) {}
+    /* v67 deep pre-warm (the 2-second scan programme): the
+       first landmarks call above pays MediaPipe's detection
+       branch; a SECOND call pays the tracking branch a real
+       scan would otherwise meet first, and one PalmNet
+       embedding on a flat-grey dummy ROI pays the TSG
+       engine's first-run cost (worker spin-up beyond init,
+       kernel JIT) off the scan path entirely. Dummy inputs
+       only — nothing is recorded, matched, logged or stored,
+       and every failure is silent: the scan path initialises
+       everything itself, exactly as before. */
+    try {
+      var dc = document.createElement('canvas');
+      dc.width = 96; dc.height = 96;
+      var dctx = dc.getContext('2d');
+      dctx.fillStyle = '#7a7a7a'; dctx.fillRect(0, 0, 96, 96);
+      PalmProc.landmarks(dc).then(function () { return PalmProc.landmarks(dc); }).then(function () {}, function () {});
+    } catch (e) {}
+    try {
+      var dummyRoi = new Uint8Array(B.PALMPRINT_ROI_SIZE * B.PALMPRINT_ROI_SIZE);
+      for (var di = 0; di < dummyRoi.length; di++) dummyRoi[di] = 128;
+      PalmNet.init().then(function (ok) {
+        if (ok) return PalmNet.embedPair(dummyRoi);
+      }).then(function () {}, function () {});
+    } catch (e) {}
   }
 
   /* The facing of the camera ACTUALLY delivering frames right
@@ -2984,7 +3071,11 @@
     var tLm = performance.now();
     return PalmProc.landmarks(frame).then(function (lm) {
       var lmMs = performance.now() - tLm;
-      if (!lm) return { openness: null, descriptor: null, code: null, codeM: null, roi: null, sharpness: 0, texture: null, spread: null, tilt: null, pose: null, framing: null, lm: null, hand: null, mpHand: null, frameComplete: false, frameIssue: null, lmMs: lmMs, encMs: 0 };
+      // v67: whether the detector itself failed on this frame
+      // (vs ran and found nothing) rides the frame result; the
+      // scan streams count their own consecutive failures.
+      var detFailed = PalmProc.lastCallFailed();
+      if (!lm) return { openness: null, descriptor: null, code: null, codeM: null, roi: null, sharpness: 0, texture: null, spread: null, tilt: null, pose: null, framing: null, lm: null, hand: null, mpHand: null, frameComplete: false, frameIssue: null, lmMs: lmMs, encMs: 0, detFailed: detFailed };
       var facing = liveFacingMode();
       var hand = B.palmAnatomicalHand(lm, facing);
       // v53: the full-hand completeness judgement for this frame
@@ -3012,7 +3103,7 @@
       var tEnc = performance.now();
       var codes = (typeof openness === 'number' && openness >= B.PALM_LIVE_OPEN_MIN) ? palmCodesFromFrame(frame, lm) : null;
       var encMs = performance.now() - tEnc;
-      return { openness: openness, descriptor: descriptor, code: codes ? codes.code : null, codeM: codes ? codes.codeM : null, roi: codes ? codes.roi : null, sharpness: meas.sharpness, texture: meas.texture, spread: B.palmSpread(lm), tilt: B.palmTilt(lm), pose: B.palmFramePose(lm), framing: B.palmFramingHint(lm), lm: lm, hand: hand, mpHand: mpHand, frameComplete: comp ? comp.complete : false, frameIssue: comp ? comp.issue : null, lmMs: lmMs, encMs: encMs };
+      return { openness: openness, descriptor: descriptor, code: codes ? codes.code : null, codeM: codes ? codes.codeM : null, roi: codes ? codes.roi : null, sharpness: meas.sharpness, texture: meas.texture, spread: B.palmSpread(lm), tilt: B.palmTilt(lm), pose: B.palmFramePose(lm), framing: B.palmFramingHint(lm), lm: lm, hand: hand, mpHand: mpHand, frameComplete: comp ? comp.complete : false, frameIssue: comp ? comp.issue : null, lmMs: lmMs, encMs: encMs, detFailed: detFailed };
     });
   }
 
@@ -3072,9 +3163,10 @@
     var t0 = Date.now();
     var tracker = makeSpoofTracker();
     var deadline = t0 + 180000;
-    var swapped = false;
+    // v67: no 'swapped' state exists — the camera never swaps.
     var seenHand = false;
     var watchFrames = 0;
+    var detFails = 0; // v67: this watch's own consecutive detector failures
     var poseRef = null;
     var lastHint = 'Show open palm';
     var frameCanvas = null;
@@ -3144,6 +3236,7 @@
         lastGrabT = video.currentTime;
         return analysePalmFrame(frame).then(function (r) {
           watchFrames++;
+          if (r.detFailed) detFails++; else detFails = 0;
           if (watchFrames % 2 === 1) tracker.add(frame, r.lm);
           if (tracker.state().spoof) return 'spoof';
           var hasHand = typeof r.openness === 'number';
@@ -3175,13 +3268,14 @@
         if (control && control.cancelled) return Promise.resolve('stopped');
         if (tracker.state().spoof) return Promise.resolve('spoof');
         if (Date.now() > deadline) return Promise.resolve('timeout');
-        if (!swapped && swapCamera && watchFrames >= 18 && !seenHand) {
-          swapped = true;
-          lastGrabT = -1; // v50: the new stream's clock restarts (as in the verify stream)
-          if (statusEl) statusEl.textContent = 'No hand was seen by this camera - switching to the other camera and trying once more.';
-          shownHint = null; // the next analysed frame's hint replaces the swap note
-          return swapCamera().then(step, step);
-        }
+        // v67 (Chairman's order, 2026-11-26): the auto camera
+        // swap is DELETED. The camera never changes on its own —
+        // the facing the user chose stays until the user taps
+        // the manual switch. A handless stretch is guidance, not
+        // a trigger; a detector that failed on this watch's own
+        // frames three times running ends the watch honestly
+        // instead of masquerading as "no hand".
+        if (detFails >= 3) return Promise.resolve('detector');
         return watchStep().then(function (res) {
           if (res === 'spoof') return 'spoof';
           if (res === 'qualify') { streak++; if (streak >= 2) return 'burst'; }
@@ -3261,6 +3355,7 @@
     return watch().then(function (w) {
       if (w === 'stopped') { var o = out(); o.stopped = true; return o; }
       if (w === 'spoof') return out();
+      if (w === 'detector') return out({ detectorFailed: true });
       if (w !== 'burst') return out({ timedOut: true, hint: lastHint });
       if (statusEl) statusEl.textContent = 'Palm found — capturing, hold steady...';
       return recordBurst().then(function (burstFrames) {
@@ -3319,6 +3414,11 @@
      nothing, and it does not claim the palm failed to match —
      it says precisely what happened. */
   var MONEY_STRICT_FAIL_MSG = 'Matched, but not clearly enough to authorise money — please scan again';
+  /* v67 (Chairman's order, 2026-11-26): the honest detector
+     message. Shown when the hand detector itself cannot run —
+     never dressed up as "no hand detected", which sent the user
+     hunting for a hand problem that did not exist. */
+  var DETECTOR_FAIL_MSG = 'The hand detector could not run on this device, so this scan could not look for a hand. This usually means the detector files have not loaded — check the connection, wait a few seconds, and try the scan again.';
 
   function streamVerifyPalm(video, statusEl, person, people, swapCamera, fieldRec, control, opts) {
     var t0 = Date.now();
@@ -3331,7 +3431,7 @@
     var frameSpoof = [];
     var matchState = { streak: 0, best: null };
     var win = null;
-    var analysed = 0, swapped = false, locked = false;
+    var analysed = 0, locked = false, detFails = 0; // v67: no swapped state — the camera never swaps; detFails = this stream's own consecutive detector failures
     var lastHint = null, coded = 0;
     // v43: the latest frame's quality signals, feeding the live
     // guidance pill (B.palmGuidance) and the caller's scan session.
@@ -3528,8 +3628,16 @@
       // frame's hand (the scan consensus as fallback) — profiles
       // the hand gate excludes contribute nothing to either max.
       var winHand = win.probeHand || scanHand();
-      return impostorMaxFor(win.rois, winHand).then(function (impMax) {
-        return neuralImpostorMaxFor(win.rois, winHand).then(function (nImpMax) {
+      /* v67: the two impostor maxima are independent — the
+         EDCC maximum rides the match worker, the PalmNet
+         maximum rides the neural worker — so they now run
+         CONCURRENTLY instead of in sequence. The values, the
+         v49 margin judgement below and every recorded field
+         are exactly the ones the sequential chain produced;
+         only the verdict tail's wall-clock cost changes. */
+      return Promise.all([impostorMaxFor(win.rois, winHand), neuralImpostorMaxFor(win.rois, winHand)]).then(function (both) {
+        var impMax = both[0], nImpMax = both[1];
+        {
           var extras = { neuralScore: typeof win.res.neuralScore === 'number' ? win.res.neuralScore : null, neuralImpostorMax: nImpMax, acceptedBy: win.res.acceptedBy || null, probeHand: winHand, profileHand: profileHand };
           var measured = 'Palmprint similarity ' + (typeof win.res.similarity === 'number' ? win.res.similarity.toFixed(3) : 'n/a') + ' (threshold ' + win.res.threshold + ', 1-snap packed match: the winning frame\'s bit-packed template scored by the 5-shift popcount matcher against ' + person.palmProfile.codes.length + ' enrolled packed templates), passive liveness passed (natural micro-shift across rapid frames), Show & Pay streaming scan.' + neuralMeasuredStr(win.res) + handEvidenceStr(winHand) + ' Scan latency: ' + (Date.now() - t0) + ' ms.' + shiftLogStr(win.res) + ' ' + diagStr();
           if (strictMoney) {
@@ -3553,7 +3661,7 @@
           }
           fieldRec(win.res.similarity, impMax, 'pass', 'verified', tracker.state().lightTag, extras);
           return finish({ r: win.res, measured: measured, latencyMs: Date.now() - t0 });
-        });
+        }
       });
     }
     function finalOut(timedOut) {
@@ -3690,6 +3798,7 @@
         lastGrabT = video.currentTime;
         return analysePalmFrame(frame).then(function (r) {
           analysed++;
+          if (r.detFailed) detFails++; else detFails = 0;
           stLm += r.lmMs || 0; stEnc += r.encMs || 0;
           // Every analysed frame feeds the spoof tracker, carrying
           // its landmarks so the v36 grid gate reads the palm region
@@ -3823,15 +3932,15 @@
         }
         return finalOut(Date.now() > deadline);
       }
-      // v37: the burst-era fallback (six bursts without a single
-      // hand reading) is eighteen analysed frames in continuous
-      // terms — the same amount of evidence, the same single swap.
-      if (!swapped && swapCamera && analysed >= 18 && frames.every(function (x) { return typeof x.openness !== 'number'; })) {
-        swapped = true;
-        lastGrabT = -1; // the new stream's clock restarts
-        if (statusEl) setStatus('No hand was seen by this camera - switching to the other camera and trying once more.');
-        shownStatus = null; // v50: the next guidance line always replaces the swap note
-        return swapCamera().then(function () { return loop(); }, function () { return loop(); });
+      // v67 (Chairman's order, 2026-11-26): the v37 auto camera
+      // swap is DELETED — the camera never changes on its own
+      // during or between scans; the facing the user chose
+      // stays until the user taps the manual switch. A handless
+      // stretch simply keeps the guidance coming on this
+      // camera. A detector that cannot run ends the scan with
+      // the honest detector message, never a "no hand" verdict.
+      if (detFails >= 3) {
+        return finish({ fail: DETECTOR_FAIL_MSG + ' Nothing was verified.', detectorFailed: true, diag: { edcc: null, neural: null, probeHand: null, profileHand: profileHand, handGate: false } });
       }
       if (statusEl) {
         var seenHandNow = frames.some(function (x) { return typeof x.openness === 'number'; });
@@ -3890,7 +3999,7 @@
     var strictMoney = !!(opts && opts.strictMoney);
     var moneyGate = B.createMoneyScanGate();
     var strictFail = null; // { block: 'margin' }
-    var analysed = 0, swapped = false, locked = false;
+    var analysed = 0, locked = false, detFails = 0; // v67: no swapped state — the camera never swaps; detFails = this stream's own consecutive detector failures
     var lastHint = null, coded = 0;
     // v43: the latest frame's quality signals, feeding the live
     // guidance pill (B.palmGuidance) and the caller's scan session.
@@ -4139,6 +4248,7 @@
         lastGrabT = video.currentTime;
         return analysePalmFrame(frame).then(function (r) {
           analysed++;
+          if (r.detFailed) detFails++; else detFails = 0;
           stLm += r.lmMs || 0; stEnc += r.encMs || 0;
           var sample = tracker.add(frame, r.lm);
           frames.push(r);
@@ -4228,12 +4338,12 @@
         }
         return finalOut(Date.now() > deadline);
       }
-      if (!swapped && swapCamera && analysed >= 18 && frames.every(function (x) { return typeof x.openness !== 'number'; })) {
-        swapped = true;
-        lastGrabT = -1;
-        if (statusEl) setStatus('No hand was seen by this camera - switching to the other camera and trying once more.');
-        shownStatus = null; // v50: the next guidance line always replaces the swap note
-        return swapCamera().then(function () { return loop(); }, function () { return loop(); });
+      // v67 (Chairman's order, 2026-11-26): the auto camera
+      // swap is DELETED here too — same law as the verify
+      // stream: the camera never changes on its own, and a
+      // detector that cannot run is reported honestly.
+      if (detFails >= 3) {
+        return { fail: DETECTOR_FAIL_MSG + ' Nothing was identified.', detectorFailed: true };
       }
       if (statusEl) {
         var seenHandNow = frames.some(function (x) { return typeof x.openness === 'number'; });
@@ -4255,10 +4365,24 @@
        not exist (their DOM is detached) and navigation to them
        resolves to the wallet instead. The 'activity' target is
        the wallet page scrolled to its activity card. */
+    var requestedPage = page;
     if (!FaceMode.isOwner() && FaceMode.OWNER_PAGES.indexOf(page) !== -1) page = 'wallet';
+    /* v67 role routing: the merchant's Scanner tab IS the
+       terminal page under its merchant name (the one owner
+       surface the role layer re-attaches), and any other
+       owner page requested in the merchant role resolves to
+       the scanner rather than the customer wallet. In the
+       customer role the scanner resolves to the wallet, like
+       every owner page. */
+    if (requestedPage === 'scanner') {
+      page = (!FaceMode.isOwner() && RoleMode.isMerchant()) || FaceMode.isOwner() ? 'terminal' : 'wallet';
+    } else if (!FaceMode.isOwner() && RoleMode.isMerchant() && FaceMode.OWNER_PAGES.indexOf(requestedPage) !== -1) {
+      page = 'terminal';
+    }
     var scrollActivity = page === 'activity';
     if (scrollActivity) page = 'wallet';
     var navPage = scrollActivity ? 'activity' : page === 'topup' ? 'registry' : page === 'account' ? (FaceMode.isOwner() ? 'wallet' : 'account') : (page === 'stores' || page === 'logs' || page === 'partner') ? 'more' : page;
+    if (requestedPage === 'scanner' && page === 'terminal') navPage = 'scanner'; // v67: the merchant tab keeps its own name lit
     document.querySelectorAll('#mainNav button').forEach(function (b) {
       var on = b.dataset.page === navPage;
       b.classList.toggle('active', on);
@@ -4277,11 +4401,32 @@
     if (page === 'wallet') { renderWallet(); Pipeline.enterScanView(); }
     if (page === 'more') { fillSyncSettings(); }
     if (page === 'account') { renderAccount(); }
+    if (page === 'inbox') { renderInbox(); }
+    if (page === 'settings') { renderSettings(); }
+    if (page === 'balance') { renderMerchantBalance(); }
     if (page === 'dashboard') renderDashboard();
     if (page === 'registry') renderRegistry();
     if (page === 'logs') renderLogs();
-    if (page === 'terminal') { fillTerminalPeople().then(function () { maybeArmTerminal(); }); Pipeline.enterScanView(); }
-    if (page === 'enroll') { Pipeline.enterScanView(); maybeArmEnroll(); }
+    if (page === 'terminal') { ensureTerminalPeople().then(function () { maybeArmTerminal(); }); Pipeline.enterScanView(); }
+    if (page === 'enroll') {
+      /* v67: after a completed enrolment the page rests on its
+         Done step for the rest of the session (the shipped
+         behaviour) — but the prototype's routes into enrolment
+         (Settings -> Create another account, the role choice)
+         promise a NEW registration. Arriving with no enrolment
+         in progress and the Done step showing therefore
+         presents the fresh form with cleared fields, exactly
+         as a fresh page load does. An in-progress enrolment
+         (details captured, palm step open) is never disturbed:
+         its details object is non-null and this stays a no-op. */
+      if (!enroll.details && !$('enroll-done').classList.contains('hidden')) {
+        ['enName', 'enPhone', 'enWalletNumber'].forEach(function (id) { if ($(id)) $(id).value = ''; });
+        if ($('enWalletProvider')) $('enWalletProvider').value = '';
+        if ($('enrollDetailsError')) $('enrollDetailsError').innerHTML = '';
+        setStep('details');
+      }
+      Pipeline.enterScanView(); maybeArmEnroll();
+    }
     window.scrollTo(0, 0);
     if (scrollActivity) {
       setTimeout(function () {
@@ -4341,6 +4486,12 @@
          by animating width — the bar's CSS transition targets
          transform only. */
       $('enrollProgressBar').style.transform = 'scaleX(' + ((idx + 1) / flow.length) + ')';
+      /* v67: the design's numbered step dots ride the same
+         step index — presentation only, the flow is unchanged. */
+      document.querySelectorAll('.enrolldot').forEach(function (d, di) {
+        d.classList.toggle('on', di === idx);
+        d.classList.toggle('done', di < idx);
+      });
     }
   }
   function capturedCount() { return enroll.palm ? 1 : 0; }
@@ -4382,7 +4533,7 @@
         $('enrollDoneBody').innerHTML =
           '<b>Name:</b> ' + esc(person.name) + '<br><b>Biom ID:</b> ' + esc(person.id) + '<br>' +
           '<b>Store:</b> ' + esc(person.store) + '<br>' +
-          '<b>Palm:</b> ' + (person.palmProfile && person.palmProfile.v === 3 ? 'Enrolled (palmprint — EDCC competitive code, ' + person.palmProfile.codes.length + ' individual captures, movement-checked)' : 'Not enrolled') + '<br>' +
+          '<b>Palm:</b> ' + (person.palmProfile && person.palmProfile.v === 3 ? 'Enrolled (palmprint — EDCC competitive code, ' + person.palmProfile.codes.length + ' individual captures, movement-checked)' : person.palmProfile ? 'Enrolled (palmprint — ' + (Array.isArray(person.palmProfile.codes) ? person.palmProfile.codes.length : 0) + ' bit-packed templates banked, movement-checked)' : 'Not enrolled') + '<br>' +
           '<b>Wallet:</b> ' + (person.walletProvider ? esc(person.walletProvider) + ' ' + esc(B.maskWalletNumber(person.walletNumber)) : 'Not linked') + '<br>' +
           '<b>Biometric-only limits:</b> ' + (person.limits.perTx ? 'BDT ' + Number(person.limits.perTx).toLocaleString() + ' per transaction' : 'No per-transaction limit') + (person.limits.daily ? ', BDT ' + Number(person.limits.daily).toLocaleString() + ' per day' : '') + '<br>' +
           '<b>Palm Loyalty:</b> Active — 0 points<br>' +
@@ -4473,11 +4624,9 @@
     enrolSession.enter();
     enrolInds.reset();
     setSurfacePill('e', 'Scanning');
-    streamEnrolPalm($('palmVideo'), $('palmStatus'), null, function () {
-      camFacing.enrollPalm = camFacing.enrollPalm === 'user' ? 'environment' : 'user';
-      syncCamToggle('enrollPalm');
-      return Cam.start($('palmVideo'), camFacing.enrollPalm, 'enrollPalm');
-    }, control).then(function (res) {
+    // v67: no swap callback — enrolment watches on the chosen
+    // camera only (auto-swap deleted, Chairman's order).
+    streamEnrolPalm($('palmVideo'), $('palmStatus'), null, null, control).then(function (res) {
       palmScanBusy = false;
       setSurfacePill('e', 'Ready');
       if (res.stopped) { $('palmCapture').disabled = false; $('palmStatus').textContent = 'Capture stopped.'; return; }
@@ -4485,6 +4634,12 @@
         DB.put('logs', { ts: Date.now(), personId: '', personName: '(enrolment attempt)', store: '', method: 'palm', measured: 'Spoof score ' + res.spoof.score.toFixed(2) + ' - ' + res.spoof.reasons.join('; '), result: 'Spoof / Screen Replay Detected' });
         Sync.noteScan({ kind: 'enrol', profileName: '', biomId: '', result: 'Spoof / Screen Replay Detected' });
         $('palmMsg').innerHTML = '<div class="error">Spoof / Screen Replay Detected — the scan showed a screen or a recording, not a live hand (' + esc(res.spoof.reasons.join('; ')) + '). Nothing was stored. Enrolment requires the real hand, live in front of the camera.</div>';
+        $('palmCapture').disabled = false;
+        Snd.buzz();
+        return;
+      }
+      if (res.detectorFailed) {
+        $('palmMsg').innerHTML = '<div class="error">' + esc(DETECTOR_FAIL_MSG) + ' Nothing was stored.</div>';
         $('palmCapture').disabled = false;
         Snd.buzz();
         return;
@@ -4574,10 +4729,21 @@
     /* v63: the terminal is an owner surface — in customer mode
        its DOM is detached and it is never populated. */
     if (!FaceMode.isOwner()) return Promise.resolve();
+    return loadTerminalPeople();
+  }
+  function loadTerminalPeople() {
     return DB.all('people').then(function (people) {
       termPeopleCache = people;
       renderTermPeople();
     });
+  }
+  /* v67: the terminal's people load for whichever face may
+     use it — the owner face, or the merchant role (where the
+     role layer has re-attached the terminal page). In the
+     plain customer role it stays a no-op, exactly as v63. */
+  function ensureTerminalPeople() {
+    if (!FaceMode.isOwner() && !RoleMode.isMerchant()) return Promise.resolve();
+    return loadTerminalPeople();
   }
   // Palm-only: the note states the selected person's palm status.
   function fillTermMethodNote() {
@@ -4683,7 +4849,15 @@
     // v49: the log write is best-effort — it must never gate the
     // verdict card. A wedged store (now bounded in DB.put) rejects
     // here and the terminal still renders its verdict.
-    return DB.put('logs', { ts: Date.now(), personId: person.id, personName: person.name, store: $('termStore').value, method: method, measured: measured, result: result }).catch(function () { return null; });
+    // v67: the store is read through a guard — in the customer
+    // face the terminal page (and its store select) is detached
+    // from the DOM, so the bare read threw and a refused wallet
+    // scan surfaced as a script error instead of its verdict
+    // (found by the v67 gate's wrong-palm authorisation test).
+    // Terminal scans, which own the select, record it exactly
+    // as before; wallet scans record no store, as they mean.
+    var storeEl = $('termStore');
+    return DB.put('logs', { ts: Date.now(), personId: person.id, personName: person.name, store: storeEl ? storeEl.value : '', method: method, measured: measured, result: result }).catch(function () { return null; });
   }
 
   /* ---------------- Field Test Mode (v18) -------------------------------
@@ -4793,16 +4967,10 @@
       termControl = control;
       termInds.reset();
       setSurfacePill('t', 'Scanning');
-      var attempt = streamVerifyPalm($('termVideo'), $('termStatus'), person, people, function () {
-        var k = termFacingKey();
-        camFacing[k] = camFacing[k] === 'user' ? 'environment' : 'user';
-        syncCamToggle('terminal');
-        // v48: the viewKey must be the terminal's flash key (k),
-        // not the group name — with 'terminal' Cam.start found no
-        // flash choice to honour, so a mid-scan camera swap killed
-        // the torch and never re-applied it on the new track.
-        return Cam.start($('termVideo'), camFacing[k], k);
-      }, fieldRec, control, { strictMoney: true }).then(function (out) {
+      // v67: no swap callback — the terminal scan runs on the
+      // camera the user chose, start to finish (the v37-v66
+      // mid-scan auto-swap is deleted, Chairman's order).
+      var attempt = streamVerifyPalm($('termVideo'), $('termStatus'), person, people, null, fieldRec, control, { strictMoney: true }).then(function (out) {
         palmScanBusy = false;
         $('termScan').disabled = false;
         return out;
@@ -4871,6 +5039,12 @@
                   store: $('termStore').value, amount: amount, method: method, measured: out.measured, status: PAY_STATUS
                 };
                 return DB.put('transactions', tx).then(function () {
+                  /* v67: the paying customer's Inbox event, on
+                     the success path only — the payment record
+                     now exists. Refused payments (no linked
+                     wallet, over a biometric-only limit) never
+                     reach this line and never notify. */
+                  Inbox.add(person.id, Inbox.event('pay', { amount: tx.amount, ref: tx.id, detail: 'At ' + tx.store + ' · ' + tx.id + ' · Demo money' }));
                   // v59 (defect D6): the payment has resolved — only
                   // now are its Palm Loyalty points credited, from
                   // the created transaction's amount, never the
@@ -4951,10 +5125,12 @@
     return walletPeopleCache.find(function (p) { return p.id === walletSessionId; }) || null;
   }
   function fmtBDT(n) { return 'BDT ' + Number(n || 0).toLocaleString(); }
-  function walletSwapCamera() {
-    camFacing.walletAct = camFacing.walletAct === 'user' ? 'environment' : 'user';
-    return Cam.start($('wScanVideo'), camFacing.walletAct, 'walletAct');
-  }
+  /* v67: walletSwapCamera is DELETED (Chairman's order,
+     2026-11-26) — it was the wallet scans' auto-swap callback,
+     flipping the facing mid-scan whenever no hand was seen.
+     The wallet scan card now runs every scan on the camera the
+     user chose; the manual Front/Back toggle above the card is
+     the only way the facing ever changes. */
   function authFromVerify(out, personId) {
     return (out && !out.fail && out.r && out.r.verified === true)
       ? { verified: true, personId: personId }
@@ -4994,8 +5170,9 @@
       $('walletSend').classList.add('hidden');
       $('walletScanCard').classList.add('hidden');
       walletScanCtx = null;
-      if (me) { renderWalletHome(me); return; }
+      if (me) { renderWalletHome(me); updateInboxBadge(); return; }
       renderWalletProfiles(people);
+      updateInboxBadge();
     });
   }
   /* v60: the profile list on the closed wallet is a plain
@@ -5064,6 +5241,22 @@
     }
     $('wBalEye').classList.toggle('off', balanceHidden);
     if ($('wHomePoints')) $('wHomePoints').textContent = Number(me.loyaltyPoints || 0).toLocaleString() + ' pts';
+    /* v67: the prototype wallet home's greeting and the
+       "Your wallet" facts card — read live from the same
+       record, like everything else on this page. */
+    if ($('wHomeGreet')) {
+      var hrNow = new Date().getHours();
+      var greetWord = hrNow < 12 ? 'Good morning' : hrNow < 17 ? 'Good afternoon' : 'Good evening';
+      $('wHomeGreet').innerHTML = greetWord + ', <b>' + esc(me.name) + '</b>';
+    }
+    if ($('wFactId')) $('wFactId').textContent = me.id;
+    if ($('wFactPalm')) {
+      var factHand = B.palmProfileHand(me.palmProfile);
+      $('wFactPalm').textContent = personHasMethod(me)
+        ? (factHand === 'left' ? 'Left palm registered' : factHand === 'right' ? 'Right palm registered' : 'Palm registered')
+        : 'No palm registered';
+    }
+    if ($('wFactPhone')) $('wFactPhone').textContent = me.phone || 'No phone number recorded';
     var linkRows = w.linkedAccounts.map(function (a) {
       return '<div class="linkrow"><span class="brandchip ' + brandChipClass(a.type) + '">' + esc(String(a.type || '?').charAt(0)) + '</span>' +
         '<div class="lr-main"><div class="lr-name">' + esc(a.type) + '</div><div class="lr-sub">' + esc(a.label) + '</div></div>' +
@@ -5446,13 +5639,18 @@
       run: function () {
         return DB.all('people').then(function (people) {
           var fresh = people.find(function (p) { return p.id === me.id; }) || me;
-          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, walletSwapCamera, function () {}, walletControl, { strictMoney: true }).then(function (out) {
+          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, null, function () {}, walletControl, { strictMoney: true }).then(function (out) {
             var auth = authFromVerify(out, fresh.id);
             if (!auth.verified) { walletScanFailed(out); return; }
             return DB.nextSeq('demoSeq', 1).then(function (seq) {
               var res = B.walletApplyAddMoney(fresh, amt.amount, accountId, auth, Date.now(), B.walletDemoRef(seq));
               if (!res.ok) { $('wScanMsg').innerHTML = '<div class="error">' + esc(res.error) + '</div>'; $('wScanRun').disabled = false; return; }
               return DB.put('people', res.person).then(function () {
+                /* v67: the Inbox event is written HERE — on the
+                   success path only, after the updated record is
+                   stored. A refused scan or a failed apply never
+                   reaches this line, so it can never notify. */
+                Inbox.add(res.person.id, Inbox.event('add', { amount: res.entry.amount, balanceAfter: res.entry.balanceAfter, ref: res.entry.ref, detail: 'From ' + res.entry.accountType + ' — ' + res.entry.accountLabel + ' · Demo money' }));
                 Sync.noteScan({ kind: 'money-auth', profileName: fresh.name, biomId: fresh.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
                 balanceFlashPending = true;
                 hideWalletScan();
@@ -5503,7 +5701,7 @@
       prompt: 'The RECEIVER shows their open palm. The scan finds their Biom ID — if the palm matches no registered palm, no money can be sent.',
       run: function () {
         return DB.all('people').then(function (people) {
-          return streamIdentifyPalm($('wScanVideo'), $('wScanStatus'), people, walletSwapCamera, walletControl).then(function (out) {
+          return streamIdentifyPalm($('wScanVideo'), $('wScanStatus'), people, null, walletControl).then(function (out) {
             if (!out || out.fail || !out.person) { walletScanFailed(out); return; }
             if (out.person.id === me.id) {
               $('wScanMsg').innerHTML = '<div class="error">That is your own palm — you cannot send money to yourself. Scan the receiver\'s palm.</div>';
@@ -5558,7 +5756,7 @@
       run: function () {
         return DB.all('people').then(function (people) {
           var freshSender = people.find(function (p) { return p.id === me.id; }) || me;
-          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), freshSender, people, walletSwapCamera, function () {}, walletControl, { strictMoney: true }).then(function (out) {
+          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), freshSender, people, null, function () {}, walletControl, { strictMoney: true }).then(function (out) {
             var auth = authFromVerify(out, freshSender.id);
             if (!auth.verified) { walletScanFailed(out); return; }
             return DB.nextSeq('demoSeq', 1).then(function (seq) {
@@ -5567,6 +5765,14 @@
               // The transfer was computed atomically from the one
               // snapshot above; persist both updated records.
               return DB.put('people', res.sender).then(function () { return DB.put('people', res.receiver); }).then(function () {
+                /* v67: both Inbox events are written HERE — on
+                   the success path only, after BOTH updated
+                   records are stored: the sender's "Send money
+                   successful" and the receiver's "You received
+                   money". A refused authorisation never reaches
+                   this line. */
+                Inbox.add(res.sender.id, Inbox.event('send', { amount: res.senderEntry.amount, balanceAfter: res.senderEntry.balanceAfter, ref: res.senderEntry.ref, counterpartyName: res.receiver.name, detail: 'To ' + res.receiver.name + ' (' + res.receiver.id + ') · Demo money' }));
+                Inbox.add(res.receiver.id, Inbox.event('receive', { amount: res.receiverEntry.amount, balanceAfter: res.receiverEntry.balanceAfter, ref: res.receiverEntry.ref, counterpartyName: freshSender.name, detail: 'From ' + freshSender.name + ' (' + freshSender.id + ') · Demo money' }));
                 Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: freshSender.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
                 var sentAmount = sendDraft.amount, sentTo = sendDraft.receiverName, sentToId = sendDraft.receiverId, sentRef = res.senderEntry.ref, newBal = res.senderEntry.balanceAfter;
                 sendDraft = { amount: null, receiverId: null, receiverName: null };
@@ -5649,7 +5855,7 @@
       run: function () {
         return DB.all('people').then(function (people) {
           var fresh = people.find(function (p) { return p.id === me.id; }) || me;
-          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, walletSwapCamera, function () {}, walletControl, { strictMoney: true }).then(function (out) {
+          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, null, function () {}, walletControl, { strictMoney: true }).then(function (out) {
             var auth = authFromVerify(out, fresh.id);
             if (!auth.verified) { walletScanFailed(out); return; }
             Sync.noteScan({ kind: 'money-auth', profileName: fresh.name, biomId: fresh.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
@@ -5677,6 +5883,12 @@
                   var payPts = Math.floor(tx.amount / 10);
                   if (payPts > 0) fresh.loyaltyPoints = (fresh.loyaltyPoints || 0) + payPts;
                   return DB.put('people', fresh).then(function () {
+                    /* v67: the Inbox event is written HERE — on
+                       the success path only: the payment record
+                       exists and the updated profile is stored.
+                       Every refusal above returns before this
+                       line, so a refused payment never notifies. */
+                    Inbox.add(fresh.id, Inbox.event('pay', { amount: tx.amount, ref: tx.id, detail: 'At ' + store + ' · ' + tx.id + ' · Demo money' }));
                     balanceFlashPending = true;
                     hideWalletScan();
                     return renderWallet().then(function () {
@@ -5865,7 +6077,7 @@
       run: function () {
         return DB.all('people').then(function (people) {
           var fresh = people.find(function (p) { return p.id === me.id; }) || me;
-          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, walletSwapCamera, function () {}, walletControl).then(function (out) {
+          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, null, function () {}, walletControl).then(function (out) {
             var auth = authFromVerify(out, fresh.id);
             if (!auth.verified) { walletScanFailed(out); return; }
             Sync.noteScan({ kind: 'verify', profileName: fresh.name, biomId: fresh.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
@@ -6115,11 +6327,9 @@
     topupSession.enter();
     topupInds.reset();
     setSurfacePill('u', 'Scanning');
-    streamEnrolPalm($('topVideo'), $('topStatus'), null, function () {
-      camFacing.topup = camFacing.topup === 'user' ? 'environment' : 'user';
-      syncCamToggle('topup');
-      return Cam.start($('topVideo'), camFacing.topup, 'topup');
-    }, control).then(function (res) {
+    // v67: no swap callback — the chosen camera only (auto-swap
+    // deleted, Chairman's order).
+    streamEnrolPalm($('topVideo'), $('topStatus'), null, null, control).then(function (res) {
       topupBusy = false; palmScanBusy = false;
       setSurfacePill('u', 'Ready');
       $('topCapture').disabled = false;
@@ -6128,6 +6338,11 @@
         DB.put('logs', { ts: Date.now(), personId: '', personName: '(add-angles attempt)', store: '', method: 'palm', measured: 'Spoof score ' + res.spoof.score.toFixed(2) + ' - ' + res.spoof.reasons.join('; '), result: 'Spoof / Screen Replay Detected' });
         Sync.noteScan({ kind: 'topup', profileName: '', biomId: '', result: 'Spoof / Screen Replay Detected' });
         $('topMsg').innerHTML = '<div class="error">Spoof / Screen Replay Detected — the scan showed a screen or a recording, not a live hand (' + esc(res.spoof.reasons.join('; ')) + '). Nothing was changed.</div>';
+        Snd.buzz();
+        return;
+      }
+      if (res.detectorFailed) {
+        $('topMsg').innerHTML = '<div class="error">' + esc(DETECTOR_FAIL_MSG) + ' Nothing was changed.</div>';
         Snd.buzz();
         return;
       }
@@ -6396,13 +6611,13 @@
       $('topCapture').disabled = true;
       var control = { cancelled: false };
       topupControl = control;
-      var swap = function () {
-        camFacing.topup = camFacing.topup === 'user' ? 'environment' : 'user';
-        syncCamToggle('topup');
-        return Cam.start($('topVideo'), camFacing.topup, 'topup');
-      };
+      // v67: no swap callback exists any more — both capture
+      // steps run on the chosen camera (auto-swap deleted,
+      // Chairman's order), so the steps pass null below.
+      var swap = null;
       function burstError(res, stepName) {
         if (res.stopped) return 'Capture stopped — nothing was changed.';
+        if (res.detectorFailed) return DETECTOR_FAIL_MSG + ' Nothing was changed.';
         if (res.spoof && res.spoof.spoof) {
           DB.put('logs', { ts: Date.now(), personId: '', personName: '(re-registration attempt)', store: '', method: 'palm', measured: 'Spoof score ' + res.spoof.score.toFixed(2) + ' - ' + res.spoof.reasons.join('; '), result: 'Spoof / Screen Replay Detected' });
           Sync.noteScan({ kind: 're-register', profileName: '', biomId: '', result: 'Spoof / Screen Replay Detected' });
@@ -6704,6 +6919,156 @@
   wireSyncSettings();
   wireVault();
 
+  /* INBOX-BEGIN — the v67 customer Inbox core: a pure factory
+     over a tiny async store adapter, so the suite can drive the
+     exact shipped logic against a fake store. An Inbox event is
+     created ONLY by the money flows' success paths (Add Money,
+     Send Money — for both the sender and the receiver — and
+     Biom Pay from the wallet or the terminal); no failure path
+     anywhere calls add(), so a failed action can never produce
+     a notification. Events persist per profile with an unread
+     flag and are capped, oldest dropped first. The titles are
+     the approved design's: plain statements of what happened,
+     with the demo-money truth carried in the detail line the
+     caller supplies from the real record. */
+  function createInbox(store) {
+    var CAP = 60;
+    var TITLES = {
+      add: 'Add money successful',
+      send: 'Send money successful',
+      pay: 'Payment done'
+    };
+    function event(kind, opts) {
+      opts = opts || {};
+      if (kind === 'receive') {
+        return {
+          kind: 'receive', ts: opts.ts || Date.now(),
+          title: 'You received money from ' + (opts.counterpartyName || 'another wallet'),
+          detail: opts.detail || '', amount: typeof opts.amount === 'number' ? opts.amount : null,
+          balanceAfter: typeof opts.balanceAfter === 'number' ? opts.balanceAfter : null,
+          ref: opts.ref || '', counterpartyName: opts.counterpartyName || '', read: false
+        };
+      }
+      if (!TITLES[kind]) return null;
+      return {
+        kind: kind, ts: opts.ts || Date.now(), title: TITLES[kind],
+        detail: opts.detail || '', amount: typeof opts.amount === 'number' ? opts.amount : null,
+        balanceAfter: typeof opts.balanceAfter === 'number' ? opts.balanceAfter : null,
+        ref: opts.ref || '', counterpartyName: opts.counterpartyName || '', read: false
+      };
+    }
+    function key(personId, ev) { return ev.kind + ':' + (ev.ref || (ev.ts + ':' + (ev.amount || 0))); }
+    function add(personId, ev) {
+      if (!personId || !ev) return Promise.resolve(false);
+      return store.load(personId).then(function (list) {
+        list = Array.isArray(list) ? list.slice() : [];
+        ev.id = key(personId, ev);
+        list.push(ev);
+        while (list.length > CAP) list.shift();
+        return store.save(personId, list).then(function () { return true; });
+      }).catch(function () { return false; });
+    }
+    function list(personId) {
+      return store.load(personId).then(function (rows) {
+        rows = Array.isArray(rows) ? rows.slice() : [];
+        return rows.sort(function (a, b) { return (b.ts || 0) - (a.ts || 0); });
+      }).catch(function () { return []; });
+    }
+    function unreadCount(personId) {
+      return store.load(personId).then(function (rows) {
+        return (Array.isArray(rows) ? rows : []).filter(function (e) { return e && !e.read; }).length;
+      }).catch(function () { return 0; });
+    }
+    function markAllRead(personId) {
+      return store.load(personId).then(function (rows) {
+        rows = Array.isArray(rows) ? rows : [];
+        var changed = false;
+        rows.forEach(function (e) { if (e && !e.read) { e.read = true; changed = true; } });
+        return changed ? store.save(personId, rows) : null;
+      }).then(function () { return true; }).catch(function () { return false; });
+    }
+    return { event: event, add: add, list: list, unreadCount: unreadCount, markAllRead: markAllRead, CAP: CAP };
+  }
+  /* INBOX-END */
+  var Inbox = createInbox({
+    /* Inbox events live under their own meta keys — local to
+       this device, outside the synced bank shape and outside
+       the v61 vault funnel (they carry no palm material, only
+       the money facts the wallet statement already shows).
+       The owner's Delete All Data clears the meta store, so
+       the Inbox is wiped with everything else, as it should
+       be. */
+    load: function (personId) { return DB.getMeta('inbox:' + personId, []); },
+    save: function (personId, events) { return DB.setMeta('inbox:' + personId, events); }
+  });
+
+  /* ROLEMODE-BEGIN — the v67 role core: a pure factory over a
+     storage adapter. The role (customer / merchant) is a
+     device preference, held in localStorage like the sync
+     prefs — it is not account data, never syncs, and clearing
+     it (Settings → Log out) simply returns the app to the
+     role choice. No role means the role choice shows. */
+  function createRoleMode(storage) {
+    var KEY = 'tsgbiom_role';
+    function get() {
+      try {
+        var v = storage.getItem(KEY);
+        return (v === 'customer' || v === 'merchant') ? v : null;
+      } catch (e) { return null; }
+    }
+    function set(role) {
+      if (role !== 'customer' && role !== 'merchant') return get();
+      try { storage.setItem(KEY, role); } catch (e) {}
+      return get();
+    }
+    function clear() { try { storage.removeItem(KEY); } catch (e) {} }
+    function isMerchant() { return get() === 'merchant'; }
+    function isCustomer() { return get() === 'customer'; }
+    return { get: get, set: set, clear: clear, isMerchant: isMerchant, isCustomer: isCustomer, KEY: KEY };
+  }
+  /* ROLEMODE-END */
+  var RoleMode = createRoleMode(window.localStorage);
+
+  /* MERCHANT-BALANCE-BEGIN — the v67 merchant Balance core: a
+     pure function over the real BIOM-PAY records (the
+     'transactions' store both payment creators write). It
+     computes the receipts newest-first, each carrying the
+     running balance after that payment — the accumulation
+     runs chronologically over the same records, so the chain
+     arithmetic always holds on real data — plus the all-time
+     and today's totals. It invents nothing: a record with no
+     amount contributes nothing, and the customer's number is
+     joined from their profile when known, falling back to
+     the record's own masked wallet. */
+  function merchantBalanceSummary(txs, peopleById, nowTs) {
+    var pays = (Array.isArray(txs) ? txs : []).filter(function (t) {
+      return t && typeof t.amount === 'number' && isFinite(t.amount);
+    }).slice();
+    pays.sort(function (a, b) {
+      var d = (a.ts || 0) - (b.ts || 0);
+      if (d !== 0) return d;
+      return String(a.id || '') < String(b.id || '') ? -1 : 1;
+    });
+    var running = 0;
+    var dayStart = new Date(nowTs || Date.now()); dayStart.setHours(0, 0, 0, 0);
+    var todayTotal = 0, todayCount = 0;
+    var rowsAsc = pays.map(function (t) {
+      running += t.amount;
+      if ((t.ts || 0) >= dayStart.getTime()) { todayTotal += t.amount; todayCount += 1; }
+      var person = peopleById ? peopleById[t.personId] : null;
+      return {
+        id: t.id, ts: t.ts || 0, personId: t.personId || '', personName: t.personName || (person && person.name) || 'Customer',
+        number: (person && person.phone) || t.walletMasked || '',
+        amount: t.amount, balanceAfter: running, store: t.store || ''
+      };
+    });
+    return {
+      rows: rowsAsc.slice().reverse(),
+      totalReceived: running, todayTotal: todayTotal, todayCount: todayCount
+    };
+  }
+  /* MERCHANT-BALANCE-END */
+
   /* FACE-MODE-BEGIN — the v63 two-face mode core: a pure factory
      over a minimal DOM adapter, so the suite can drive the exact
      shipped logic against a fake tree. It owns the session owner
@@ -6774,9 +7139,16 @@
     document.body.dataset.density = owner ? 'compact' : 'comfortable';
     document.querySelectorAll('#mainNav button').forEach(function (b) {
       var p = b.dataset.page;
+      /* v67: the visible set is face + role. The owner face
+         keeps exactly its v66 set (the prototype's role tabs
+         never show there); the customer face shows the
+         prototype tabs — Wallet · Inbox · Settings for the
+         customer role, Scanner · Balance for the merchant. */
       var show = owner
-        ? (p !== 'activity' && p !== 'account')
-        : (p === 'wallet' || p === 'activity' || p === 'account');
+        ? (p !== 'activity' && p !== 'account' && p !== 'inbox' && p !== 'settings' && p !== 'scanner' && p !== 'balance')
+        : RoleMode.isMerchant()
+          ? (p === 'scanner' || p === 'balance')
+          : (p === 'wallet' || p === 'inbox' || p === 'settings');
       b.classList.toggle('hidden', !show);
     });
     var bar = $('ownerBar');
@@ -6791,13 +7163,222 @@
   function lockOwnerMode() {
     FaceMode.lock();
     applyFaceChrome();
-    go('wallet');
+    /* v67: locking returns to the active role's home — in the
+       merchant role the scanner is re-attached first (the lock
+       detached every owner surface, the terminal included)
+       and the merchant lands there; everyone else lands on
+       the wallet. */
+    applyRoleChrome();
+    if (RoleMode.isMerchant()) { go('terminal'); } else { go('wallet'); }
     toast('Owner mode locked.');
   }
   function applyInitialFace() {
     FaceMode.detachSurfaces();
     applyFaceChrome();
   }
+
+  /* ---------------- v67 roles: choice, chrome, routing -------------
+     The role layer sits BESIDE the v63 face layer and never
+     edits it: FaceMode still owns owner/customer and the
+     detach bookkeeping. The one structural need is the
+     terminal page in merchant mode — it is an owner surface
+     (detached in the customer face), so the role layer keeps
+     its own reference and re-inserts it into <main> while the
+     merchant role is active. FaceMode's recorded detach entry
+     for it stays valid throughout: owner entry re-inserts it
+     at its recorded place, owner lock re-collects and
+     re-detaches every .owner-only node from the live DOM,
+     and applyRoleChrome below re-attaches it again for the
+     merchant. No other owner surface is ever re-attached by
+     the role layer, and the go() gate still resolves every
+     other owner page away from the customer face. */
+  var termSectionEl = document.getElementById('page-terminal');
+  function attachTerminalForMerchant() {
+    if (!termSectionEl || termSectionEl.parentNode) return;
+    var main = document.querySelector('main');
+    if (main) main.appendChild(termSectionEl);
+  }
+  function applyRoleChrome() {
+    var role = RoleMode.get();
+    var owner = FaceMode.isOwner();
+    document.body.classList.toggle('role-customer', role === 'customer');
+    document.body.classList.toggle('role-merchant', role === 'merchant');
+    document.body.classList.toggle('role-none', !role);
+    if (!owner && role === 'merchant') attachTerminalForMerchant();
+    var nav = $('mainNav');
+    if (nav) nav.classList.toggle('hidden', !owner && !role);
+    updateInboxBadge();
+  }
+  function applyRoleBoot() {
+    applyRoleChrome();
+    if (FaceMode.isOwner()) return;
+    var role = RoleMode.get();
+    if (role === 'merchant') { go('terminal'); }
+    else if (role === 'customer') { go('wallet'); }
+    else { go('role'); }
+  }
+  $('roleCustomer').addEventListener('click', function () {
+    RoleMode.set('customer');
+    applyFaceChrome();
+    applyRoleChrome();
+    /* Registration first: with no profile on this device the
+       customer goes straight to enrolment; with profiles, the
+       wallet opens by its existing entry rule. */
+    DB.all('people').then(function (people) {
+      if (!people.length) { go('enroll'); } else { go('wallet'); }
+    });
+  });
+  $('roleMerchant').addEventListener('click', function () {
+    RoleMode.set('merchant');
+    applyFaceChrome();
+    applyRoleChrome();
+    go('terminal');
+  });
+
+  /* ---------------- v67 Inbox page --------------------------------
+     Renders the open wallet profile's events, grouped by day,
+     newest first. Opening the page marks everything read —
+     the unread dots are painted for this view first, then the
+     stored flags clear and the tab badge follows. */
+  function inboxDayLabel(ts) {
+    var startOf = function (x) { var c = new Date(x); c.setHours(0, 0, 0, 0); return c.getTime(); };
+    var day = startOf(ts), now = new Date();
+    if (day === startOf(now)) return 'Today';
+    var y = new Date(now); y.setDate(y.getDate() - 1);
+    if (day === startOf(y)) return 'Yesterday';
+    return new Date(ts).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
+  }
+  function inboxRowHtml(e) {
+    var down = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v13m0 0 5-5m-5 5-5-5"/></svg>';
+    var up = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V7m0 0 5 5m-5-5-5 5"/></svg>';
+    var card = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5h16M4 8.5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M4 12.5h16"/></svg>';
+    var icon = e.kind === 'send' ? '<span class="acticon out">' + up + '</span>'
+      : e.kind === 'pay' ? '<span class="acticon out">' + card + '</span>'
+      : '<span class="acticon in">' + down + '</span>';
+    var amt = '';
+    if (typeof e.amount === 'number') {
+      amt = e.kind === 'add' || e.kind === 'receive' ? '<div class="amt in num">+ ' + fmtBDT(e.amount) + '</div>'
+        : e.kind === 'send' ? '<div class="amt out num">− ' + fmtBDT(e.amount) + '</div>'
+        : '<div class="amt num">' + fmtBDT(e.amount) + '</div>';
+    }
+    var meta = esc(new Date(e.ts).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })) +
+      (e.detail ? ' · ' + esc(e.detail) : '') +
+      (typeof e.balanceAfter === 'number' ? ' · Balance ' + fmtBDT(e.balanceAfter) : '');
+    return '<div class="actrow inboxrow' + (e.read ? '' : ' unread') + '">' + icon +
+      '<div class="ar-main"><div class="ar-title">' + esc(e.title) + '</div><div class="ar-meta">' + meta + '</div></div>' +
+      amt + (e.read ? '' : '<span class="unreaddot" aria-label="Unread"></span>') + '</div>';
+  }
+  function renderInbox() {
+    return loadWalletPeople().then(function (people) {
+      var entry = resolveWalletEntry(people);
+      if (entry) walletSessionId = entry.id;
+      var me = walletSessionPerson();
+      $('inboxLocked').classList.toggle('hidden', !!me);
+      $('inboxOpen').classList.toggle('hidden', !me);
+      if (!me) return;
+      return Inbox.list(me.id).then(function (events) {
+        if (!events.length) {
+          $('inboxList').innerHTML = '';
+          $('inboxEmpty').classList.remove('hidden');
+        } else {
+          $('inboxEmpty').classList.add('hidden');
+          var html = '', lastDay = null;
+          events.forEach(function (e) {
+            var day = inboxDayLabel(e.ts);
+            if (day !== lastDay) { html += '<div class="inboxday">' + esc(day) + '</div>'; lastDay = day; }
+            html += inboxRowHtml(e);
+          });
+          $('inboxList').innerHTML = html;
+        }
+        return Inbox.markAllRead(me.id).then(function () { updateInboxBadge(); });
+      });
+    });
+  }
+  function updateInboxBadge() {
+    var badge = $('inboxBadge');
+    if (!badge) return;
+    if (!walletSessionId) { badge.classList.add('hidden'); return; }
+    Inbox.unreadCount(walletSessionId).then(function (n) {
+      badge.textContent = n > 9 ? '9+' : String(n);
+      badge.classList.toggle('hidden', !n);
+    });
+  }
+
+  /* ---------------- v67 Settings page ------------------------------
+     The prototype's Settings tab. Every action routes to an
+     existing flow: switch uses the wallet's own multi-profile
+     entry, create is a new enrolment, log out closes the
+     wallet session and clears the role back to the choice. */
+  function renderSettings() {
+    return loadWalletPeople().then(function (people) {
+      var entry = resolveWalletEntry(people);
+      if (entry) walletSessionId = entry.id;
+      var me = walletSessionPerson();
+      $('settingsLocked').classList.toggle('hidden', !!me);
+      $('settingsOpen').classList.toggle('hidden', !me);
+      if (!me) return;
+      $('setAvatar').textContent = initialsOf(me.name);
+      $('setName').textContent = me.name;
+      $('setPhone').textContent = me.phone || 'No phone number recorded';
+      $('setBiomId').textContent = me.id;
+      var withPalm = people.filter(function (p) { return personHasMethod(p); });
+      $('setSwitchVal').textContent = withPalm.length > 1 ? withPalm.length + ' accounts on this device' : 'Only account on this device';
+    });
+  }
+  $('setSwitchRow').addEventListener('click', function () { closeWalletSession(); go('wallet'); });
+  $('setCreateRow').addEventListener('click', function () { go('enroll'); });
+  $('setMerchantRow').addEventListener('click', function () {
+    RoleMode.set('merchant');
+    applyFaceChrome();
+    applyRoleChrome();
+    go('terminal');
+    toast('Merchant mode — the scanner is ready.');
+  });
+  $('setLogoutRow').addEventListener('click', function () {
+    closeWalletSession();
+    RoleMode.clear();
+    applyRoleChrome();
+    go('role');
+    toast('Logged out.');
+  });
+
+  /* ---------------- v67 merchant Balance page ----------------------
+     Receipts from the real BIOM-PAY records only, with the
+     running balance computed over the same records — see
+     merchantBalanceSummary. Nothing is stored for this page;
+     it is a view over the transactions store. */
+  function renderMerchantBalance() {
+    return Promise.all([DB.all('transactions'), DB.all('people')]).then(function (r) {
+      var peopleById = {};
+      r[1].forEach(function (p) { peopleById[p.id] = p; });
+      var s = merchantBalanceSummary(r[0], peopleById, Date.now());
+      $('balTodayTotal').textContent = fmtBDT(s.todayTotal);
+      $('balTodayCount').textContent = String(s.todayCount);
+      $('balTotalReceived').textContent = fmtBDT(s.totalReceived);
+      $('balList').innerHTML = s.rows.length ? s.rows.map(function (row) {
+        return '<div class="actrow"><span class="acticon in"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v13m0 0 5-5m-5 5-5-5"/></svg></span>' +
+          '<div class="ar-main"><div class="ar-title">' + esc(row.personName) + '</div>' +
+          '<div class="ar-meta">' + esc(row.number || 'Number not recorded') + ' · ' + esc(fmtTime(row.ts)) + (row.store ? ' · ' + esc(row.store) : '') + '</div>' +
+          '<div class="ar-meta">Balance after: <b>' + fmtBDT(row.balanceAfter) + '</b></div></div>' +
+          '<div class="amt in num">+ ' + fmtBDT(row.amount) + '</div></div>';
+      }).join('') : '';
+      $('balEmpty').classList.toggle('hidden', !!s.rows.length);
+    });
+  }
+  $('balCustomerRow').addEventListener('click', function () {
+    RoleMode.set('customer');
+    applyFaceChrome();
+    applyRoleChrome();
+    go('wallet');
+    toast('Customer mode — your wallet is open.');
+  });
+  $('balLogoutRow').addEventListener('click', function () {
+    closeWalletSession();
+    RoleMode.clear();
+    applyRoleChrome();
+    go('role');
+    toast('Logged out.');
+  });
 
   /* The owner unlock: a manual-gated palm scan (v58 rules) on
      the shared wallet scan card, at PLAIN verify bars — this is
@@ -6835,7 +7416,7 @@
           : 'No owner is set on this device yet. Scan your palm to claim owner access — the first palm to claim it becomes the owner of this device, and only the owner palm can open owner mode afterwards.',
         run: function () {
           return DB.all('people').then(function (fresh) {
-            return streamIdentifyPalm($('wScanVideo'), $('wScanStatus'), fresh, walletSwapCamera, walletControl).then(function (out) {
+            return streamIdentifyPalm($('wScanVideo'), $('wScanStatus'), fresh, null, walletControl).then(function (out) {
               if (!out || out.fail || !out.person) { walletScanFailed(out); return; }
               var decision = FaceMode.unlockDecision(out.person, fresh);
               var hand = out.diag ? out.diag.probeHand : null;
@@ -6948,5 +7529,6 @@
     }).then(function () { return Sync.flush(); })
     .then(function () { return Sync.pull(); }) // v62 (B7): apply any server tombstones after the flush
     .then(function () { applyInitialFace(); }) // v63: the customer face is the default — owner surfaces detach last, once every boot render has run against the intact DOM
+    .then(function () { applyRoleBoot(); }) // v67: then the role layer routes — role choice, the customer wallet, or the merchant scanner
     .catch(function () {});
 })();

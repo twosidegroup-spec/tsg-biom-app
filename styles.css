@@ -520,3 +520,150 @@ body[data-density="compact"]{--density-pad:14px;--density-row:44px;--density-sec
   /* Skeletons per form: row-shaped on desktop. */
   .skelcard{height:56px;border-radius:var(--radius-row)}
 }
+
+/* ---- v67 prototype ------------------------------------------------
+   The Chairman's approved design set (v67-mobile-design): role
+   choice, the Deep Vault customer face, the merchant scanner and
+   Balance, the Inbox and Settings tabs. Everything here is
+   ADDITIVE and scoped: the vault treatment applies only on the
+   prototype faces (body.mode-customer with a role chosen), the
+   floating pill tab bar only below the desktop breakpoint, and
+   the owner face keeps the v66 House System v2 presentation
+   exactly. Motion stays on the v64 tokens (transform/opacity). */
+.nav button{position:relative}
+.navbadge{position:absolute;top:2px;right:calc(50% - 19px);min-width:19px;height:19px;
+  border-radius:999px;background:#ffcf5c;color:#3d2c00;font-size:11px;font-weight:800;
+  display:flex;align-items:center;justify-content:center;padding:0 5px;border:2px solid #fff}
+.navbadge.hidden{display:none}
+
+/* Role choice */
+.rolewrap{max-width:560px;margin:0 auto}
+.rolehero{position:relative;overflow:hidden;color:#fff;border-radius:28px;
+  padding:28px 24px 30px;box-shadow:var(--shadow-l1);
+  background:radial-gradient(420px 300px at 88% -40px, rgba(77,139,245,.55), rgba(77,139,245,0) 62%),
+    radial-gradient(300px 220px at -60px 320px, rgba(22,99,217,.35), rgba(22,99,217,0) 65%),
+    linear-gradient(158deg, #0d3a80 0%, #0a2a5e 46%, #071c3f 100%)}
+.rolehero-arcs{position:absolute;right:-58px;top:34px;width:200px;height:200px;opacity:.16;pointer-events:none}
+.rolehero-brand{font-weight:800;letter-spacing:1.6px;font-size:17px;position:relative}
+.rolehero-brand small{display:block;font-weight:600;color:var(--blue-100);letter-spacing:1.8px;font-size:10px;margin-top:2px}
+.rolehero-title{color:#fff;font-size:26px;margin:20px 0 8px;position:relative}
+.rolehero-sub{color:#b9cdf2;font-size:14.5px;line-height:1.55;margin:0;position:relative;max-width:42ch}
+.rolecard{display:flex;align-items:center;gap:14px;width:100%;text-align:left;cursor:pointer;
+  background:var(--surface);border:1px solid var(--line2);border-radius:20px;
+  padding:18px;margin-top:14px;color:var(--text);box-shadow:var(--shadow);min-height:76px}
+.rolecard:hover{border-color:var(--blue)}
+.rolecard:active{transform:scale(.99)}
+.roleic{width:50px;height:50px;border-radius:15px;background:var(--blue-soft);flex:none;
+  display:flex;align-items:center;justify-content:center}
+.roleic svg{width:27px;height:27px;stroke:var(--blue);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.rolecard-main{flex:1;min-width:0}
+.rolecard-title{display:block;font-size:16.5px;font-weight:800}
+.rolecard-sub{display:block;color:var(--muted);font-size:13px;line-height:1.5;margin-top:2px}
+.rolefoot{color:var(--muted);font-size:13px;line-height:1.6;margin:18px 2px 0}
+
+/* Wallet hero on the vault (prototype customer face) */
+.balgreet{font-size:13.5px;color:#b9cdf2;margin-bottom:12px;position:relative}
+.balgreet b{color:#fff}
+.balcard-arcs{display:none}
+body.mode-customer.role-customer .balcard, body.mode-customer.role-merchant .balcard{
+  background:radial-gradient(420px 300px at 88% -40px, rgba(77,139,245,.55), rgba(77,139,245,0) 62%),
+    radial-gradient(300px 220px at -60px 320px, rgba(22,99,217,.35), rgba(22,99,217,0) 65%),
+    linear-gradient(158deg, #0d3a80 0%, #0a2a5e 46%, #071c3f 100%);
+  position:relative;overflow:hidden}
+body.mode-customer.role-customer .balcard-arcs{display:block;position:absolute;right:-44px;top:-64px;width:190px;height:190px;opacity:.16;pointer-events:none}
+body.mode-customer.role-customer .topbar, body.mode-customer.role-merchant .topbar{background:var(--blue-950)}
+
+/* The prototype wallet home: exactly three actions — the
+   loyalty chip, the extra tiles, the linked-wallets and
+   activity cards and the close button leave the customer
+   home (they remain on the owner face and in My Account;
+   the statement itself lives on in the Inbox). */
+body.mode-customer.role-customer .balpoints,
+body.mode-customer.role-customer #wQuickScan,
+body.mode-customer.role-customer #wQuickHistory,
+body.mode-customer.role-customer #wLinkedCard,
+body.mode-customer.role-customer #wActivityCard,
+body.mode-customer.role-customer #activityInspector,
+body.mode-customer.role-customer #wCloseWallet{display:none!important}
+body.mode-customer.role-customer .qa-grid{grid-template-columns:repeat(3,1fr)}
+@media (max-width:1023px){
+  /* The action tiles straddle the vault's bottom edge, as
+     designed; the card gains bottom room so the demo-money
+     note stays fully visible above them. */
+  body.mode-customer.role-customer .balcard{padding-bottom:52px}
+  body.mode-customer.role-customer .qa-grid{margin-top:-36px;padding:0 12px;position:relative;z-index:2}
+}
+@media (min-width:1024px){
+  body.mode-customer.role-customer #walletHome>.qa-grid{grid-template-columns:repeat(3,1fr)}
+  body.mode-customer.role-customer #wFactsCard{grid-column:1/-1}
+}
+
+/* "Your wallet" facts card */
+.wrow{display:flex;justify-content:space-between;align-items:baseline;gap:14px;padding:12px 0;border-bottom:1px solid var(--line2)}
+.wrow:last-of-type{border-bottom:none}
+.wrow-k{font-size:13px;color:var(--muted);font-weight:600}
+.wrow-v{font-size:14.5px;font-weight:700;text-align:right}
+.hintrow{display:flex;gap:9px;margin-top:14px;background:#eef4ff;border:1px solid #d7e5ff;border-radius:16px;
+  padding:13px 14px;color:var(--blue);font-size:12.5px;line-height:1.55;font-weight:600}
+.hintrow svg{flex:none;width:20px;height:20px;stroke:var(--blue);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;margin-top:1px}
+
+/* Inbox */
+.inboxday{font-size:12px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin:16px 0 2px}
+.inboxday:first-child{margin-top:2px}
+.inboxrow{position:relative}
+.inboxrow.unread .ar-title{font-weight:800}
+.unreaddot{width:9px;height:9px;border-radius:50%;background:#ffcf5c;flex:none;align-self:center}
+
+/* Enrolment step dots (ride the existing step index) */
+.enrolldots{display:flex;gap:8px;margin-top:10px}
+.enrolldot{width:30px;height:30px;border-radius:50%;border:1.5px solid var(--line);
+  display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:var(--muted);background:#fff}
+.enrolldot.on{background:var(--blue);border-color:var(--blue);color:#fff}
+.enrolldot.done{background:#e2f6ec;border-color:var(--ok);color:var(--ok)}
+
+/* Floating pill tab bar (prototype faces, below desktop) */
+@media (max-width:1023px){
+  body.mode-customer.role-customer .nav, body.mode-customer.role-merchant .nav{
+    left:12px;right:12px;bottom:calc(10px + env(safe-area-inset-bottom));max-width:none;
+    border-radius:33px;border-top:none;padding:6px;
+    background:linear-gradient(160deg,#0d2f66,#071c3f);
+    box-shadow:0 14px 30px rgba(7,28,63,.4)}
+  body.mode-customer.role-customer .nav button, body.mode-customer.role-merchant .nav button{
+    color:#93aed6;border-radius:27px;min-height:54px}
+  body.mode-customer.role-customer .nav button.active, body.mode-customer.role-merchant .nav button.active{
+    background:rgba(77,139,245,.3);color:#fff}
+  body.mode-customer.role-customer .nav button.active svg, body.mode-customer.role-merchant .nav button.active svg{stroke:#fff}
+  body.mode-customer .navbadge{border-color:#0d2f66}
+}
+
+/* Merchant scanner: the terminal page on the vault. Scoped to
+   the customer face in the merchant role — the owner face's
+   terminal keeps the v66 presentation exactly. */
+/* The terminal section carries the owner face's .owner-only
+   class, which the customer face hides with !important — in the
+   merchant role the section is re-attached by the role layer and
+   must actually RENDER when it is the active page. Scoped to
+   .active so the section stays hidden on every other page, and
+   to .role-merchant so a customer never sees it. */
+body.mode-customer.role-merchant #page-terminal.owner-only.active{display:block!important}
+body.mode-customer.role-merchant #page-terminal{
+  background:linear-gradient(165deg,#0d3a80 0%,#0a2a5e 52%,#071c3f 100%);
+  margin:-20px -16px -130px;padding:24px 16px 160px;border-radius:0 0 28px 28px}
+body.mode-customer.role-merchant #page-terminal h1{color:#fff}
+body.mode-customer.role-merchant #page-terminal .sub{color:#b9cdf2}
+body.mode-customer.role-merchant #page-terminal .card{background:var(--blue-900);border-color:rgba(255,255,255,.14);color:#fff}
+body.mode-customer.role-merchant #page-terminal label{color:#b9cdf2}
+body.mode-customer.role-merchant #page-terminal input,
+body.mode-customer.role-merchant #page-terminal select{background:var(--blue-950);color:#fff;border-color:rgba(255,255,255,.22)}
+body.mode-customer.role-merchant #page-terminal .camnote,
+body.mode-customer.role-merchant #page-terminal .scanwith{color:#b9cdf2}
+body.mode-customer.role-merchant #page-terminal .camtoggle{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.2)}
+body.mode-customer.role-merchant #page-terminal .camtoggle button{color:#b9cdf2}
+body.mode-customer.role-merchant #page-terminal .camtoggle button.on{background:var(--blue-600);color:#fff}
+body.mode-customer.role-merchant #page-terminal .scanind{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.16);color:#b9cdf2}
+body.mode-customer.role-merchant #page-terminal .btn{background:rgba(255,255,255,.1);color:#fff;border-color:rgba(255,255,255,.3)}
+body.mode-customer.role-merchant #page-terminal .btn.primary{background:var(--blue-600);border:none;color:#fff}
+body.mode-customer.role-merchant #page-terminal .check{color:#fff}
+@media (min-width:1024px){
+  body.mode-customer.role-merchant #page-terminal{margin-top:-20px}
+}

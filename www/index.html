@@ -43,14 +43,41 @@
   <button data-page="wallet" class="active"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10.5h18"/><circle cx="16.6" cy="15" r="1.1"/></svg>Wallet</button>
   <button data-page="activity" data-face="customer"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M12 7.4V12l3.1 2"/></svg>Activity</button>
   <button data-page="account" data-face="customer"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.6"/><path d="M5 20c.7-3.4 3.4-5.2 7-5.2s6.3 1.8 7 5.2"/></svg>My Account</button>
+  <button data-page="inbox" data-face="customer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9.5a6 6 0 0 1 12 0c0 4 1.2 5.4 2 6.5H4c.8-1.1 2-2.5 2-6.5"/><path d="M10 19.5a2.2 2.2 0 0 0 4 0"/></svg>Inbox<span class="navbadge hidden" id="inboxBadge">0</span></button>
+  <button data-page="settings" data-face="customer"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 3.2v2.6M12 18.2v2.6M3.2 12h2.6M18.2 12h2.6M5.8 5.8l1.8 1.8M16.4 16.4l1.8 1.8M18.2 5.8l-1.8 1.8M7.6 16.4l-1.8 1.8"/></svg>Settings</button>
   <button data-page="dashboard" data-face="owner"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>Home</button>
   <button data-page="enroll" data-face="owner"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="8" r="3.5"/><path d="M4 20c.6-3.2 3-5 6-5s5.4 1.8 6 5"/><path d="M18.5 5v6M15.5 8h6"/></svg>regBIOM</button>
   <button data-page="terminal" data-face="owner"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M4 12h16"/></svg>takeBIOM</button>
+  <button data-page="scanner" data-face="customer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M4 12h16"/></svg>Scanner</button>
+  <button data-page="balance" data-face="customer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h12M12 3.5v17M8.5 20.5h7"/><path d="M5.5 8 3.8 13a2.4 2.4 0 0 0 3.4 0L5.5 8zM18.5 8 16.8 13a2.4 2.4 0 0 0 3.4 0L18.5 8z"/><path d="M5.5 8h13"/></svg>Balance</button>
   <button data-page="registry" data-face="owner"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5c.5-3 2.7-4.6 5.5-4.6s5 1.6 5.5 4.6"/><path d="M15.5 5.8a3.2 3.2 0 0 1 0 5.9M17.8 15.2c1.6.7 2.5 2 2.8 4"/></svg>People</button>
   <button data-page="more" data-face="owner"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>More</button>
 </nav>
 
 <main>
+  <!-- ROLE CHOICE (v67) -->
+  <section class="page" id="page-role">
+    <div class="rolewrap">
+      <div class="rolehero">
+        <svg class="rolehero-arcs" viewBox="0 0 200 200" aria-hidden="true"><g fill="none" stroke="#ffffff" stroke-width="1.6"><circle cx="170" cy="10" r="42"/><circle cx="170" cy="10" r="74"/><circle cx="170" cy="10" r="106"/><circle cx="170" cy="10" r="138"/></g></svg>
+        <div class="rolehero-brand">TSG BIOM<small>TWOSIDE GROUP</small></div>
+        <h1 class="rolehero-title">Welcome to TSG Biom</h1>
+        <p class="rolehero-sub">Pay and get paid with your palm — no card, no PIN, no password. Choose how you are using the app today.</p>
+      </div>
+      <button class="rolecard" id="roleCustomer">
+        <span class="roleic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10.5h18"/><circle cx="16.6" cy="15" r="1.1"/></svg></span>
+        <span class="rolecard-main"><span class="rolecard-title">I am a Customer</span><span class="rolecard-sub">Open your palm wallet — add money, send money and pay with your palm.</span></span>
+        <span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></span>
+      </button>
+      <button class="rolecard" id="roleMerchant">
+        <span class="roleic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M4 12h16"/></svg></span>
+        <span class="rolecard-main"><span class="rolecard-title">I am a Merchant</span><span class="rolecard-sub">Scan customer palms at the counter and see every payment you receive.</span></span>
+        <span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></span>
+      </button>
+      <p class="rolefoot">New here? Choose Customer and register — your name, your phone number, then your palm. It takes about a minute, and your palm is stored as a sealed palm code, never as a photo.</p>
+    </div>
+  </section>
+
   <!-- WALLET (DEMO) -->
   <section class="page active" id="page-wallet">
     <h1>My Biom Wallet</h1>
@@ -67,6 +94,8 @@
 
     <div id="walletHome" class="hidden">
       <div class="balcard">
+        <svg class="balcard-arcs" viewBox="0 0 200 200" aria-hidden="true"><g fill="none" stroke="#ffffff" stroke-width="1.6"><circle cx="178" cy="-6" r="40"/><circle cx="178" cy="-6" r="70"/><circle cx="178" cy="-6" r="100"/><circle cx="178" cy="-6" r="130"/></g></svg>
+        <div class="balgreet" id="wHomeGreet"></div>
         <div class="balcard-top">
           <span class="balcard-brand">regBIOM</span>
           <button class="avatarbtn" id="wHomeAvatar" aria-label="Open My Account" title="My Account">--</button>
@@ -88,6 +117,13 @@
         <button class="qa-tile" id="wPayOpen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 11.8V6.2a1.5 1.5 0 0 1 3 0v4.3m0-5.8a1.5 1.5 0 0 1 3 0v5.3m0-4.8a1.5 1.5 0 0 1 3 0v5.8m0-3.6a1.5 1.5 0 0 1 3 0v4.7c0 4.3-3 6.9-6.9 6.9-3.4 0-5.7-1.9-7.1-5L3.7 12c-.4-.9.7-1.8 1.5-1.2L7 12.4"/></svg><span>Biom Pay</span></button>
         <button class="qa-tile" id="wQuickScan"><svg viewBox="0 0 24 24" aria-hidden="true" class="palmicon"><path d="M7 11.8V6.2a1.5 1.5 0 0 1 3 0v4.3m0-5.8a1.5 1.5 0 0 1 3 0v5.3m0-4.8a1.5 1.5 0 0 1 3 0v5.8m0-3.6a1.5 1.5 0 0 1 3 0v4.7c0 4.3-3 6.9-6.9 6.9-3.4 0-5.7-1.9-7.1-5L3.7 12c-.4-.9.7-1.8 1.5-1.2L7 12.4"/></svg><span>Scan Palm</span></button>
         <button class="qa-tile" id="wQuickHistory"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M12 7.4V12l3.1 2"/></svg><span>History</span></button>
+      </div>
+      <div class="card seccard" id="wFactsCard" data-face="customer">
+        <h2>Your wallet</h2>
+        <div class="wrow"><span class="wrow-k">Biom ID</span><span class="wrow-v num" id="wFactId">—</span></div>
+        <div class="wrow"><span class="wrow-k">Registered palm</span><span class="wrow-v" id="wFactPalm">—</span></div>
+        <div class="wrow"><span class="wrow-k">Phone</span><span class="wrow-v num" id="wFactPhone">—</span></div>
+        <div class="hintrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 11.8V6.2a1.5 1.5 0 0 1 3 0v4.3m0-5.8a1.5 1.5 0 0 1 3 0v5.3m0-4.8a1.5 1.5 0 0 1 3 0v5.8m0-3.6a1.5 1.5 0 0 1 3 0v4.7c0 4.3-3 6.9-6.9 6.9-3.4 0-5.7-1.9-7.1-5L3.7 12c-.4-.9.7-1.8 1.5-1.2L7 12.4"/></svg><span>Your palm approves every payment from this wallet — no PIN, no password to remember.</span></div>
       </div>
       <button class="btn" id="wCloseWallet" style="margin-top:12px">Close Wallet / Switch User</button>
       <div class="card seccard" id="wLinkedCard">
@@ -219,6 +255,67 @@
     </div>
   </section>
 
+  <!-- INBOX (v67) -->
+  <section class="page" id="page-inbox">
+    <h1>Inbox</h1>
+    <p class="sub">Notifications from your wallet — every one of them written by a real money event on this device. Nothing here is a promotion or an advert.</p>
+    <div id="inboxLocked" class="card">
+      <h2>No wallet is open</h2>
+      <p class="sub" style="margin:0">Open your wallet first — your notifications belong to your wallet profile.</p>
+      <button class="btn primary big" data-go="wallet" style="margin-top:14px">Go to My Wallet</button>
+    </div>
+    <div id="inboxOpen" class="hidden">
+      <div class="card seccard" style="margin-top:0">
+        <div id="inboxList"></div>
+        <div id="inboxEmpty" class="hidden">
+          <p class="sub" style="margin:0 0 6px"><b>No notifications yet.</b></p>
+          <p class="sub" style="margin:0">When you add money, send money, pay, or receive money, it will appear here.</p>
+        </div>
+      </div>
+      <p class="sub" style="margin-top:14px">You are all caught up. Amounts are demo money inside this app — not real funds.</p>
+    </div>
+  </section>
+
+  <!-- SETTINGS (v67) -->
+  <section class="page" id="page-settings">
+    <h1>Settings</h1>
+    <p class="sub">Your profile and this device's accounts.</p>
+    <div id="settingsLocked" class="card">
+      <h2>No wallet is open</h2>
+      <p class="sub" style="margin:0">Open your wallet first — settings belong to your wallet profile.</p>
+      <button class="btn primary big" data-go="wallet" style="margin-top:14px">Go to My Wallet</button>
+    </div>
+    <div id="settingsOpen" class="hidden">
+      <div class="card accthead">
+        <div class="avatarbig" id="setAvatar">--</div>
+        <div class="accthead-txt">
+          <div class="acctname" id="setName"></div>
+          <div class="acctphone num" id="setPhone"></div>
+          <div class="acctphone">Biom ID: <span class="num" id="setBiomId"></span></div>
+        </div>
+      </div>
+      <div class="card seccard">
+        <h2>Account</h2>
+        <div class="setlist">
+          <button class="setrow" id="setSwitchRow"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8.5A5.5 5.5 0 0 1 17.6 6M17 15.5A5.5 5.5 0 0 1 6.4 18"/><path d="M18 3.5v3h-3M6 20.5v-3h3"/></svg></span><span class="setlbl">Switch account</span><span class="setval" id="setSwitchVal"></span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></span></button>
+          <button class="setrow" id="setCreateRow"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="8" r="3.5"/><path d="M4 20c.6-3.2 3-5 6-5s5.4 1.8 6 5"/><path d="M18.5 5v6M15.5 8h6"/></svg></span><span class="setlbl">Create another account</span><span class="setval">New registration</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></span></button>
+        </div>
+      </div>
+      <div class="card seccard">
+        <h2>Use this app as</h2>
+        <div class="setlist">
+          <button class="setrow" id="setMerchantRow"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M4 12h16"/></svg></span><span class="setlbl">Use as Merchant</span><span class="setval">Scanner &amp; receipts</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></span></button>
+        </div>
+      </div>
+      <div class="card seccard">
+        <div class="setlist">
+          <button class="setrow danger" id="setLogoutRow"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"/><path d="M10 8l-4 4 4 4M6 12h11"/></svg></span><span class="setlbl">Log out</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></span></button>
+        </div>
+        <p class="sub" style="margin:10px 0 0">Logging out closes your wallet on this screen and returns to the role choice. Your registration and wallet stay safely on this device.</p>
+      </div>
+    </div>
+  </section>
+
   <!-- MY ACCOUNT (v52) -->
   <section class="page" id="page-account">
     <div class="acctbar">
@@ -275,7 +372,7 @@
         </div>
       </div>
     </div>
-    <div class="versionline" id="versionLine">TSG Biom · App v66 · TwoSide Group</div>
+    <div class="versionline" id="versionLine">TSG Biom · App v67 · TwoSide Group</div>
   </section>
 
   <!-- DESK (HOME) -->
@@ -445,6 +542,7 @@
     <h1>Create your Biom wallet</h1>
     <p class="sub">One-time registration — your name, your phone number, then your palm. Completing it creates your Biom ID and your wallet, and you will not be asked again.</p>
     <div class="progresslabel" id="enrollProgress">Step 1 of 3 — Your details</div>
+    <div class="enrolldots" aria-hidden="true"><span class="enrolldot on">1</span><span class="enrolldot">2</span><span class="enrolldot">3</span></div>
     <div class="progress" style="margin:10px 0 16px"><i id="enrollProgressBar"></i></div>
 
     <div id="enroll-details" class="card">
@@ -575,6 +673,28 @@
       <button class="btn primary bigscan" id="termScan" disabled>SCAN</button>
       <button class="btn bigscan hidden" id="termNext" style="margin-top:10px">Next Customer</button>
       <div id="termResult" style="margin-top:14px"></div>
+    </div>
+  </section>
+
+  <!-- MERCHANT BALANCE (v67) -->
+  <section class="page" id="page-balance">
+    <h1>Balance</h1>
+    <p class="sub">Every Biom Pay receipt recorded on this device, with the running balance they add up to. Amounts are demo money inside this app — not real funds.</p>
+    <div class="statsstrip">
+      <div class="sstat"><div class="num" id="balTodayTotal">BDT 0</div><div class="lbl">Received today</div></div>
+      <div class="sstat"><div class="num" id="balTodayCount">0</div><div class="lbl">Payments today</div></div>
+      <div class="sstat"><div class="num" id="balTotalReceived">BDT 0</div><div class="lbl">Total received</div></div>
+    </div>
+    <div class="card seccard">
+      <h2>Receipts</h2>
+      <div id="balList"></div>
+      <p class="sub hidden" id="balEmpty" style="margin:0">No payments received yet. When a customer pays with their palm at your scanner, the receipt appears here.</p>
+    </div>
+    <div class="card seccard">
+      <div class="setlist">
+        <button class="setrow" id="balCustomerRow"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10.5h18"/><circle cx="16.6" cy="15" r="1.1"/></svg></span><span class="setlbl">Use as Customer</span><span class="setval">Your wallet</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></span></button>
+        <button class="setrow danger" id="balLogoutRow"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"/><path d="M10 8l-4 4 4 4M6 12h11"/></svg></span><span class="setlbl">Log out</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></span></button>
+      </div>
     </div>
   </section>
 
