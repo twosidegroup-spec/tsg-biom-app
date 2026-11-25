@@ -1,19 +1,25 @@
 {
-  "model": "palmnet.onnx",
-  "format": "onnx-single-file-base64-parts",
-  "bytes": 4317738,
-  "sha256": "b669eb67cd470927e90db8d1bc211241e9457baf6380ef9374f084a2b9cc4ec7",
-  "base64Chars": 5756984,
-  "parts": [
-    "palmnet.b64.part00",
-    "palmnet.b64.part01",
-    "palmnet.b64.part02",
-    "palmnet.b64.part03",
-    "palmnet.b64.part04",
-    "palmnet.b64.part05",
-    "palmnet.b64.part06"
-  ],
+  "model": "palmnet.tsgweights",
+  "format": "tsg-palm-engine-container",
+  "containerVersion": 1,
   "modelId": "palmnet-r3-ep12",
   "neuralThreshold": 0.5895,
-  "note": "PalmNet neural palmprint model, Round 3 snapshot (MobileNetV3-Small + ArcFace, 256-d embedding): the Round 3 trainer's selected best checkpoint (epoch 12, clean EVAL EER 0.0012%, EER threshold 0.5895), copied while Round 3 training continued in the background and integrated early by the Chairman's order 2026-11-24. Full measurement: ~/workspace/palmnet-bench/round3/integration-v54/measurement.md. Stored as base64 text parts because the repo snapshot-push channel carries UTF-8 text only; the app fetches the parts, concatenates, base64-decodes and verifies length + SHA-256 before creating the ONNX session. PyTorch <-> ONNX parity on 24 EVAL ROIs: max abs diff 1.07e-06."
+  "programFile": "program.json",
+  "programSha256": "ebbf5a29d98f882f14960bd6ac7a8045b5195d07e76d0a584b7f50b5dc4b8aad",
+  "programBytes": 43111,
+  "weightsBytes": 4278756,
+  "weightsSha256": "e050a574a8b32c3e6ca234c6590c2e1a2f0dd6d4858400f74335a3967bb2812d",
+  "base64Chars": 5705008,
+  "parts": [
+    "weights.b64.part00",
+    "weights.b64.part01",
+    "weights.b64.part02",
+    "weights.b64.part03",
+    "weights.b64.part04",
+    "weights.b64.part05",
+    "weights.b64.part06"
+  ],
+  "bytes": 4278756,
+  "sha256": "e050a574a8b32c3e6ca234c6590c2e1a2f0dd6d4858400f74335a3967bb2812d",
+  "note": "PalmNet Round 3 model (MobileNetV3-Small + ArcFace, 256-d embedding) in TwoSide Group's own TSGP container, run by the TSG Palm Engine (biometrics.js) — ONNX Runtime is gone. The container is a byte-exact repack of the v54 ONNX model (SHA-256 b669eb67cd470927e90db8d1bc211241e9457baf6380ef9374f084a2b9cc4ec7): every weight tensor identical (conversion max diff 0.0), and the engine passed the parity gate on the full bench EVAL protocol (720 ROIs; 360 genuine + 42,840 impostor scores; max embedding diff 1.3e-6 vs ONNX Runtime Web, zero verdict differences at the 0.5895 bar). Conversion record: ~/workspace/tsg-biom-team/tsg-palm-engine/container/conversion-report.json; gate record: ~/workspace/tsg-biom-team/tsg-palm-engine/gate/parity-report.json."
 }
