@@ -64,12 +64,12 @@ const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
 const apiRecordsSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'tsg-biom-api', 'lib', 'records.js'), 'utf8');
 
 /* ---------------- version coherence ---------------------------- */
-check('VERSION app, shell and chain agree at v63',
-  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v63' &&
-  swSrc.indexOf('tsg-biom-shell-v63') !== -1 &&
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v63');
-check('VERSION the chain is v37->v63: 27 links, 26 migration steps (the v38 suite proves the 26 applied steps)',
-  B.BIOM_DATA_VERSIONS.length === 27 && B.BIOM_DATA_VERSIONS[0] === 'v37', 'links=' + B.BIOM_DATA_VERSIONS.length);
+check('VERSION app, shell and chain agree at v66 (v66 named pin change: design overhaul)',
+  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v66' &&
+  swSrc.indexOf('tsg-biom-shell-v66') !== -1 &&
+  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v66');
+check('VERSION the chain is v37->v66: 30 links, 29 migration steps (the v38 suite proves the 29 applied steps)',
+  B.BIOM_DATA_VERSIONS.length === 30 && B.BIOM_DATA_VERSIONS[0] === 'v37', 'links=' + B.BIOM_DATA_VERSIONS.length);
 
 /* ---------------- the face-mode core, extracted ---------------- */
 const faceSrc = appSrc.slice(appSrc.indexOf('/* FACE-MODE-BEGIN'), appSrc.indexOf('/* FACE-MODE-END */'));
@@ -174,7 +174,7 @@ check('FACE Lock returns to the customer face (surfaces detached, gate closed)',
   check('MARKUP the page boots in customer mode and carries the owner bar + version line',
     htmlSrc.indexOf('<body class="mode-customer">') !== -1 &&
     htmlSrc.indexOf('id="ownerBar"') !== -1 && htmlSrc.indexOf('id="ownerLockBtn"') !== -1 &&
-    htmlSrc.indexOf('id="versionLine"') !== -1 && htmlSrc.indexOf('App v63') !== -1 &&
+    htmlSrc.indexOf('id="versionLine"') !== -1 && htmlSrc.indexOf('App v66') !== -1 &&
     htmlSrc.indexOf('id="brandLogo"') !== -1);
   check('MARKUP the wallet hero carries the points chip',
     htmlSrc.indexOf('id="wHomePoints"') !== -1 && htmlSrc.indexOf('Palm Loyalty') !== -1);

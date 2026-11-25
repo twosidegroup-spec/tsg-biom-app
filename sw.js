@@ -1,7 +1,10 @@
 /* TSG Biom service worker - caches the app shell only.
-   CDN libraries and biometric models are intentionally NOT cached here;
-   they load from their CDNs so model files stay current. */
-const CACHE = 'tsg-biom-shell-v63';
+   The vendored runtimes (vendor/) and the biometric model (models/)
+   are intentionally NOT cached here; they load from this origin over
+   the network on every load so the bytes the app verifies are always
+   the bytes currently served (the model is additionally SHA-256
+   verified against the hash pinned in app code). */
+const CACHE = 'tsg-biom-shell-v66';
 const SHELL = [
   './',
   './index.html',
@@ -31,7 +34,10 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== 'GET') return;
-  if (url.origin !== self.location.origin) return; // CDN models/libs: network only
+  if (url.origin !== self.location.origin) return; // cross-origin: network only
+  // v64 (Seat 2 M-3): same-origin model and vendor paths are also
+  // network-only — never matched from, or written to, this cache.
+  if (url.pathname.indexOf('/models/') !== -1 || url.pathname.indexOf('/vendor/') !== -1) return;
   event.respondWith(
     caches.match(event.request).then((hit) => {
       const network = fetch(event.request).then((res) => {

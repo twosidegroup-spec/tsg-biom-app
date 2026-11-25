@@ -220,8 +220,45 @@
      wallet entry, the v61 envelope + CODEC FREEZE and the v62
      signing/CAS/tombstones/penalty regime all stand exactly
      as they were. The migration step is the identity (see
-     biometrics.js). */
-  var APP_DATA_VERSION = 'v63';
+     biometrics.js).
+
+     v65 (2026-11-25) is the TSG PALM ENGINE release (the
+     Chairman's TSG-ONLY property directive, 2026-11-25 12:43;
+     head + Seat 3 engine design, Seat 1 integration surface,
+     Seat 2 licence/portability record). ONNX Runtime Web is
+     REMOVED: the PalmNet model now runs on TwoSide Group's own
+     inference engine (createTsgPalmEngine in biometrics.js),
+     dedicated to this one network, reading the model from
+     TSG's own TSGP container (program.json + weights parts).
+     The container is a byte-exact repack of the same Round 3
+     weights (per-tensor max diff 0.0) and the engine passed
+     the parity gate against both ONNX Runtime references on
+     the full bench EVAL protocol — 720 ROIs, 360 genuine +
+     42,840 impostor scores, max embedding diff 1.3e-6, zero
+     verdict differences at the 0.5895 bar — so the bar, the
+     fusion, and every banked embedding stand exactly as they
+     were; the embedding byte format is unchanged and NO
+     migration beyond the identity step exists. Engine failure
+     fails soft to EDCC-only with the reason stated, exactly
+     as the old runtime's failures did. MediaPipe Hands still
+     provides hand detection in this release (self-hosted,
+     as v64 arranged); its TSG replacement is Stage 2 of the
+     same programme and this build does not claim otherwise.
+     The migration step is the identity (see biometrics.js).
+
+     v66 (2026-11-25) is the DESIGN OVERHAUL release (House
+     System v2; team record V66-DESIGN-RESEARCH-2026-11-25.md):
+     presentation only. One blue token system replaces the
+     teal/blue split, the shell adapts per form (bottom tab bar
+     under 1024px, a 248px sidebar at or above it), wallet home
+     gains a two-pane desktop composition, Activity becomes
+     list–detail on desktop, the money flows present as centred
+     sheets on desktop, enrolment splits on desktop, and the
+     owner face runs at compact density. No flow, step order,
+     bar, model pin, guard, strict-money site, encryption,
+     signing or copy truth changes. The migration step is the
+     identity (see biometrics.js). */
+  var APP_DATA_VERSION = 'v66';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -1158,6 +1195,7 @@
         var show = field.type === 'password';
         field.type = show ? 'text' : 'password';
         t.textContent = show ? 'Hide' : 'Show';
+        t.setAttribute('aria-pressed', show ? 'true' : 'false');
       });
     });
   }
@@ -1834,7 +1872,11 @@
   function termFacingKey() { return 'termPalm'; }
   function syncCamToggle(key) {
     document.querySelectorAll('[data-cam-toggle="' + key + '"] button').forEach(function (b) {
-      b.classList.toggle('on', b.dataset.facing === camFacing[key === 'terminal' ? termFacingKey() : key]);
+      var on = b.dataset.facing === camFacing[key === 'terminal' ? termFacingKey() : key];
+      b.classList.toggle('on', on);
+      /* v64 (Seat 1 A-1): the toggle state is published to assistive
+         tech, not carried by the .on class alone. */
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
     });
   }
   function applyMirror(videoId, facing) { var v = $(videoId); if (v) v.classList.toggle('mirror', facing === 'user'); }
@@ -1908,7 +1950,9 @@
   function syncFlashToggle(groupKey) {
     var key = flashKeyForGroup(groupKey);
     document.querySelectorAll('[data-flash-toggle="' + groupKey + '"] button').forEach(function (b) {
-      b.classList.toggle('on', (b.dataset.flash === 'on') === !!flashState[key]);
+      var on = (b.dataset.flash === 'on') === !!flashState[key];
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
     });
   }
   function setFlashNote(groupKey, text) {
@@ -2058,7 +2102,9 @@
     init: function () {
       if (this.hands) return;
       var self = this;
-      this.hands = new Hands({ locateFile: function (f) { return 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/' + f; } });
+      /* v64 (Phase A Step 5.1, Seat 2 H-1): MediaPipe is SELF-HOSTED
+         under vendor/ — no third-party code executes in this origin. */
+      this.hands = new Hands({ locateFile: function (f) { return 'vendor/mediapipe-hands-0.4.1675469240/' + f; } });
       // v25 A/B: lite landmark model (complexity 0) - the full model
       // is the per-frame bottleneck on a budget phone CPU.
       this.hands.setOptions({ maxNumHands: 1, modelComplexity: 0, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
@@ -2435,52 +2481,69 @@
     }
   };
 
-  /* PalmNet neural runtime (v47): ONNX Runtime Web running the
-     PalmNet model (see the PalmNet section in biometrics.js for
-     what the model is and where its threshold came from). The
-     runtime loads the way this app loads every third-party
-     runtime — a pinned jsDelivr CDN build, the pattern MediaPipe
-     Hands already uses — and the model itself lives IN THIS REPO
-     under models/palmnet/ (base64 text parts + a manifest with
-     the byte count and SHA-256; the snapshot-push channel that
-     ships this app carries UTF-8 text only, so the binary model
-     travels as text and is reassembled and verified in memory).
+  /* PalmNet neural runtime (v47; v65 engine): the PalmNet model
+     (see the PalmNet section in biometrics.js for what the model
+     is and where its threshold came from) runs on TSG's OWN Palm
+     Engine — the dedicated inference runtime in biometrics.js.
+     v47–v64 ran it on ONNX Runtime Web (CDN, then self-hosted);
+     v65 removes that third-party runtime entirely under the
+     TSG-ONLY property directive, through the parity gate (zero
+     verdict differences at the 0.5895 bar on the full bench EVAL
+     protocol). The model lives IN THIS REPO under models/palmnet/
+     as the TSGP container (program.json + base64 text parts of
+     the weights blob + a manifest; the snapshot-push channel
+     that ships this app carries UTF-8 text only, so the weights
+     travel as text and are reassembled and verified in memory
+     against the hashes pinned in code below).
 
      Inference runs in a dedicated worker so it can never block
-     the scan loop; the worker's preprocessing is assembled from
-     B.palmnetPreprocessSource() — the very functions the parity
-     suite proves against the Python training pipeline. If the
-     worker cannot be built or dies, the same runtime is loaded
-     on the main thread as a fallback (a batch-1 inference is a
-     few milliseconds; it is a fallback, not the plan).
+     the scan loop; the worker is assembled from TSG source only
+     (B.palmEngineSource + B.palmnetPreprocessSource — the very
+     functions the parity suite proves against the Python
+     training pipeline). If the worker cannot be built or dies,
+     the same engine is created on the main thread as a fallback
+     (it is a fallback, not the plan).
 
-     FAIL-SOFT BY CONSTRUCTION: every failure — no Worker, no
-     WASM, CDN unreachable, model fetch/size/hash failure, session
-     error, a hung call — resolves to "no neural evidence" and
-     flips state to 'failed' with a plain reason. The scan paths
-     treat that exactly like a profile with no neural bank: the
-     app behaves as v46, EDCC only, and diagnostics carry the
-     honest status note (PalmNet.statusNote). Nothing here ever
-     throws into a scan, an enrolment or a wallet flow. */
+     FAIL-SOFT BY CONSTRUCTION: every failure — no Worker, model
+     fetch/size/hash failure, engine error, a hung call —
+     resolves to "no neural evidence" and flips state to 'failed'
+     with a plain reason. The scan paths treat that exactly like
+     a profile with no neural bank: the app behaves as v46, EDCC
+     only, and diagnostics carry the honest status note
+     (PalmNet.statusNote). Nothing here ever throws into a scan,
+     an enrolment or a wallet flow. */
   function palmnetWorkerMain() {
-    // Runs INSIDE the PalmNet worker. In scope there: ort (via
-    // importScripts) and palmnetPreprocessRoi / PALMNET_INPUT_SIZE
-    // (via B.palmnetPreprocessSource) — nothing from app.js.
-    var session = null;
+    // Runs INSIDE the PalmNet worker. In scope there:
+    // createTsgPalmEngine (via B.palmEngineSource — TSG's own
+    // inference runtime, v65) and palmnetPreprocessRoi /
+    // PALMNET_INPUT_SIZE (via B.palmnetPreprocessSource) —
+    // nothing from app.js, and no third-party code at all.
+    var engine = null;
     function b64ToBytes(b64) {
       var bin = atob(b64);
       var bytes = new Uint8Array(bin.length);
       for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
       return bytes;
     }
-    function loadModel(manifestUrl, expectedModelId) {
+    function sha256Hex(bytes) {
+      if (typeof crypto === 'undefined' || !crypto.subtle || !crypto.subtle.digest) {
+        return Promise.reject(new Error('model integrity check unavailable (no SubtleCrypto) — neural matching is disabled for this load'));
+      }
+      return crypto.subtle.digest('SHA-256', bytes).then(function (h) {
+        var hex = '';
+        var hv = new Uint8Array(h);
+        for (var i = 0; i < hv.length; i++) hex += ('0' + hv[i].toString(16)).slice(-2);
+        return hex;
+      });
+    }
+    function loadModel(manifestUrl, expectedModelId, expectedWeightsSha256, expectedWeightsBytes, expectedProgramSha256) {
       return fetch(manifestUrl).then(function (r) {
         if (!r.ok) throw new Error('model manifest HTTP ' + r.status);
         return r.json();
       }).then(function (man) {
         // v55 (AUDIT-v54.md, Defect 3): a manifest that NAMES a
         // different model than this build runs is refused here,
-        // before any part is fetched — the session is never
+        // before any part is fetched — the engine is never
         // created, the rejection lands in PalmNet's fail-soft
         // state with this reason, and the app runs EDCC-only
         // with the mismatch stated in the status note. A
@@ -2489,47 +2552,62 @@
         if (man.modelId && expectedModelId && man.modelId !== expectedModelId) {
           throw new Error('PalmNet model mismatch: this build runs ' + expectedModelId + ' but the served model is ' + man.modelId + ' — neural matching is disabled for this load rather than run a model under the wrong bar');
         }
+        // v64 (Seat 2 H-5): a manifest whose recorded hash disagrees
+        // with the hash pinned in this build's code is refused before
+        // any part is fetched, on the same fail-soft terms. v65: the
+        // pin is the TSGP container's weights hash.
+        if (man.weightsSha256 && expectedWeightsSha256 && man.weightsSha256 !== expectedWeightsSha256) {
+          throw new Error('PalmNet model hash mismatch: the served manifest records a different model than this build runs — neural matching is disabled for this load');
+        }
         var base = manifestUrl.replace(/[^/]*$/, '');
-        return Promise.all(man.parts.map(function (p) {
-          return fetch(base + p).then(function (r) {
-            if (!r.ok) throw new Error('model part HTTP ' + r.status);
-            return r.text();
-          });
-        })).then(function (texts) {
-          var bytes = b64ToBytes(texts.join(''));
-          if (bytes.length !== man.bytes) throw new Error('model size mismatch (' + bytes.length + ' != ' + man.bytes + ')');
-          var hashP = Promise.resolve();
-          if (typeof crypto !== 'undefined' && crypto.subtle && crypto.subtle.digest) {
-            hashP = crypto.subtle.digest('SHA-256', bytes).then(function (h) {
-              var hex = '';
-              var hv = new Uint8Array(h);
-              for (var i = 0; i < hv.length; i++) hex += ('0' + hv[i].toString(16)).slice(-2);
-              if (hex !== man.sha256) throw new Error('model hash mismatch');
+        // The program (the engine's schedule) is integrity-checked
+        // against its own code pin before the weights are fetched:
+        // the schedule IS code, exactly as the weights are.
+        return fetch(base + man.programFile).then(function (r) {
+          if (!r.ok) throw new Error('model program HTTP ' + r.status);
+          return r.text();
+        }).then(function (programText) {
+          var programBytes = new TextEncoder().encode(programText);
+          return sha256Hex(programBytes).then(function (phex) {
+            if (expectedProgramSha256 && phex !== expectedProgramSha256) throw new Error('model program hash mismatch');
+            var program = JSON.parse(programText);
+            return Promise.all(man.parts.map(function (p) {
+              return fetch(base + p).then(function (r) {
+                if (!r.ok) throw new Error('model part HTTP ' + r.status);
+                return r.text();
+              });
+            })).then(function (texts) {
+              var bytes = b64ToBytes(texts.join(''));
+              if (bytes.length !== man.weightsBytes) throw new Error('model size mismatch (' + bytes.length + ' != ' + man.weightsBytes + ')');
+              if (expectedWeightsBytes && bytes.length !== expectedWeightsBytes) throw new Error('model size mismatch (' + bytes.length + ' != pinned ' + expectedWeightsBytes + ')');
+              return sha256Hex(bytes).then(function (hex) {
+                if (hex !== (expectedWeightsSha256 || man.weightsSha256)) throw new Error('model hash mismatch');
+                return createTsgPalmEngine().load(program, bytes.buffer);
+              });
             });
-          }
-          return hashP.then(function () { return ort.InferenceSession.create(bytes); });
+          });
         });
       });
     }
     function runOne(roi, size) {
       var input = palmnetPreprocessRoi(roi, size);
       if (!input) return Promise.resolve(null);
-      var tensor = new ort.Tensor('float32', input, [1, 3, PALMNET_INPUT_SIZE, PALMNET_INPUT_SIZE]);
-      return session.run({ image: tensor }).then(function (out) {
-        return Array.prototype.slice.call(out.embedding.data);
-      }, function () { return null; });
+      try {
+        var out = engine.run(input, [1, 3, PALMNET_INPUT_SIZE, PALMNET_INPUT_SIZE]);
+        return Promise.resolve(Array.prototype.slice.call(out.data));
+      } catch (e) { return Promise.resolve(null); }
     }
     onmessage = function (e) {
       var d = e.data || {};
       if (d.type === 'init') {
-        loadModel(d.manifestUrl, d.expectedModelId).then(function (s) {
-          session = s;
+        loadModel(d.manifestUrl, d.expectedModelId, d.expectedWeightsSha256, d.expectedWeightsBytes, d.expectedProgramSha256).then(function (eng) {
+          engine = eng;
           postMessage({ type: 'ready' });
         }, function (err) {
           postMessage({ type: 'error', message: String(err && err.message ? err.message : err) });
         });
       } else if (d.type === 'embed') {
-        if (!session) { postMessage({ type: 'emb', id: d.id, emb: null, embM: null }); return; }
+        if (!engine) { postMessage({ type: 'emb', id: d.id, emb: null, embM: null }); return; }
         runOne(d.roi, d.size).then(function (emb) {
           if (d.roiM) {
             return runOne(d.roiM, d.size).then(function (embM) {
@@ -2551,14 +2629,31 @@
      under the wrong bar or write banks under the wrong
      stamp. A manifest with no modelId loads as before. */
   var PALMNET_EXPECTED_MODEL_ID = B.PALMNET_MODEL_ID;
+  /* v64 (Seat 2 H-5): the model's expected SHA-256 and byte length are
+     pinned IN CODE, beside the model id — not read from the runtime-
+     fetched manifest. The 0.5895 bar is specific to these exact bytes,
+     so the model IS code: a model change requires a code change. Both
+     loader paths (worker + main-thread fallback) verify length AND
+     hash against these constants before any engine is created, and a
+     context without SubtleCrypto fails soft to EDCC-only — the check
+     is never silently skipped.
+     v65 (TSG-ONLY programme): the pinned values are now the TSGP
+     container's — the WEIGHTS blob hash/length and the PROGRAM
+     (schedule) hash. The weights are a byte-exact repack of the
+     v54 Round 3 ONNX model (per-tensor max diff 0.0), and the
+     engine passed the parity gate at these pins, so the bar and
+     every banked embedding stand unchanged. */
+  var PALMNET_EXPECTED_SHA256 = 'e050a574a8b32c3e6ca234c6590c2e1a2f0dd6d4858400f74335a3967bb2812d';
+  var PALMNET_EXPECTED_BYTES = 4278756;
+  var PALMNET_EXPECTED_PROGRAM_SHA256 = 'ebbf5a29d98f882f14960bd6ac7a8045b5195d07e76d0a584b7f50b5dc4b8aad';
   var PalmNet = {
     state: 'idle', // idle | loading | ready | failed
     failReason: '',
-    ortUrl: 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.wasm.min.js',
-    wasmPath: 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/',
+    /* v65: the model runs on TSG's own Palm Engine (biometrics.js);
+       there is no runtime URL and no third-party code to load. */
     modelManifest: 'models/palmnet/manifest.json',
     w: null, seq: 0, pending: {},
-    session: null, // main-thread fallback session (window.ort)
+    engine: null, // main-thread fallback engine (B.createTsgPalmEngine)
     readyPromise: null,
     cache: (typeof WeakMap !== 'undefined') ? new WeakMap() : null, // roi array -> Promise<pair|null>
     init: function () {
@@ -2588,9 +2683,12 @@
           reject(new Error('neural worker start timed out'));
         }, 45000);
         try {
-          var src = 'importScripts(' + JSON.stringify(self.ortUrl) + ');\n' +
-            'ort.env.wasm.wasmPaths = ' + JSON.stringify(self.wasmPath) + ';\n' +
-            'ort.env.wasm.numThreads = 1;\n' +
+          /* v65: the worker source is TSG code only — the Palm
+             Engine factory and the preprocess functions, both
+             stringified from biometrics.js, plus the worker main.
+             (v64's absolutised vendor URLs are gone with the
+             runtime they loaded.) */
+          var src = B.palmEngineSource() +
             B.palmnetPreprocessSource() +
             'var palmnetWorkerMain = ' + palmnetWorkerMain.toString() + ';\npalmnetWorkerMain();\n';
           var url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
@@ -2628,28 +2726,32 @@
               if (self.state === 'ready') { self.state = 'failed'; self.failReason = 'neural worker error'; }
             }
           };
-          self.w.postMessage({ type: 'init', manifestUrl: new URL(self.modelManifest, window.location.href).href, expectedModelId: PALMNET_EXPECTED_MODEL_ID });
+          self.w.postMessage({ type: 'init', manifestUrl: new URL(self.modelManifest, window.location.href).href, expectedModelId: PALMNET_EXPECTED_MODEL_ID, expectedWeightsSha256: PALMNET_EXPECTED_SHA256, expectedWeightsBytes: PALMNET_EXPECTED_BYTES, expectedProgramSha256: PALMNET_EXPECTED_PROGRAM_SHA256 });
         } catch (e) {
           if (!settled) { settled = true; clearTimeout(to); reject(e); }
         }
       });
     },
-    loadOrtScript: function () {
-      // v49 freeze-proofing: a stalled CDN connection can leave a
-      // script element neither loaded nor errored — the promise
-      // never settles. Bounded like every other wait in v49; the
-      // rejection lands in init()'s fail-soft catch.
-      return B.withTimeout(new Promise(function (resolve, reject) {
-        if (typeof window !== 'undefined' && window.ort) { resolve(); return; }
-        var s = document.createElement('script');
-        s.src = PalmNet.ortUrl;
-        s.onload = function () { resolve(); };
-        s.onerror = function () { reject(new Error('ONNX Runtime Web failed to load from the CDN')); };
-        document.head.appendChild(s);
-      }), 20000);
-    },
-    fetchModelBytes: function () {
+    /* v65: fetch + verify the TSGP container (program + weights)
+       for the main-thread fallback. The checks are the worker
+       loader's, verbatim in effect: model id, manifest weights
+       hash vs the code pin, program hash vs its code pin, weights
+       length vs manifest AND pin, weights SHA-256 vs the pin —
+       and without SubtleCrypto the load fails soft to EDCC-only
+       instead of running unverified bytes (v64 H-5 discipline). */
+    fetchModelContainer: function () {
       var self = this;
+      function sha256Hex(bytes) {
+        if (typeof crypto === 'undefined' || !crypto.subtle || !crypto.subtle.digest) {
+          return Promise.reject(new Error('model integrity check unavailable (no SubtleCrypto) — neural matching is disabled for this load'));
+        }
+        return crypto.subtle.digest('SHA-256', bytes).then(function (h) {
+          var hex = '';
+          var hv = new Uint8Array(h);
+          for (var i = 0; i < hv.length; i++) hex += ('0' + hv[i].toString(16)).slice(-2);
+          return hex;
+        });
+      }
       return fetch(self.modelManifest).then(function (r) {
         if (!r.ok) throw new Error('model manifest HTTP ' + r.status);
         return r.json();
@@ -2661,18 +2763,37 @@
         if (man.modelId && man.modelId !== PALMNET_EXPECTED_MODEL_ID) {
           throw new Error('PalmNet model mismatch: this build runs ' + PALMNET_EXPECTED_MODEL_ID + ' but the served model is ' + man.modelId + ' — neural matching is disabled for this load rather than run a model under the wrong bar');
         }
+        // v64 (Seat 2 H-5): the same code-pinned hash screen as the
+        // worker loader — a manifest recording a different hash than
+        // the build's pin is refused before any part is fetched.
+        if (man.weightsSha256 && man.weightsSha256 !== PALMNET_EXPECTED_SHA256) {
+          throw new Error('PalmNet model hash mismatch: the served manifest records a different model than this build runs — neural matching is disabled for this load');
+        }
         var base = self.modelManifest.replace(/[^/]*$/, '');
-        return Promise.all(man.parts.map(function (p) {
-          return fetch(base + p).then(function (r) {
-            if (!r.ok) throw new Error('model part HTTP ' + r.status);
-            return r.text();
+        return fetch(base + man.programFile).then(function (r) {
+          if (!r.ok) throw new Error('model program HTTP ' + r.status);
+          return r.text();
+        }).then(function (programText) {
+          return sha256Hex(new TextEncoder().encode(programText)).then(function (phex) {
+            if (phex !== PALMNET_EXPECTED_PROGRAM_SHA256) throw new Error('model program hash mismatch');
+            var program = JSON.parse(programText);
+            return Promise.all(man.parts.map(function (p) {
+              return fetch(base + p).then(function (r) {
+                if (!r.ok) throw new Error('model part HTTP ' + r.status);
+                return r.text();
+              });
+            })).then(function (texts) {
+              var bin = atob(texts.join(''));
+              var bytes = new Uint8Array(bin.length);
+              for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+              if (bytes.length !== man.weightsBytes) throw new Error('model size mismatch (' + bytes.length + ' != ' + man.weightsBytes + ')');
+              if (bytes.length !== PALMNET_EXPECTED_BYTES) throw new Error('model size mismatch (' + bytes.length + ' != pinned ' + PALMNET_EXPECTED_BYTES + ')');
+              return sha256Hex(bytes).then(function (hex) {
+                if (hex !== PALMNET_EXPECTED_SHA256) throw new Error('model hash mismatch');
+                return { program: program, bytes: bytes };
+              });
+            });
           });
-        })).then(function (texts) {
-          var bin = atob(texts.join(''));
-          var bytes = new Uint8Array(bin.length);
-          for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-          if (bytes.length !== man.bytes) throw new Error('model size mismatch (' + bytes.length + ' != ' + man.bytes + ')');
-          return bytes;
         });
       });
     },
@@ -2680,21 +2801,15 @@
       var self = this;
       // v49 freeze-proofing: the worker path is bounded (45 s in
       // initWorker) and per-call embeds are bounded (4 s worker /
-      // 6 s race in embedPair), but this main-thread fallback was
-      // not: fetchModelBytes uses plain fetch (no timeout) and
-      // InferenceSession.create can stall, so PalmNet.init()
-      // could sit in 'loading' forever and the diagnostics note
-      // lied about it. The whole chain now runs under a 60 s
-      // bound; a timeout rejects into init()'s catch, the state
-      // flips to 'failed' with the reason, and the app runs
-      // EDCC-only — the designed fail-soft.
-      return B.withTimeout(this.loadOrtScript().then(function () {
-        window.ort.env.wasm.numThreads = 1;
-        return self.fetchModelBytes();
-      }).then(function (bytes) {
-        return window.ort.InferenceSession.create(bytes);
-      }).then(function (session) {
-        self.session = session;
+      // 6 s race in embedPair); this main-thread fallback keeps
+      // the same 60 s bound, so PalmNet.init() can never sit in
+      // 'loading' forever — a timeout rejects into init()'s catch,
+      // the state flips to 'failed' with the reason, and the app
+      // runs EDCC-only: the designed fail-soft. v65: the fallback
+      // engine is TSG's own (B.createTsgPalmEngine), created
+      // synchronously from the verified container.
+      return B.withTimeout(this.fetchModelContainer().then(function (c) {
+        self.engine = B.createTsgPalmEngine().load(c.program, c.bytes.buffer);
       }), 60000);
     },
     embedViaWorker: function (roi, roiM) {
@@ -2723,11 +2838,11 @@
       var self = this;
       function runOne(r) {
         var input = B.palmnetPreprocessRoi(r, B.PALMPRINT_ROI_SIZE);
-        if (!input || !self.session) return Promise.resolve(null);
-        var tensor = new window.ort.Tensor('float32', input, [1, 3, B.PALMNET_INPUT_SIZE, B.PALMNET_INPUT_SIZE]);
-        return self.session.run({ image: tensor }).then(function (out) {
-          return B.palmnetNormaliseEmbedding(Array.prototype.slice.call(out.embedding.data));
-        }, function () { return null; });
+        if (!input || !self.engine) return Promise.resolve(null);
+        try {
+          var out = self.engine.run(input, [1, 3, B.PALMNET_INPUT_SIZE, B.PALMNET_INPUT_SIZE]);
+          return Promise.resolve(B.palmnetNormaliseEmbedding(Array.prototype.slice.call(out.data)));
+        } catch (e) { return Promise.resolve(null); }
       }
       return runOne(roi).then(function (a) {
         if (!roiM) return self.pairFromRaw(a, null);
@@ -2749,7 +2864,7 @@
         if (!ok) return null;
         var flipped = B.flipGrayHorizontal(roi, B.PALMPRINT_ROI_SIZE, B.PALMPRINT_ROI_SIZE);
         if (self.w) return self.embedViaWorker(roi, flipped);
-        if (self.session) return self.embedOnMain(roi, flipped);
+        if (self.engine) return self.embedOnMain(roi, flipped);
         return null;
       }).catch(function () { return null; });
       var bounded = Promise.race([p, waitMs(6000).then(function () { return null; })]);
@@ -4144,7 +4259,12 @@
     var scrollActivity = page === 'activity';
     if (scrollActivity) page = 'wallet';
     var navPage = scrollActivity ? 'activity' : page === 'topup' ? 'registry' : page === 'account' ? (FaceMode.isOwner() ? 'wallet' : 'account') : (page === 'stores' || page === 'logs' || page === 'partner') ? 'more' : page;
-    document.querySelectorAll('#mainNav button').forEach(function (b) { b.classList.toggle('active', b.dataset.page === navPage); });
+    document.querySelectorAll('#mainNav button').forEach(function (b) {
+      var on = b.dataset.page === navPage;
+      b.classList.toggle('active', on);
+      /* v64 (Seat 1 N-1): the current page is named for assistive tech. */
+      if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+    });
     document.querySelectorAll('section.page').forEach(function (s) { s.classList.toggle('active', s.id === 'page-' + page); });
     if (page !== 'enroll' && page !== 'terminal') { Cam.stop(); }
     // v43 hands-free lifecycle: leaving a scan view cancels its
@@ -4217,7 +4337,10 @@
     var idx = flow.indexOf(step);
     if (idx >= 0) {
       $('enrollProgress').textContent = 'Step ' + (idx + 1) + ' of ' + flow.length + ' — ' + STEP_LABEL[step];
-      $('enrollProgressBar').style.width = Math.round(((idx + 1) / flow.length) * 100) + '%';
+      /* v64 (Seat 1 M-1): progress moves by transform (scaleX), never
+         by animating width — the bar's CSS transition targets
+         transform only. */
+      $('enrollProgressBar').style.transform = 'scaleX(' + ((idx + 1) / flow.length) + ')';
     }
   }
   function capturedCount() { return enroll.palm ? 1 : 0; }
@@ -4261,7 +4384,7 @@
           '<b>Store:</b> ' + esc(person.store) + '<br>' +
           '<b>Palm:</b> ' + (person.palmProfile && person.palmProfile.v === 3 ? 'Enrolled (palmprint — EDCC competitive code, ' + person.palmProfile.codes.length + ' individual captures, movement-checked)' : 'Not enrolled') + '<br>' +
           '<b>Wallet:</b> ' + (person.walletProvider ? esc(person.walletProvider) + ' ' + esc(B.maskWalletNumber(person.walletNumber)) : 'Not linked') + '<br>' +
-          '<b>Biometric-only limits:</b> ' + (person.limits.perTx ? 'BDT ' + person.limits.perTx.toLocaleString() + ' per transaction' : 'No per-transaction limit') + (person.limits.daily ? ', BDT ' + person.limits.daily.toLocaleString() + ' per day' : '') + '<br>' +
+          '<b>Biometric-only limits:</b> ' + (person.limits.perTx ? 'BDT ' + Number(person.limits.perTx).toLocaleString() + ' per transaction' : 'No per-transaction limit') + (person.limits.daily ? ', BDT ' + Number(person.limits.daily).toLocaleString() + ' per day' : '') + '<br>' +
           '<b>Palm Loyalty:</b> Active — 0 points<br>' +
           '<b>Demo wallet:</b> Created — this Biom ID is the wallet account, balance BDT 0. Open My Wallet to use it; your palm is asked for only when money moves. Demo money inside the app, not real funds.';
         enroll = { details: null, palm: null, types: { palm: true } };
@@ -4345,14 +4468,18 @@
     palmScanBusy = true;
     $('palmCapture').disabled = true;
     $('palmMsg').innerHTML = '';
-    var control = { cancelled: false };
+    var control = { cancelled: false, onFrame: function (info) { var fr = enrolSession.frame({ hasHand: info.hasHand, pose: info.pose }); enrolInds.update(info, fr); } };
     enrollControl = control;
+    enrolSession.enter();
+    enrolInds.reset();
+    setSurfacePill('e', 'Scanning');
     streamEnrolPalm($('palmVideo'), $('palmStatus'), null, function () {
       camFacing.enrollPalm = camFacing.enrollPalm === 'user' ? 'environment' : 'user';
       syncCamToggle('enrollPalm');
       return Cam.start($('palmVideo'), camFacing.enrollPalm, 'enrollPalm');
     }, control).then(function (res) {
       palmScanBusy = false;
+      setSurfacePill('e', 'Ready');
       if (res.stopped) { $('palmCapture').disabled = false; $('palmStatus').textContent = 'Capture stopped.'; return; }
       if (res.spoof && res.spoof.spoof) {
         DB.put('logs', { ts: Date.now(), personId: '', personName: '(enrolment attempt)', store: '', method: 'palm', measured: 'Spoof score ' + res.spoof.score.toFixed(2) + ' - ' + res.spoof.reasons.join('; '), result: 'Spoof / Screen Replay Detected' });
@@ -4662,8 +4789,10 @@
         // closure, queue the wire record (no-op when sync is off).
         Sync.noteScan({ kind: 'field-test', profileName: person.name, biomId: person.id, hand: neural && neural.probeHand ? neural.probeHand : null, edccScore: genuineScore, palmnetScore: neural && typeof neural.neuralScore === 'number' ? neural.neuralScore : null, result: result });
       };
-      var control = { cancelled: false, onFrame: function (info) { termSession.frame({ hasHand: info.hasHand, pose: info.pose }); } };
+      var control = { cancelled: false, onFrame: function (info) { var fr = termSession.frame({ hasHand: info.hasHand, pose: info.pose }); termInds.update(info, fr); } };
       termControl = control;
+      termInds.reset();
+      setSurfacePill('t', 'Scanning');
       var attempt = streamVerifyPalm($('termVideo'), $('termStatus'), person, people, function () {
         var k = termFacingKey();
         camFacing[k] = camFacing[k] === 'user' ? 'environment' : 'user';
@@ -4689,6 +4818,7 @@
         // v43: a terminal verdict fired — the session enters its
         // cooldown and the terminal offers Next Customer.
         termSession.verdict();
+        setSurfacePill('t', 'Ready');
         $('termNext').classList.remove('hidden');
         if (out.fail) { Snd.buzz(); $('termResult').innerHTML = '<div class="error">' + esc(out.fail) + '</div>' + scanDiagHTML(out.diag); return; }
         var r = out.r;
@@ -4749,12 +4879,12 @@
                   var payPts = Math.floor(tx.amount / 10);
                   if (payPts > 0) {
                     person.loyaltyPoints = (person.loyaltyPoints || 0) + payPts;
-                    loyaltyLine = '<div class="notice" style="margin-top:10px">Palm Loyalty: +' + payPts + ' points awarded — balance ' + person.loyaltyPoints + ' points.</div>';
+                    loyaltyLine = '<div class="notice" style="margin-top:10px">Palm Loyalty: +' + payPts + ' points awarded — balance ' + Number(person.loyaltyPoints || 0) + ' points.</div>';
                     DB.put('people', person);
                   }
                   $('termResult').innerHTML = html + loyaltyLine +
                     '<div class="receipt"><div class="rhead">Biom Pay — Payment Authorized</div><div class="kv">' +
-                    '<b>Amount:</b> BDT ' + tx.amount.toLocaleString() + '<br>' +
+                    '<b>Amount:</b> BDT ' + Number(tx.amount || 0).toLocaleString() + '<br>' +
                     '<b>Paid by:</b> ' + esc(person.name) + '<br>' +
                     '<b>Wallet:</b> ' + esc(tx.provider) + ' ' + esc(tx.walletMasked) + '<br>' +
                     '<b>Record ID:</b> ' + esc(tx.id) + ' (TSG Biom record — not a ' + esc(tx.provider) + ' TrxID)<br>' +
@@ -4874,6 +5004,10 @@
      dressed as a security check and runs no scan: the palm
      is asked for when money moves, not when a wallet opens. */
   function renderWalletProfiles(people) {
+    /* v64 (Seat 1 L-1): the static skeleton retires the moment real
+       content renders — the chooser is never a blank frame. */
+    var skel = $('walletProfilesSkeleton');
+    if (skel) skel.classList.add('hidden');
     var withPalm = people.filter(function (p) { return personHasMethod(p); });
     $('walletProfiles').innerHTML = withPalm.length
       ? withPalm.map(function (p) {
@@ -4916,6 +5050,18 @@
     $('wHomeId').textContent = me.id;
     $('wHomeAvatar').textContent = initialsOf(me.name);
     $('wHomeBalance').textContent = balanceHidden ? 'BDT ••••••••' : fmtBDT(w.balance);
+    /* v64 (Seat 1 L-2): after a completed Add / Send / Pay, the new
+       balance pulses once. Display only — the value itself was set
+       by the money flow, and the flag is raised only on its success
+       paths. */
+    if (balanceFlashPending) {
+      balanceFlashPending = false;
+      var balEl = $('wHomeBalance');
+      balEl.classList.remove('balflash');
+      void balEl.offsetWidth;
+      balEl.classList.add('balflash');
+      balEl.addEventListener('animationend', function h() { balEl.classList.remove('balflash'); balEl.removeEventListener('animationend', h); });
+    }
     $('wBalEye').classList.toggle('off', balanceHidden);
     if ($('wHomePoints')) $('wHomePoints').textContent = Number(me.loyaltyPoints || 0).toLocaleString() + ' pts';
     var linkRows = w.linkedAccounts.map(function (a) {
@@ -4933,17 +5079,45 @@
       : '<p class="sub" style="margin:0">No wallet linked yet — Add Money will ask you to link a funding account.</p>';
     var downArrow = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v13m0 0 5-5m-5 5-5-5"/></svg>';
     var upArrow = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V7m0 0 5 5m-5-5-5 5"/></svg>';
-    var rows = w.statement.slice().reverse().map(function (e) {
+    var stmtDesc = w.statement.slice().reverse();
+    var rows = stmtDesc.map(function (e, actIdx) {
       var meta = '<div class="ar-meta">' + esc(fmtTime(e.ts)) + ' · Ref ' + esc(e.ref) + ' · Balance after: ' + fmtBDT(e.balanceAfter) + '</div>';
+      var open = ' data-act-idx="' + actIdx + '" tabindex="0" role="button" aria-label="Show activity detail"';
       if (e.kind === 'add') {
-        return '<div class="actrow"><span class="acticon in">' + downArrow + '</span><div class="ar-main"><div class="ar-title">Money added (demo)</div><div class="ar-meta">From ' + esc(e.accountType) + ' — ' + esc(e.accountLabel) + '</div>' + meta + '</div><div class="amt in">+ ' + fmtBDT(e.amount) + '</div></div>';
+        return '<div class="actrow"' + open + '><span class="acticon in">' + downArrow + '</span><div class="ar-main"><div class="ar-title">Money added (demo)</div><div class="ar-meta">From ' + esc(e.accountType) + ' — ' + esc(e.accountLabel) + '</div>' + meta + '</div><div class="amt in num">+ ' + fmtBDT(e.amount) + '</div></div>';
       }
       if (e.kind === 'send') {
-        return '<div class="actrow"><span class="acticon out">' + upArrow + '</span><div class="ar-main"><div class="ar-title">Sent (demo)</div><div class="ar-meta">To ' + esc(e.counterpartyName) + ' (' + esc(e.counterpartyId) + ')</div>' + meta + '</div><div class="amt out">− ' + fmtBDT(e.amount) + '</div></div>';
+        return '<div class="actrow"' + open + '><span class="acticon out">' + upArrow + '</span><div class="ar-main"><div class="ar-title">Sent (demo)</div><div class="ar-meta">To ' + esc(e.counterpartyName) + ' (' + esc(e.counterpartyId) + ')</div>' + meta + '</div><div class="amt out num">− ' + fmtBDT(e.amount) + '</div></div>';
       }
-      return '<div class="actrow"><span class="acticon in">' + downArrow + '</span><div class="ar-main"><div class="ar-title">Received (demo)</div><div class="ar-meta">From ' + esc(e.counterpartyName) + ' (' + esc(e.counterpartyId) + ')</div>' + meta + '</div><div class="amt in">+ ' + fmtBDT(e.amount) + '</div></div>';
+      return '<div class="actrow"' + open + '><span class="acticon in">' + downArrow + '</span><div class="ar-main"><div class="ar-title">Received (demo)</div><div class="ar-meta">From ' + esc(e.counterpartyName) + ' (' + esc(e.counterpartyId) + ')</div>' + meta + '</div><div class="amt in num">+ ' + fmtBDT(e.amount) + '</div></div>';
     }).join('');
     $('wHomeStatement').innerHTML = rows || '<p class="sub" style="margin:0">No activity yet — add or send demo money and it will appear here.</p>';
+    /* v66: Activity list–detail on desktop — selecting a record
+       fills the inspector panel beside the list; on mobile the
+       rows keep today's behaviour (no panel, no navigation). */
+    document.querySelectorAll('#wHomeStatement .actrow').forEach(function (row) {
+      var openDetail = function () { showActivityDetail(stmtDesc[Number(row.dataset.actIdx)], me); };
+      row.addEventListener('click', openDetail);
+      row.addEventListener('keydown', function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openDetail(); } });
+    });
+  }
+  function showActivityDetail(e, me) {
+    var panel = $('activityInspector');
+    if (!panel || !e) return;
+    if (!window.matchMedia || !window.matchMedia('(min-width: 1024px)').matches) return;
+    var kindLabel = e.kind === 'add' ? 'Money added (demo)' : e.kind === 'send' ? 'Sent (demo)' : e.kind === 'receive' ? 'Received (demo)' : String(e.kind || '');
+    var party = e.kind === 'add'
+      ? '<b>From:</b> ' + esc(e.accountType || '') + ' — ' + esc(e.accountLabel || '') + '<br><b>Biom ID:</b> ' + esc(me.id)
+      : '<b>Counterparty:</b> ' + esc(e.counterpartyName || '') + '<br><b>Biom ID:</b> ' + esc(e.counterpartyId || '');
+    $('activityDetailBody').innerHTML =
+      '<b>Kind:</b> ' + esc(kindLabel) + '<br>' + party + '<br>' +
+      '<b>Amount:</b> <span class="num">' + fmtBDT(e.amount) + '</span><br>' +
+      '<b>Time:</b> <span class="num">' + esc(fmtTime(e.ts)) + '</span><br>' +
+      '<b>Reference:</b> ' + esc(e.ref || '') + '<br>' +
+      '<b>Balance after:</b> <span class="num">' + fmtBDT(e.balanceAfter) + '</span><br>' +
+      '<b>Device:</b> This device — wallet records are kept on this device<br>' +
+      '<b>Settlement:</b> ' + esc(e.note || 'Demo money inside this app — not real funds.');
+    panel.classList.remove('hidden');
   }
 
   /* Shared wallet scan card: one camera surface, the caller's run()
@@ -4962,7 +5136,6 @@
      reads (dark below mean luma 45, glare above 0.15, exactly the
      B.palmGuidance thresholds), steadiness from the scan
      session's own stability count. They gate nothing. */
-  var scanIndKey = '';
   function setScanInd(id, state, text) {
     var el = $(id);
     if (!el) return;
@@ -4971,36 +5144,65 @@
     var t = el.querySelector('.indtxt');
     if (t) t.textContent = text;
   }
-  function updateScanIndicators(info, frameRes) {
-    var hand = !!(info && info.hasHand);
-    // v53: the hand indicator is tied to the completeness
-    // judgement — a cropped or too-close hand is present but
-    // cannot be scored, so it must not show green. It warns and
-    // says what to do instead, in the guidance's own terms.
-    var handState = 'wait', handText = 'No hand yet';
-    if (hand && info.frameComplete === false) {
-      handState = 'warn';
-      handText = info.frameIssue === 'tooClose' ? 'Too close — move back' : 'Hand cropped — move back';
-    } else if (hand) { handState = 'ok'; handText = 'Hand detected'; }
-    var lightState = 'wait', lightText = 'Light —';
-    if (info && typeof info.meanLuma === 'number' && isFinite(info.meanLuma)) {
-      if (info.meanLuma < 45) { lightState = 'warn'; lightText = 'Too dark'; }
-      else if (typeof info.glareFrac === 'number' && info.glareFrac > 0.15) { lightState = 'warn'; lightText = 'Glare'; }
-      else { lightState = 'ok'; lightText = 'Good light'; }
-    }
-    var steady = !!(frameRes && frameRes.armed);
-    var key = handState + handText + '|' + lightState + '|' + (steady ? '1' : '0');
-    if (key === scanIndKey) return;
-    scanIndKey = key;
-    setScanInd('wIndHand', handState, handText);
-    setScanInd('wIndLight', lightState, lightText);
-    setScanInd('wIndSteady', steady ? 'ok' : 'wait', steady ? 'Holding steady' : 'Hold steady');
+  /* v64 (Seat 1 G-1, closes R-24): the wallet card's indicator set is
+     now a factory — every scan surface gets the same pill + Hand /
+     Light / Steady indicators, driven by the SAME per-frame info its
+     stream already emits through control.onFrame (both stream loops
+     emit hasHand / meanLuma / glareFrac / frameComplete / frameIssue)
+     and the surface's own scan session for steadiness. Presentation
+     only: the indicators gate nothing, exactly as on the wallet card. */
+  function makeScanIndicators(prefix) {
+    var key = '';
+    return {
+      update: function (info, frameRes) {
+        var hand = !!(info && info.hasHand);
+        // v53: the hand indicator is tied to the completeness
+        // judgement — a cropped or too-close hand is present but
+        // cannot be scored, so it must not show green. It warns and
+        // says what to do instead, in the guidance's own terms.
+        var handState = 'wait', handText = 'No hand yet';
+        if (hand && info.frameComplete === false) {
+          handState = 'warn';
+          handText = info.frameIssue === 'tooClose' ? 'Too close — move back' : 'Hand cropped — move back';
+        } else if (hand) { handState = 'ok'; handText = 'Hand detected'; }
+        var lightState = 'wait', lightText = 'Light —';
+        if (info && typeof info.meanLuma === 'number' && isFinite(info.meanLuma)) {
+          if (info.meanLuma < 45) { lightState = 'warn'; lightText = 'Too dark'; }
+          else if (typeof info.glareFrac === 'number' && info.glareFrac > 0.15) { lightState = 'warn'; lightText = 'Glare'; }
+          else { lightState = 'ok'; lightText = 'Good light'; }
+        }
+        var steady = !!(frameRes && frameRes.armed);
+        var k = handState + handText + '|' + lightState + '|' + (steady ? '1' : '0');
+        if (k === key) return;
+        key = k;
+        setScanInd(prefix + 'IndHand', handState, handText);
+        setScanInd(prefix + 'IndLight', lightState, lightText);
+        setScanInd(prefix + 'IndSteady', steady ? 'ok' : 'wait', steady ? 'Holding steady' : 'Hold steady');
+      },
+      reset: function () {
+        key = '';
+        setScanInd(prefix + 'IndHand', 'wait', 'No hand yet');
+        setScanInd(prefix + 'IndLight', 'wait', 'Light —');
+        setScanInd(prefix + 'IndSteady', 'wait', 'Hold steady');
+      }
+    };
   }
-  function resetScanIndicators() {
-    scanIndKey = '';
-    setScanInd('wIndHand', 'wait', 'No hand yet');
-    setScanInd('wIndLight', 'wait', 'Light —');
-    setScanInd('wIndSteady', 'wait', 'Hold steady');
+  var balanceFlashPending = false;
+  var walletInds = makeScanIndicators('w');
+  var enrolInds = makeScanIndicators('e');
+  var termInds = makeScanIndicators('t');
+  var topupInds = makeScanIndicators('u');
+  var enrolSession = B.createScanSession();
+  var topupSession = B.createScanSession();
+  function updateScanIndicators(info, frameRes) { walletInds.update(info, frameRes); }
+  function resetScanIndicators() { walletInds.reset(); }
+  /* v64: the per-surface scan pills — 'Ready' while a surface is armed
+     (preview live, waiting for the Scan tap), 'Scanning' only while a
+     tapped scan is actually running. The wallet pill predates this
+     (v58); enrolment, terminal and Add Angles now carry the same pill. */
+  function setSurfacePill(prefix, text) {
+    var t = $(prefix + 'ScanPillText');
+    if (t) t.textContent = text;
   }
   /* v58: the wallet card's state pill — 'Ready' while the view
      is armed (preview live, waiting for the Scan tap) and
@@ -5181,6 +5383,32 @@
       ? w.linkedAccounts.map(function (a) { return '<option value="' + esc(a.id) + '"' + (a.id === selectedId ? ' selected' : '') + '>' + esc(a.type) + ' — ' + esc(a.label) + '</option>'; }).join('')
       : '<option value="">No funding account linked yet — add one below</option>';
   }
+  /* v64 (Seat 3 R-UX2 + Seat 1 M-3): projected post-transaction
+     balance on the amount screens — display-only arithmetic from the
+     balance captured when the card opened and the amount as typed;
+     it authorises nothing and is never written anywhere. And the
+     Send step bar: the same transform-driven progress the enrolment
+     flow uses, advanced at the flow's existing step boundaries. */
+  var projBase = { add: 0, send: 0, pay: 0 };
+  function updateProjected(amountId, lineId, key, dir) {
+    var line = $(lineId);
+    if (!line) return;
+    var field = $(amountId);
+    var raw = field ? field.value : '';
+    var n = Number(raw);
+    if (raw === '' || !isFinite(n) || n <= 0) { line.textContent = ''; return; }
+    line.textContent = 'Balance after: ' + fmtBDT(projBase[key] + dir * n);
+  }
+  [['wAddAmount', 'wAddProjected', 'add', 1], ['wSendAmount', 'wSendProjected', 'send', -1], ['wPayAmount', 'wPayProjected', 'pay', -1]].forEach(function (cfg) {
+    var field = $(cfg[0]);
+    if (field) field.addEventListener('input', function () { updateProjected(cfg[0], cfg[1], cfg[2], cfg[3]); });
+  });
+  function setSendProgress(step) {
+    var bar = $('wSendProgressBar');
+    if (bar) bar.style.transform = 'scaleX(' + (step / 3) + ')';
+    var lbl = $('wSendProgressLabel');
+    if (lbl) lbl.textContent = step === 1 ? 'Step 1 of 3 — Receiver' : step === 2 ? 'Step 2 of 3 — Amount' : 'Step 3 of 3 — Review and confirm with your palm';
+  }
   $('wAddOpen').addEventListener('click', function () {
     var me = walletSessionPerson();
     if (!me) return;
@@ -5188,6 +5416,8 @@
     $('walletAdd').classList.remove('hidden');
     $('wAddMsg').innerHTML = '';
     $('wAddBalance').textContent = fmtBDT(B.walletEnsurePerson(me).wallet.balance);
+    projBase.add = B.walletEnsurePerson(me).wallet.balance;
+    updateProjected('wAddAmount', 'wAddProjected', 'add', 1);
     renderAddAccounts(me, null);
   });
   $('wAddBack').addEventListener('click', function () { renderWallet(); });
@@ -5224,6 +5454,7 @@
               if (!res.ok) { $('wScanMsg').innerHTML = '<div class="error">' + esc(res.error) + '</div>'; $('wScanRun').disabled = false; return; }
               return DB.put('people', res.person).then(function () {
                 Sync.noteScan({ kind: 'money-auth', profileName: fresh.name, biomId: fresh.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
+                balanceFlashPending = true;
                 hideWalletScan();
                 return renderWallet();
               }).then(function () {
@@ -5252,8 +5483,11 @@
     $('walletHome').classList.add('hidden');
     $('walletSend').classList.remove('hidden');
     $('wSendBalance').textContent = fmtBDT(B.walletEnsurePerson(me).wallet.balance);
+    projBase.send = B.walletEnsurePerson(me).wallet.balance;
+    setSendProgress(1);
     $('wSendMsg').innerHTML = '';
     $('wSendAmount').value = '';
+    updateProjected('wSendAmount', 'wSendProjected', 'send', -1);
     $('wSendReceiverLine').innerHTML = '';
     $('wSendAmountBlock').classList.add('hidden');
     $('wSendConfirm').classList.add('hidden');
@@ -5290,6 +5524,7 @@
               '<div><div class="rc-name">' + esc(out.person.name) + '</div><div class="rc-id">' + esc(out.person.id) + '</div></div>' +
               '<span class="badge ok" style="margin-left:auto">Palm verified</span></div></div>';
             $('wSendAmountBlock').classList.remove('hidden');
+            setSendProgress(2);
             $('wSendConfirm').classList.add('hidden');
             $('wSendConfirm').innerHTML = '';
             $('wSendMsg').innerHTML = '';
@@ -5301,6 +5536,7 @@
   function renderSendConfirm() {
     var me = walletSessionPerson();
     if (!me || !sendDraft.receiverId) return;
+    setSendProgress(3);
     var w = B.walletEnsurePerson(me).wallet;
     $('wSendConfirm').classList.remove('hidden');
     $('wSendConfirm').innerHTML =
@@ -5334,6 +5570,7 @@
                 Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: freshSender.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
                 var sentAmount = sendDraft.amount, sentTo = sendDraft.receiverName, sentToId = sendDraft.receiverId, sentRef = res.senderEntry.ref, newBal = res.senderEntry.balanceAfter;
                 sendDraft = { amount: null, receiverId: null, receiverName: null };
+                balanceFlashPending = true;
                 hideWalletScan();
                 return renderWallet().then(function () {
                   $('wHomeMsg').innerHTML = '<div class="success">Sent ' + fmtBDT(sentAmount) + ' of demo money to ' + esc(sentTo) + ' (' + esc(sentToId) + '). New demo balance: ' + fmtBDT(newBal) + '.<br>Reference: ' + esc(sentRef) + ' (demo reference — not a real payment).</div>';
@@ -5363,6 +5600,7 @@
   });
   $('wSendChangeReceiver').addEventListener('click', function () {
     sendDraft = { amount: null, receiverId: null, receiverName: null };
+    setSendProgress(1);
     $('wSendReceiverLine').innerHTML = '';
     $('wSendAmountBlock').classList.add('hidden');
     $('wSendConfirm').classList.add('hidden');
@@ -5389,6 +5627,8 @@
     $('walletHome').classList.add('hidden');
     $('walletPay').classList.remove('hidden');
     $('wPayBalance').textContent = fmtBDT(B.walletEnsurePerson(me).wallet.balance);
+    projBase.pay = B.walletEnsurePerson(me).wallet.balance;
+    updateProjected('wPayAmount', 'wPayProjected', 'pay', -1);
     $('wPayMsg').innerHTML = '';
     var hasStores = $('wPayStore').options.length > 0;
     $('wPayEmpty').classList.toggle('hidden', hasStores);
@@ -5437,6 +5677,7 @@
                   var payPts = Math.floor(tx.amount / 10);
                   if (payPts > 0) fresh.loyaltyPoints = (fresh.loyaltyPoints || 0) + payPts;
                   return DB.put('people', fresh).then(function () {
+                    balanceFlashPending = true;
                     hideWalletScan();
                     return renderWallet().then(function () {
                       $('wHomeMsg').innerHTML = '<div class="success">Biom Pay complete — ' + fmtBDT(amount) + ' of demo money at ' + esc(store) + '.' +
@@ -5574,8 +5815,8 @@
         $('acSecBody').innerHTML =
           firstLine + '<br>' +
           '<b>Scan sync:</b> ' + (Sync.state().on && Sync.state().configured
-            ? 'ON — scan records and palm codes also sync in the background to the secure TSG Biom vault, sealed under this device\'s vault key once the vault is set up, so your scans stay backed up. The palm image itself is never sent — there is no image in what syncs. Sync settings live in owner mode.'
-            : 'OFF — the device owner has switched sync off (owner mode → More → Scan Sync), so nothing about your palm leaves this device. When sync is on, scan records and palm codes sync to the secure TSG Biom vault, sealed under this device\'s vault key once the vault is set up; the palm image itself is never sent.') + '<br>' +
+            ? 'ON — scan records and palm codes also sync in the background to the TSG Biom server, sealed under this device\'s vault key once the vault is set up, so your scans stay backed up. The palm image itself is never sent — there is no image in what syncs. Sync settings live in owner mode.'
+            : 'OFF — the device owner has switched sync off (owner mode → More → Scan Sync), so nothing about your palm leaves this device. When sync is on, scan records and palm codes sync to the TSG Biom server, sealed under this device\'s vault key once the vault is set up; the palm image itself is never sent.') + '<br>' +
           '<b>Registered palm:</b> ' + (hand ? (hand === 'left' ? 'Left' : 'Right') + ' hand' : 'hand not recorded') + '<br>' +
           '<b>Money scans:</b> Add Money, Send Money and Biom Pay use the strict money rule — a two-frame confirmation that must clearly beat every other enrolled palm.<br>' +
           '<span style="color:var(--muted)">' + (ownerUi ? 'Erase everything on this device from More → Delete All Data.' : 'Only the device owner can erase this device (owner mode → More → Delete All Data).') + '</span>';
@@ -5588,9 +5829,14 @@
   $('acRowHelp').addEventListener('click', function () { go('more'); });
   $('acLogout').addEventListener('click', function () { closeWalletSession(); go('wallet'); });
   document.querySelectorAll('[data-acct-toggle]').forEach(function (b) {
+    b.setAttribute('aria-expanded', 'false');
     b.addEventListener('click', function () {
       var d = $('acDetail-' + b.dataset.acctToggle);
-      if (d) d.classList.toggle('hidden');
+      if (d) {
+        d.classList.toggle('hidden');
+        /* v64 (Seat 1 A-1): expansion state is published, not visual-only. */
+        b.setAttribute('aria-expanded', d.classList.contains('hidden') ? 'false' : 'true');
+      }
     });
   });
 
@@ -5599,6 +5845,8 @@
      presentation wiring over the existing flows. */
   $('wBalEye').addEventListener('click', function () {
     balanceHidden = !balanceHidden;
+    /* v64 (Seat 1 A-1): pressed = the balance is hidden. */
+    $('wBalEye').setAttribute('aria-pressed', balanceHidden ? 'true' : 'false');
     var me = walletSessionPerson();
     if (me) renderWalletHome(me);
   });
@@ -5635,7 +5883,13 @@
     var input = $(group.dataset.chips);
     group.querySelectorAll('[data-amt]').forEach(function (chip) {
       chip.addEventListener('click', function () {
-        if (input) { input.value = chip.dataset.amt; input.focus(); }
+        if (input) {
+          input.value = chip.dataset.amt;
+          input.focus();
+          /* v64: a chip tap is an amount entry like any other — the
+             projected-balance lines listen for 'input'. */
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
       });
     });
   });
@@ -5644,16 +5898,17 @@
   function renderRegistry() {
     var q = ($('registrySearch').value || '').toLowerCase();
     return DB.all('people').then(function (people) {
-      var rows = people.filter(function (p) {
+      var filteredPeople = people.filter(function (p) {
         return !q || p.name.toLowerCase().indexOf(q) >= 0 || p.id.toLowerCase().indexOf(q) >= 0 || (p.phone || '').indexOf(q) >= 0;
-      }).map(function (p) {
-        return '<tr><td><b>' + esc(p.name) + '</b>' + (p.owner === true ? ' <span class="badge ok">Owner</span>' : '') + '<br><span style="color:var(--muted)">' + esc(p.phone || '') + '</span>' + (p.loyaltyPoints ? '<br><span style="color:var(--muted)">Loyalty: ' + p.loyaltyPoints + ' pts</span>' : '') + '</td>' +
+      });
+      var rows = filteredPeople.map(function (p) {
+        return '<tr><td><b>' + esc(p.name) + '</b>' + (p.owner === true ? ' <span class="badge ok">Owner</span>' : '') + '<br><span style="color:var(--muted)">' + esc(p.phone || '') + '</span>' + (p.loyaltyPoints ? '<br><span style="color:var(--muted)">Loyalty: ' + Number(p.loyaltyPoints || 0) + ' pts</span>' : '') + '</td>' +
           '<td>' + esc(p.id) + '</td><td>' + esc(p.type) + '<br><span style="color:var(--muted)">' + esc(p.store) + '</span></td>' +
           '<td>' + (personHasMethod(p) ? '<span class="badge ok">Enrolled</span>' : (B.palmprintProfileFormat(p.palmProfile) === 'legacy' ? '<span class="badge bad">Palm re-scan needed</span>' : '<span class="badge bad">Not enrolled</span>')) + (B.palmnetNeedsScan(p.palmProfile) ? '<br><span class="badge warn">Neural scan needed</span>' : '') + (personHasMethod(p) && B.palmProfileHand(p.palmProfile) ? '<br><span style="color:var(--muted)">' + (B.palmProfileHand(p.palmProfile) === 'left' ? 'Left' : 'Right') + ' palm</span>' : '') + '</td>' +
           '<td>' + (p.walletProvider ? esc(p.walletProvider) + '<br>' + esc(B.maskWalletNumber(p.walletNumber)) : '—') + '</td>' +
           '<td><button class="btn small" data-verify="' + esc(p.id) + '">Verify</button>' + (personHasMethod(p) ? ' <button class="btn small" data-topup="' + esc(p.id) + '">Add Angles</button>' : '') + (B.palmprintProfileFormat(p.palmProfile) === 'legacy' ? ' <button class="btn small" data-topup="' + esc(p.id) + '">Re-scan Palm</button>' : '') + (B.palmnetNeedsScan(p.palmProfile) ? ' <button class="btn small" data-neural="' + esc(p.id) + '">Neural Scan</button>' : '') + ' <button class="btn small" data-owner-toggle="' + esc(p.id) + '">' + (p.owner === true ? 'Remove owner' : 'Make owner') + '</button></td></tr>';
       }).join('');
-      $('registryBody').innerHTML = rows || '<tr><td colspan="6" style="color:var(--muted)">No enrollments on this device yet.</td></tr>';
+      $('registryBody').innerHTML = rows || '<tr><td colspan="6" class="emptycell">No enrollments on this device yet. New registrations appear here as soon as their palm is enrolled.</td></tr>';
       document.querySelectorAll('[data-verify]').forEach(function (b) {
         b.addEventListener('click', function () {
           go('terminal');
@@ -5687,9 +5942,50 @@
           });
         });
       });
+      /* v66: Registry list–detail — selecting a row (outside its
+         action buttons) opens the detail panel; grant/revoke in
+         the panel routes through the row's own toggle button, so
+         the behaviour is the existing one, unchanged. */
+      document.querySelectorAll('#registryBody tr').forEach(function (tr, i) {
+        tr.addEventListener('click', function (ev) {
+          if (ev.target && ev.target.closest && ev.target.closest('button')) return;
+          if (filteredPeople[i]) showRegistryDetail(filteredPeople[i]);
+        });
+      });
     });
   }
+  function showRegistryDetail(p) {
+    var panel = $('registryDetail');
+    if (!panel || !p) return;
+    var hand = B.palmProfileHand(p.palmProfile);
+    $('registryDetailName').textContent = p.name;
+    $('registryDetailBody').innerHTML =
+      '<b>Biom ID:</b> ' + esc(p.id) + '<br>' +
+      '<b>Phone:</b> ' + esc(p.phone || '') + '<br>' +
+      '<b>Type / Store:</b> ' + esc(p.type || '') + ' / ' + esc(p.store || '') + '<br>' +
+      '<b>Palm:</b> ' + (personHasMethod(p) ? 'Enrolled' + (hand ? ' — ' + (hand === 'left' ? 'Left' : 'Right') + ' palm' : '') : 'Not enrolled') + '<br>' +
+      '<b>Wallet:</b> ' + (p.walletProvider ? esc(p.walletProvider) + ' — ' + esc(B.maskWalletNumber(p.walletNumber)) : '—') + '<br>' +
+      '<b>Loyalty:</b> <span class="num">' + Number(p.loyaltyPoints || 0).toLocaleString() + ' pts</span><br>' +
+      '<b>Owner:</b> ' + (p.owner === true ? 'Owner of this device' : 'Not an owner');
+    var btn = $('registryDetailOwnerBtn');
+    btn.textContent = p.owner === true ? 'Remove owner' : 'Make owner';
+    btn.dataset.personId = p.id;
+    panel.classList.remove('hidden');
+  }
   $('registrySearch').addEventListener('input', renderRegistry);
+  $('registryDetailClose').addEventListener('click', function () { $('registryDetail').classList.add('hidden'); });
+  $('registryDetailOwnerBtn').addEventListener('click', function () {
+    var id = $('registryDetailOwnerBtn').dataset.personId;
+    var rowBtn = document.querySelector('[data-owner-toggle="' + id + '"]');
+    if (rowBtn) rowBtn.click();
+    setTimeout(function () {
+      DB.all('people').then(function (fresh) {
+        var p = fresh.find(function (x) { return x.id === id; });
+        if (p) showRegistryDetail(p);
+      });
+    }, 350);
+  });
+  $('activityDetailClose').addEventListener('click', function () { $('activityInspector').classList.add('hidden'); });
 
   /* ---------------- Add-angles top-up (v43; v45 format) ----------
      An existing profile gains diverse sharp templates WITHOUT
@@ -5747,6 +6043,10 @@
     recoveryVia = viaRecovery ? 'wallet' : null;
     reregPerson = null;
     if ($('topRereg')) $('topRereg').classList.add('hidden');
+    /* v64 (Seat 1 C-1): the Back label and destination are face-aware —
+       this page is reachable from My Account in customer mode, where
+       "Back to Registry" named a surface the customer cannot see. */
+    if ($('topBack')) $('topBack').textContent = FaceMode.isOwner() ? 'Back to Registry' : 'Back to My Account';
     DB.all('people').then(function (people) {
       var person = people.find(function (p) { return p.id === personId; }) || null;
       if (!person) return;
@@ -5810,14 +6110,18 @@
     topupBusy = true; palmScanBusy = true;
     $('topCapture').disabled = true;
     $('topMsg').innerHTML = '';
-    var control = { cancelled: false };
+    var control = { cancelled: false, onFrame: function (info) { var fr = topupSession.frame({ hasHand: info.hasHand, pose: info.pose }); topupInds.update(info, fr); } };
     topupControl = control;
+    topupSession.enter();
+    topupInds.reset();
+    setSurfacePill('u', 'Scanning');
     streamEnrolPalm($('topVideo'), $('topStatus'), null, function () {
       camFacing.topup = camFacing.topup === 'user' ? 'environment' : 'user';
       syncCamToggle('topup');
       return Cam.start($('topVideo'), camFacing.topup, 'topup');
     }, control).then(function (res) {
       topupBusy = false; palmScanBusy = false;
+      setSurfacePill('u', 'Ready');
       $('topCapture').disabled = false;
       if (res.stopped) { $('topStatus').textContent = 'Capture stopped.'; return; }
       if (res.spoof && res.spoof.spoof) {
@@ -6206,7 +6510,7 @@
 
   $('topStart').addEventListener('click', function () { startTopupCamera(); });
   $('topCapture').addEventListener('click', runTopupCapture);
-  $('topBack').addEventListener('click', function () { recoveryPersonId = null; recoveryVia = null; reregPerson = null; if ($('topRereg')) $('topRereg').classList.add('hidden'); go('registry'); });
+  $('topBack').addEventListener('click', function () { recoveryPersonId = null; recoveryVia = null; reregPerson = null; if ($('topRereg')) $('topRereg').classList.add('hidden'); go(FaceMode.isOwner() ? 'registry' : 'account'); });
   camRestarters.topup = function () { startTopupCamera(); };
 
   function renderFieldPanel() {
@@ -6464,6 +6768,10 @@
     var owner = FaceMode.isOwner();
     document.body.classList.toggle('mode-owner', owner);
     document.body.classList.toggle('mode-customer', !owner);
+    /* v66: density modes — comfortable on the customer face,
+       compact on the owner face (House System v2, one component
+       set, two token densities). */
+    document.body.dataset.density = owner ? 'compact' : 'comfortable';
     document.querySelectorAll('#mainNav button').forEach(function (b) {
       var p = b.dataset.page;
       var show = owner

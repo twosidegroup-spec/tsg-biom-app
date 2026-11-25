@@ -117,9 +117,9 @@ check('BIND account limits come from the enrolment limits on the record',
 check('BIND home linked wallets render the real linked accounts + the masked Biom Pay wallet',
   appSrc.indexOf('w.linkedAccounts.map') !== -1 && appSrc.indexOf('B.maskWalletNumber(me.walletNumber)') !== -1 &&
   appSrc.indexOf('Linked</span>') !== -1);
-check('BIND home activity renders the real ledger with correct signs (add/received +, send −)',
+check('BIND home activity renders the real ledger with correct signs (add/received +, send −; v66 named pin change: amounts carry the .num tabular style)',
   appSrc.indexOf('w.statement.slice().reverse()') !== -1 &&
-  appSrc.indexOf('<div class="amt in">+ ') !== -1 && appSrc.indexOf('<div class="amt out">− ') !== -1);
+  appSrc.indexOf('<div class="amt in num">+ ') !== -1 && appSrc.indexOf('<div class="amt out num">− ') !== -1);
 check('BIND empty states are honest lines, not invented rows',
   appSrc.indexOf('No activity yet — add or send demo money and it will appear here.') !== -1 &&
   appSrc.indexOf('No wallet linked yet — Add Money will ask you to link a funding account.') !== -1);

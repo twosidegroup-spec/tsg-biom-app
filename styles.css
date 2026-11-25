@@ -1,15 +1,48 @@
 /* TSG Biom — light design system, solid colours only (v33, 2026-11-23).
-   White and very light neutral surfaces, one solid teal accent used
-   consistently, solid green pay action, hairline borders, fixed
-   bottom navigation. No gradients anywhere. */
+   White and very light neutral surfaces, one solid house-blue accent
+   used consistently, solid green pay action, hairline borders, fixed
+   bottom navigation. No gradients anywhere.
+   v64 (Seat 1 A-5): --muted is FROZEN as the lightest text
+   grey permitted on tinted backgrounds — it sits at ~4.6:1 on --bg;
+   any lighter grey on a tint breaks WCAG AA for normal text. */
 :root{
-  --bg:#f3f6f6; --bg2:#eaf1f1; --surface:#ffffff; --surface2:#ffffff;
-  --line:#dfe9e9; --line2:#e9f0f0; --text:#10201e; --muted:#5d7370;
-  --teal:#075e55; --teal-dark:#054a43; --accent:#075e55; --accent2:#0b7a6e;
+  /* v66 House System v2 — the SINGLE token source for the app.
+     Blue ramp seeded from the dashboard (tsg-biom-control):
+     --blue-950 #071c3f ... --blue-600 #1663d9, primary #0b4ea2.
+     The v33-v65 teal family is deleted entirely. --muted (#43536e,
+     the dashboard's ink-soft) keeps the v64 frozen discipline: it
+     is the lightest text grey permitted on tinted backgrounds and
+     sits well above 4.5:1 on --bg (#f2f5fb). */
+  --blue-950:#071c3f; --blue-900:#0a2a5e; --blue-800:#0b3d91;
+  --blue:#0b4ea2; --blue-dark:#083a7c; --blue-600:#1663d9;
+  --blue-100:#dbe7fb; --blue-50:#eef3fd; --blue-soft:#e8f1fb;
+  --bg:#f2f5fb; --bg2:#e8eef8; --surface:#ffffff; --surface2:#ffffff;
+  --line:#d7e0ef; --line2:#e3eaf6; --text:#12233f; --ink:#12233f; --muted:#43536e;
+  --accent:#0b4ea2; --accent2:#1663d9;
   --green:#1db87a;
-  --danger:#d63a3a; --warn:#9a6a12; --ok:#0c7a4d;
-  --radius:22px;
-  --shadow:0 10px 30px rgba(6,60,54,.08), 0 2px 6px rgba(6,60,54,.05);
+  --danger:#d63a3a; --warn:#7c5507; --ok:#0c7a4d;
+  /* Type scale (House System v2): Display 40/32, Title 24/20,
+     Heading 17/15, Body 15 customer / 14 compact, Caption 12.5,
+     Micro 11.5. */
+  --fs-display:40px; --fs-display-sm:32px; --fs-title:24px; --fs-title-sm:20px;
+  --fs-heading:17px; --fs-heading-sm:15px; --fs-body:15px; --fs-body-compact:14px;
+  --fs-caption:12.5px; --fs-micro:11.5px;
+  /* Spacing: 4pt scale. Radius scale 12/16/20/28 + full pill. */
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-6:24px; --sp-8:32px; --sp-12:48px;
+  --radius:20px; --radius-row:12px; --radius-card-compact:16px; --radius-card:20px; --radius-hero:28px; --radius-pill:999px;
+  /* Elevation: borders first; L1 balance hero only; L2 modals,
+     drawers and sheets. */
+  --shadow:none;
+  --shadow-l1:0 16px 34px rgba(8,58,124,.30), 0 3px 8px rgba(8,58,124,.18);
+  --shadow-l2:0 24px 60px rgba(7,28,63,.28), 0 4px 14px rgba(7,28,63,.14);
+  /* Density (comfortable default; compact under
+     [data-density="compact"] / the owner face). */
+  --density-pad:20px; --density-row:56px; --density-section:32px;
+  /* v64 motion tokens (Seat 1 M-1 / Seat 3 R-MOT1, Material 3):
+     state/press changes 180ms, page entrances 300ms, nothing over
+     400ms; transitions animate transform/opacity ONLY — a transition
+     must never target width/height/top/left/margin. */
+  --dur-state:180ms; --dur-page:300ms; --ease-std:cubic-bezier(0.2,0,0,1);
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
@@ -17,9 +50,9 @@ body{background:var(--bg);color:var(--text);
   font-family:"Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif;min-height:100vh}
 a{color:var(--accent2)}
 button{font-family:inherit}
-.topbar{position:sticky;top:0;z-index:40;background:var(--teal);
+.topbar{position:sticky;top:0;z-index:40;background:var(--blue);
   color:#fff;padding:16px 18px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
-  border-radius:0 0 26px 26px;box-shadow:0 12px 28px rgba(6,60,54,.22)}
+  border-radius:0 0 26px 26px;box-shadow:0 12px 28px rgba(7,28,63,.22)}
 .brand{display:flex;align-items:center;gap:12px;font-weight:800;letter-spacing:.4px;font-size:21px}
 .brand img{width:42px;height:42px;border-radius:12px;background:#fff;padding:2px}
 .brand small{display:block;font-weight:600;color:rgba(255,255,255,.78);letter-spacing:1.8px;font-size:10px;margin-top:2px}
@@ -27,25 +60,25 @@ button{font-family:inherit}
 .topbar .btn{background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.45)}
 .topbar .btn:hover{border-color:#fff}
 .btn{background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:14px;
-  padding:10px 16px;font-size:14px;font-weight:700;cursor:pointer;box-shadow:0 2px 6px rgba(6,60,54,.05)}
+  padding:10px 16px;font-size:14px;font-weight:700;cursor:pointer;box-shadow:0 2px 6px rgba(7,28,63,.05)}
 .btn:hover{border-color:var(--accent2)}
-.btn.primary{background:var(--teal);border:none;color:#fff;box-shadow:0 8px 20px rgba(7,94,85,.28)}
-.btn.primary:hover{background:var(--teal-dark)}
+.btn.primary{background:var(--blue);border:none;color:#fff;box-shadow:0 8px 20px rgba(11,78,162,.28)}
+.btn.primary:hover{background:var(--blue-dark)}
 .btn.danger{border-color:#f0caca;color:var(--danger);background:#fff}
 .btn.danger.solid{background:var(--danger);border-color:var(--danger);color:#fff}
 .btn.danger.solid:disabled{background:#e8b4b4;border-color:#e8b4b4;color:#fff}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 .btn.small{padding:7px 12px;font-size:13px}
 .nav{position:fixed;left:0;right:0;bottom:0;z-index:50;background:#fff;
-  border-top:1px solid var(--line2);box-shadow:0 -8px 24px rgba(6,60,54,.08);
+  border-top:1px solid var(--line2);box-shadow:0 -8px 24px rgba(7,28,63,.08);
   display:flex;gap:2px;padding:8px 10px calc(8px + env(safe-area-inset-bottom));
   max-width:1180px;margin:0 auto}
 .nav button{flex:1;background:transparent;border:none;color:var(--muted);font-weight:700;
   padding:6px 2px 4px;border-radius:14px;cursor:pointer;font-size:11.5px;
   display:flex;flex-direction:column;align-items:center;gap:3px;min-height:56px;justify-content:center}
 .nav button svg{width:23px;height:23px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
-.nav button.active{color:var(--teal);background:#eef5f4}
-.nav button.active svg{stroke:var(--teal)}
+.nav button.active{color:var(--blue);background:#eef3fd}
+.nav button.active svg{stroke:var(--blue)}
 main{max-width:1180px;margin:0 auto;padding:20px 16px 130px}
 section.page{display:none}
 section.page.active{display:block}
@@ -63,36 +96,36 @@ h2{font-size:19px;margin:0 0 10px;color:var(--text)}
 label{display:block;font-size:13px;font-weight:700;color:var(--muted);margin:12px 0 6px}
 input,select{width:100%;background:#fbfcfc;border:1px solid var(--line);color:var(--text);
   border-radius:14px;padding:12px 14px;font-size:15px}
-input:focus,select:focus{outline:2px solid rgba(11,122,110,.35);border-color:var(--accent2)}
+input:focus,select:focus{outline:2px solid rgba(22,99,217,.35);border-color:var(--accent2)}
 .row{display:flex;gap:12px;flex-wrap:wrap}
 .row>div{flex:1;min-width:180px}
 .steps{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap}
 .steps span{padding:6px 12px;border-radius:999px;border:1px solid var(--line);color:var(--muted);font-size:13px;font-weight:700;background:#fff}
-.steps span.on{color:#fff;background:var(--teal);border-color:var(--teal)}
+.steps span.on{color:#fff;background:var(--blue);border-color:var(--blue)}
 .steps span.done{color:var(--ok);border-color:var(--ok);background:#e2f6ec}
 .camwrap{position:relative;background:#000;border-radius:24px;overflow:hidden;border:1px solid var(--line);box-shadow:var(--shadow)}
 .camwrap video{width:100%;display:block;min-height:260px;object-fit:cover;background:#000}
 .camwrap video.mirror{transform:scaleX(-1)}
 .burstring{position:absolute;top:14px;right:14px;width:64px;height:64px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:conic-gradient(var(--accent) 0deg,var(--line) 0deg)}
 .burstring span{width:48px;height:48px;border-radius:50%;background:#fff;color:var(--text);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700}
-.camtoggle{display:inline-flex;gap:4px;margin:12px 0 4px;border:1px solid var(--line);border-radius:999px;padding:4px;background:#eef3f3}
+.camtoggle{display:inline-flex;gap:4px;margin:12px 0 4px;border:1px solid var(--line);border-radius:999px;padding:4px;background:#eef3fd}
 .camtoggle button{background:transparent;border:none;color:var(--muted);font-weight:700;padding:7px 14px;border-radius:999px;cursor:pointer;font-size:13px}
-.camtoggle button.on{background:var(--teal);color:#fff;box-shadow:0 4px 10px rgba(7,94,85,.25)}
+.camtoggle button.on{background:var(--blue);color:#fff;box-shadow:0 4px 10px rgba(11,78,162,.25)}
 .camnote{color:var(--muted);font-size:13px;margin:4px 0 0;line-height:1.5}
 .camtoggle.flashtoggle{margin-top:8px}
 .camtoggle button:disabled{opacity:.45;cursor:default;box-shadow:none}
 .flashnote:empty{display:none}
 .checkrow{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
 .checkrow .check{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:10px 14px;font-size:14px;font-weight:700;color:var(--text);margin:0;cursor:pointer}
-.checkrow .check input{width:auto;accent-color:var(--teal);margin:0}
+.checkrow .check input{width:auto;accent-color:var(--blue);margin:0}
 .steps span.skipped{opacity:.38;text-decoration:line-through}
-.camstatus{position:absolute;left:10px;bottom:10px;background:rgba(4,32,28,.78);color:#eafffa;padding:7px 11px;border-radius:9px;font-size:13px}
+.camstatus{position:absolute;left:10px;bottom:10px;background:rgba(7,28,63,.78);color:#eaf2ff;padding:7px 11px;border-radius:9px;font-size:13px}
 .notice{border:1px solid #ecd9a8;color:#7a5a0e;border-radius:14px;padding:12px 14px;font-size:14px;line-height:1.5;background:#fdf6e0}
 .error{border:1px solid #f0caca;color:#8f1d1d;border-radius:14px;padding:12px 14px;font-size:14px;line-height:1.5;background:#fdf0f0}
 .success{border:1px solid #b5e6cd;color:#0a5c40;border-radius:14px;padding:12px 14px;font-size:14px;line-height:1.5;background:#ecf9f2}
 table{width:100%;border-collapse:collapse;font-size:14px}
 th,td{text-align:left;padding:11px 8px;border-bottom:1px solid var(--line2);vertical-align:top}
-th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.6px;background:#f7fafa}
+th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.6px;background:#f7f9fd}
 .kv{font-size:14px;line-height:1.9}
 .kv b{color:var(--muted);font-weight:600}
 .modegrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
@@ -100,14 +133,18 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.6p
 .modecard p{color:var(--muted);font-size:14px;line-height:1.55;margin:0 0 12px}
 .footer{color:var(--muted);font-size:12px;text-align:center;padding:24px 16px 130px;line-height:1.7}
 .hidden{display:none!important}
-.progress{height:9px;background:#e6eeee;border-radius:99px;overflow:hidden;border:none}
-.progress i{display:block;height:100%;background:var(--teal);width:0%;border-radius:99px}
+.progress{height:9px;background:#e3eaf6;border-radius:99px;overflow:hidden;border:none}
+/* v64 (Seat 1 M-3): progress animates via transform scaleX — width is a
+   layout property and is never transitioned. JS sets scaleX per step;
+   the resting state is step 1 of 3. */
+.progress i{display:block;height:100%;background:var(--blue);width:100%;border-radius:99px;
+  transform:scaleX(.3333);transform-origin:left center;transition:transform var(--dur-page) var(--ease-std)}
 /* --- Desk (home): two big actions, compact stats, secondary links --- */
 .desk-actions{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:6px 0 16px}
 .bigaction{border:none;border-radius:24px;padding:26px 22px;text-align:left;cursor:pointer;
   min-height:132px;display:flex;flex-direction:column;gap:8px;justify-content:center;box-shadow:var(--shadow)}
-.bigaction.register{background:var(--teal);color:#fff}
-.bigaction.pay{background:var(--green);color:#06382f}
+.bigaction.register{background:var(--blue);color:#fff}
+.bigaction.pay{background:var(--green);color:#0b3d24}
 .bigaction .ba-title{font-size:24px;font-weight:800}
 .bigaction .ba-sub{font-size:14px;font-weight:600;opacity:.85;line-height:1.45}
 .statsstrip{display:flex;gap:0;background:var(--surface);border:1px solid var(--line2);border-radius:var(--radius);padding:16px 6px;flex-wrap:wrap;box-shadow:var(--shadow)}
@@ -135,18 +172,18 @@ select.personlist option{padding:12px 10px}
 .resultbig .meas{font-size:14px;margin-top:10px;line-height:1.55;opacity:.92}
 .resultbig.ok{background:#e8f9f1;border:2px solid var(--green);color:#0a5c40}
 .resultbig.bad{background:#fdeeee;border:2px solid #e5534b;color:#8f1d1d}
-.receipt{background:#fff;border:2px solid var(--teal);border-radius:22px;padding:22px;margin-top:14px;box-shadow:var(--shadow)}
-.receipt .rhead{font-size:21px;font-weight:800;margin-bottom:10px;color:var(--teal)}
+.receipt{background:#fff;border:2px solid var(--blue);border-radius:22px;padding:22px;margin-top:14px;box-shadow:var(--shadow)}
+.receipt .rhead{font-size:21px;font-weight:800;margin-bottom:10px;color:var(--blue)}
 /* --- Demo wallet (v42): profile cards, balance box, statement --- */
 .profilecards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}
 .profilecard{background:#fbfcfc;border:1px solid var(--line);border-radius:16px;padding:14px 16px;text-align:left;cursor:pointer;color:var(--text);min-height:48px}
 .profilecard:hover{border-color:var(--accent2)}
 .profilecard .pc-name{display:block;font-size:16px;font-weight:800}
-.profilecard .pc-id{display:block;color:var(--teal);font-weight:700;font-size:13px;margin-top:2px}
+.profilecard .pc-id{display:block;color:var(--blue);font-weight:700;font-size:13px;margin-top:2px}
 .profilecard .pc-sub{display:block;color:var(--muted);font-size:12.5px;margin-top:4px;line-height:1.45}
-.balancebox{background:#eef5f4;border:1px solid var(--line);border-radius:18px;padding:18px;margin-top:14px;text-align:center}
+.balancebox{background:#eef3fd;border:1px solid var(--line);border-radius:18px;padding:18px;margin-top:14px;text-align:center}
 .balancebox .ballabel{color:var(--muted);font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:1px}
-.balancebox .balnum{font-size:38px;font-weight:800;color:var(--teal);margin-top:4px}
+.balancebox .balnum{font-size:38px;font-weight:800;color:var(--blue);margin-top:4px}
 .balancebox .balnote{color:var(--warn);font-size:13px;font-weight:700;margin-top:4px}
 .stmtrow{display:flex;justify-content:space-between;gap:12px;padding:10px 2px;border-bottom:1px solid var(--line2);font-size:14px}
 .stmtrow .smeta{color:var(--muted);font-size:12.5px;line-height:1.5}
@@ -166,10 +203,9 @@ input,select{padding:14px;font-size:16px;min-height:52px}
    activity rows, My Account, corner-bracket scan frame with live
    status indicators, amount chips. Solid colours only, one stroke
    icon family (the nav set's), soft shadows, calm transitions. */
-:root{ --blue:#0b4ea2; --blue-dark:#083a7c; --blue-soft:#e8f1fb; }
-section.page.active{animation:pagein .3s ease both}
+section.page.active{animation:pagein var(--dur-page) var(--ease-std) both}
 @keyframes pagein{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-.btn,.qa-tile,.chip,.profilecard,.setrow{transition:border-color .18s ease,background .18s ease,box-shadow .18s ease,transform .18s ease}
+.btn,.qa-tile,.chip,.profilecard,.setrow{transition:border-color var(--dur-state) var(--ease-std),background var(--dur-state) var(--ease-std),box-shadow var(--dur-state) var(--ease-std),transform var(--dur-state) var(--ease-std)}
 .balcard{background:var(--blue);color:#fff;border-radius:26px;padding:22px 22px 20px;
   box-shadow:0 16px 34px rgba(8,58,124,.30),0 3px 8px rgba(8,58,124,.18)}
 .balcard-top{display:flex;align-items:center;justify-content:space-between}
@@ -181,7 +217,7 @@ section.page.active{animation:pagein .3s ease both}
 .balcard .ballabel{color:rgba(255,255,255,.75);font-size:13px;font-weight:700;margin-top:16px}
 .balrow{display:flex;align-items:center;gap:12px;margin-top:2px}
 .balcard .balnum{font-size:40px;font-weight:800;letter-spacing:.2px;line-height:1.1}
-.eyebtn{background:transparent;border:none;color:rgba(255,255,255,.9);cursor:pointer;padding:8px;border-radius:10px;display:flex}
+.eyebtn{background:transparent;border:none;color:rgba(255,255,255,.9);cursor:pointer;padding:10px;border-radius:10px;display:flex;min-width:44px;min-height:44px;align-items:center;justify-content:center}
 .eyebtn svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .eyebtn.off{color:rgba(255,255,255,.45)}
 .balholder{font-size:17px;font-weight:700;margin-top:12px}
@@ -222,7 +258,7 @@ section.page.active{animation:pagein .3s ease both}
 .balanceline b{color:var(--text)}
 .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 .chip{background:var(--blue-soft);border:1px solid #c9def6;color:var(--blue-dark);border-radius:999px;
-  padding:9px 15px;font-size:13.5px;font-weight:700;cursor:pointer;min-height:40px}
+  padding:9px 15px;font-size:13.5px;font-weight:700;cursor:pointer;min-height:44px}
 .chip:hover{border-color:var(--blue)}
 .feerow{display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--line2);
   border-bottom:1px solid var(--line2);padding:11px 2px;margin-top:16px;font-size:14.5px}
@@ -230,7 +266,7 @@ section.page.active{animation:pagein .3s ease both}
 .recvcard{border:1px solid var(--line);border-radius:18px;padding:16px;background:#fbfcfc}
 .recvcard .rc-head{display:flex;align-items:center;gap:12px}
 .recvcard .rc-name{font-size:16.5px;font-weight:800}
-.recvcard .rc-id{color:var(--teal);font-weight:700;font-size:13px}
+.recvcard .rc-id{color:var(--blue);font-weight:700;font-size:13px}
 .recvcard .rc-rows{margin-top:12px;font-size:14.5px;line-height:1.9}
 .recvcard .rc-rows b{color:var(--muted);font-weight:600}
 /* Palm scan: corner brackets + live indicators (no ring — free-form) */
@@ -245,16 +281,16 @@ section.page.active{animation:pagein .3s ease both}
 .scanpill-dot{width:8px;height:8px;border-radius:50%;background:var(--blue);animation:pulse 1.6s ease infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 .scaninds{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-.scanind{display:inline-flex;align-items:center;gap:7px;background:#f4f7f7;border:1px solid var(--line2);
+.scanind{display:inline-flex;align-items:center;gap:7px;background:#f2f5fb;border:1px solid var(--line2);
   border-radius:999px;padding:8px 13px;font-size:13px;font-weight:700;color:var(--muted)}
-.scanind .dot{width:9px;height:9px;border-radius:50%;background:#b9c6c4;flex:none}
+.scanind .dot{width:9px;height:9px;border-radius:50%;background:#b7c4da;flex:none}
 .scanind.ok{color:var(--ok)}.scanind.ok .dot{background:var(--green)}
 .scanind.warn{color:var(--warn)}.scanind.warn .dot{background:#e8a13a}
 /* My Account */
 .acctbar{display:flex;align-items:center;gap:12px}
 .acctbar h1{margin:8px 0}
 .backbtn{width:44px;height:44px;border-radius:50%;border:1px solid var(--line);background:var(--surface);
-  cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--text);box-shadow:0 2px 6px rgba(6,60,54,.05);flex:none}
+  cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--text);box-shadow:0 2px 6px rgba(7,28,63,.05);flex:none}
 .backbtn svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
 .accthead{display:flex;align-items:center;gap:16px}
 .avatarbig{width:72px;height:72px;border-radius:50%;background:var(--blue);color:#fff;flex:none;
@@ -269,14 +305,14 @@ section.page.active{animation:pagein .3s ease both}
 .setrow{display:flex;align-items:center;gap:12px;width:100%;background:transparent;border:none;border-bottom:1px solid var(--line2);
   padding:14px 2px;cursor:pointer;color:var(--text);text-align:left;min-height:56px}
 .setrow:last-child{border-bottom:none}
-.setrow:hover{background:#f7fafa}
-.setic{width:38px;height:38px;border-radius:11px;background:#eef5f4;display:flex;align-items:center;justify-content:center;flex:none}
-.setic svg{width:21px;height:21px;stroke:var(--teal);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.setrow:hover{background:#f7f9fd}
+.setic{width:38px;height:38px;border-radius:11px;background:#eef3fd;display:flex;align-items:center;justify-content:center;flex:none}
+.setic svg{width:21px;height:21px;stroke:var(--blue);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .setrow.danger .setic{background:#fdeaea}.setrow.danger .setic svg{stroke:var(--danger)}
 .setrow.danger .setlbl{color:var(--danger)}
 .setlbl{font-size:15px;font-weight:700;flex:1}
 .setval{color:var(--muted);font-size:13.5px;font-weight:600;text-align:right}
-.setchev{display:flex}.setchev svg{width:18px;height:18px;stroke:#9db3b0;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.setchev{display:flex}.setchev svg{width:18px;height:18px;stroke:#93a5c0;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
 .setdetail{padding:4px 2px 14px 52px;border-bottom:1px solid var(--line2)}
 /* --- BIOM v53: scan diagnosis panel + owner recovery ---
    The measured panel under a failed scan's message (wallet card,
@@ -314,3 +350,164 @@ body.mode-customer .cust-hide{display:none!important}
 .balpoints .balpoints-lbl{font-weight:700;color:rgba(255,255,255,.8);font-size:12px;letter-spacing:.3px}
 .qa-tile:active{transform:scale(.97)}
 .balcard{transition:box-shadow .25s ease}
+
+/* ---- v64 design polish (Seat 1) ----------------------------------
+   Token hygiene (T-1): the rules above move the customer-reached
+   components (.setic icons, .rc-id, .pc-id) onto the v52 blue token
+   (v66: the whole file now runs on that one blue system). What follows: the toast as
+   a tokenised live region (A-2), one focus-visible rule (A-3), the
+   static skeleton (L-1), the layered-copy components (C-2), the
+   balance-change confirmation (L-2) and reduced motion (M-2). */
+#toast{position:fixed;left:50%;transform:translateX(-50%);bottom:22px;background:var(--surface2);
+  border:1px solid var(--accent);color:var(--text);padding:12px 18px;border-radius:12px;z-index:99;
+  font-size:14px;max-width:92vw}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,[tabindex]:focus-visible{
+  outline:2px solid var(--accent2);outline-offset:2px}
+.skelcard{height:76px;border-radius:16px;background:#eef3fd;border:1px solid var(--line2)}
+.scanprep{margin:0 0 14px}
+.scanprep p{margin:0 0 8px;font-size:14.5px;line-height:1.55;color:var(--text)}
+.scanprep p:last-child{margin-bottom:0}
+.copyfold{margin:0 0 14px;border:1px solid var(--line2);border-radius:14px;padding:10px 14px;background:#fbfcfc}
+.copyfold summary{cursor:pointer;font-weight:700;font-size:14px;color:var(--blue-dark);min-height:32px;display:flex;align-items:center}
+.copyfold .sub{margin:10px 0 4px}
+@keyframes balflash{0%{opacity:.3}100%{opacity:1}}
+.balflash{animation:balflash var(--dur-page) var(--ease-std)}
+.emptycell{color:var(--muted);border:1px dashed var(--line);border-radius:12px;padding:14px 16px!important;background:#fbfcfc}
+/* Reduced motion (M-2, closes the motion half of R-33): page entrances
+   become opacity-only, the scan pulse stops, and durations collapse so
+   state changes are effectively instant while JS end-events still fire. */
+@media (prefers-reduced-motion: reduce){
+  section.page.active{animation:pagein-reduced var(--dur-page) linear both}
+  .scanpill-dot{animation:none}
+  .balflash{animation:none}
+  *,*::before,*::after{transition-duration:.01ms!important;animation-duration:.01ms!important}
+}
+@keyframes pagein-reduced{from{opacity:0}to{opacity:1}}
+
+/* ---- v66 House System v2 ------------------------------------------
+   Adaptive shell, density modes, per-form compositions. Presentation
+   only: every flow, step order and honest sentence is unchanged.
+   New transitions (nav state, sheet backdrop) use the v64 motion
+   tokens and are collapsed by the v64 reduced-motion block above. */
+body{font-size:var(--fs-body)}
+h1{font-size:var(--fs-title)}
+h2{font-size:var(--fs-heading)}
+.num{font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.balcard .balnum,.sstat .num,.stat .num,.amt,.balpoints,.balanceline b{font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.card{padding:var(--density-pad)}
+.setrow{min-height:var(--density-row)}
+.btn{border-radius:var(--radius-row)}
+.btn.primary{border-radius:var(--radius-pill);box-shadow:none}
+.btn.bigscan{border-radius:var(--radius-pill)}
+.balcard{border-radius:var(--radius-hero);box-shadow:var(--shadow-l1)}
+.ownerbar{background:var(--blue-950)}
+.topbar{box-shadow:none}
+.nav{box-shadow:none}
+.nav button{transition:background var(--dur-state) var(--ease-std),color var(--dur-state) var(--ease-std)}
+body[data-density="compact"]{--density-pad:14px;--density-row:44px;--density-section:24px;font-size:var(--fs-body-compact)}
+.sheet-backdrop{display:none}
+.enroll-side{display:none}
+.skelrow{height:44px;border-radius:var(--radius-row);background:var(--blue-50);border:1px solid var(--line2)}
+.actrow{cursor:pointer}
+#registryBody tr{cursor:pointer}
+
+@media (min-width:1024px){
+  /* Adaptive shell: the same #mainNav, re-formed as a 248px left
+     sidebar. Its buttons, ids, handlers and the v63 owner gating
+     (applyFaceChrome hides/shows the same buttons) are untouched —
+     owner destinations appear in the sidebar exactly when they
+     appear in the tab bar, and in owner mode the owner group is
+     pinned to the foot of the sidebar. */
+  .nav{left:0;right:auto;top:0;bottom:0;width:248px;max-width:none;margin:0;
+    flex-direction:column;align-items:stretch;justify-content:flex-start;
+    gap:6px;padding:20px 14px;background:var(--blue-950);border-top:none;
+    border-right:1px solid var(--blue-900)}
+  .nav::before{content:"TSG BIOM";color:#fff;font-weight:800;letter-spacing:1.6px;
+    font-size:17px;padding:4px 10px 0}
+  .nav::after{content:"TwoSide Group";color:var(--blue-100);font-size:var(--fs-micro);
+    letter-spacing:1.4px;padding:10px;border-top:1px solid rgba(255,255,255,.18)}
+  .nav button{flex:none;flex-direction:row;justify-content:flex-start;gap:12px;
+    min-height:48px;padding:10px 12px;font-size:14px;color:var(--blue-100);border-radius:var(--radius-row)}
+  .nav button.active{color:#fff;background:rgba(255,255,255,.14)}
+  .nav button.active svg{stroke:#fff}
+  body.mode-owner .nav button[data-page="dashboard"]{margin-top:auto}
+  .topbar{margin-left:248px;border-radius:0}
+  .ownerbar{margin-left:248px}
+  main{margin-left:248px;margin-right:0}
+  .footer{margin-left:248px}
+
+  /* Wallet home: two-pane composition. DOM order and ids are
+     unchanged; grid placement does the composition. */
+  #walletHome{display:grid;grid-template-columns:5fr 7fr;gap:16px;align-items:start;grid-auto-flow:dense}
+  #walletHome>.balcard{grid-column:1}
+  #walletHome>#wHomeMsg{grid-column:1}
+  #walletHome>.qa-grid{grid-column:2;margin-top:0;display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  #walletHome>#wCloseWallet{grid-column:2;justify-self:start}
+  #walletHome>.card{margin-top:0}
+  #wLinkedCard{grid-column:1}
+  #wActivityCard{grid-column:2}
+  #activityInspector{grid-column:2}
+  #wHomeStatement .actrow{display:grid;grid-template-columns:42px 1fr auto;align-items:center}
+
+  /* Money flows as centred desktop sheets over the dimmed wallet.
+     The backdrop is shown by :has() while a flow (or its scan
+     step) is un-hidden at desktop width; on mobile the flows stay
+     full-screen and no backdrop exists. Steps, order, bars and
+     copy are identical in both forms. */
+  .sheet-backdrop{position:fixed;inset:0;background:rgba(7,28,63,.45);z-index:80;
+    transition:opacity var(--dur-state) var(--ease-std)}
+  body:has(#page-wallet.active #walletAdd:not(.hidden)) .sheet-backdrop,
+  body:has(#page-wallet.active #walletSend:not(.hidden)) .sheet-backdrop,
+  body:has(#page-wallet.active #walletPay:not(.hidden)) .sheet-backdrop,
+  body:has(#page-wallet.active #walletScanCard:not(.hidden)) .sheet-backdrop{display:block}
+  #walletAdd:not(.hidden),#walletSend:not(.hidden),#walletPay:not(.hidden){
+    position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);
+    width:min(480px,94vw);max-height:92vh;overflow:auto;z-index:90;
+    box-shadow:var(--shadow-l2);margin:0}
+  #walletScanCard:not(.hidden){
+    position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);
+    width:min(560px,94vw);max-height:92vh;overflow:auto;z-index:91;
+    box-shadow:var(--shadow-l2);margin:0}
+
+  /* Enrolment split screen: brand + how-it-works panel left, the
+     existing form and camera stage right. Mobile keeps the
+     single column (the side panel is not rendered). */
+  .enroll-split{display:grid;grid-template-columns:340px 1fr;gap:24px;align-items:start}
+  .enroll-side{display:block;background:var(--blue-950);color:#fff;
+    border-radius:var(--radius-hero);padding:28px;position:sticky;top:24px}
+  .enroll-side-brand{font-weight:800;letter-spacing:1.6px;font-size:17px}
+  .enroll-side-brand small{display:block;font-weight:600;color:var(--blue-100);letter-spacing:1.8px;font-size:10px;margin-top:2px}
+  .enroll-side-title{color:#fff;margin:22px 0 12px}
+  .enroll-side-lines p{display:flex;gap:12px;color:var(--blue-100);font-size:14.5px;line-height:1.55}
+  .enroll-side-lines p b{color:#fff}
+  .enroll-ic{flex:none;width:38px;height:38px;border-radius:11px;background:rgba(255,255,255,.12);
+    display:flex;align-items:center;justify-content:center}
+  .enroll-ic svg{width:21px;height:21px;stroke:#fff;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+
+  /* My Account: two-column settings layout on desktop. */
+  #accountOpen{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+  #accountOpen>.accthead{grid-column:1/-1}
+  #accountOpen>.card{margin-top:0}
+
+  /* Desk console home: KPI strip over two columns — recent global
+     log left, quick counter actions right. */
+  #page-dashboard.active{display:grid;grid-template-columns:7fr 5fr;gap:16px;align-items:start}
+  #page-dashboard>h1,#page-dashboard>.sub{grid-column:1/-1}
+  #page-dashboard>.statsstrip{grid-column:1/-1;grid-row:3}
+  #page-dashboard>.desk-actions{grid-column:2;grid-row:4;margin:0}
+  #page-dashboard>.card:nth-child(6){grid-column:1;grid-row:4;margin-top:0}
+  #page-dashboard>.card:nth-child(5){grid-column:1/-1;grid-row:5;margin-top:0}
+  #page-dashboard>.desklinks{grid-column:1/-1}
+
+  /* Registry list–detail: table left, detail panel right when a
+     row is selected. Mobile keeps the table + cards behaviour. */
+  #page-registry.active:has(#registryDetail:not(.hidden)){display:grid;grid-template-columns:7fr 5fr;gap:16px;align-items:start}
+  #page-registry.active:has(#registryDetail:not(.hidden))>h1,
+  #page-registry.active:has(#registryDetail:not(.hidden))>.sub,
+  #page-registry.active:has(#registryDetail:not(.hidden))>input{grid-column:1/-1}
+  #page-registry.active:has(#registryDetail:not(.hidden))>.card{grid-column:1;margin-top:0}
+  #page-registry.active:has(#registryDetail:not(.hidden))>#registryDetail{grid-column:2;margin-top:0}
+
+  /* Skeletons per form: row-shaped on desktop. */
+  .skelcard{height:56px;border-radius:var(--radius-row)}
+}

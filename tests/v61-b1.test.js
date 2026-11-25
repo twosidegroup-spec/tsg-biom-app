@@ -358,8 +358,8 @@ async function main() {
   }
 
   /* ---------- 7. vault UX + wiring source pins ------------------- */
-  check('VERSION app is v63 and the shell is v63 (v63 named pin change)', appSrc.indexOf("APP_DATA_VERSION = 'v63'") !== -1 && swSrc.indexOf('tsg-biom-shell-v63') !== -1);
-  check('VERSION v63 is the newest chain link (v63 named pin change)', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v63');
+  check('VERSION app is v66 and the shell is v66 (v66 named pin change: design overhaul)', appSrc.indexOf("APP_DATA_VERSION = 'v66'") !== -1 && swSrc.indexOf('tsg-biom-shell-v66') !== -1);
+  check('VERSION v66 is the newest chain link (v66 named pin change: design overhaul)', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v66');
   const vaultIds = ['vaultStatus', 'vaultReport', 'vaultBanks', 'vaultSetup', 'vaultSheetSetup', 'vaultPass1', 'vaultPass2', 'vaultAckInput', 'vaultAckBtn', 'vaultSetupMsg', 'vaultActions', 'vaultConvertBtn', 'vaultShowPass', 'vaultShowBtn', 'vaultHideBtn', 'vaultSheetView', 'vaultShowMsg', 'vaultImportCode', 'vaultImportPass', 'vaultImportBtn', 'vaultImportMsg'];
   check('VAULT UX the Biom Vault card carries every control the wiring expects',
     vaultIds.every(function (id) { return htmlSrc.indexOf('id="' + id + '"') !== -1; }),

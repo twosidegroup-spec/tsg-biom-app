@@ -307,8 +307,8 @@ check('MIGRATE a store with a missing logs array keeps the people', Array.isArra
    its migration step is an adoption like v38's. A store written by
    v38 (and one written by v37, through both steps) must open under
    v39 with the person, codes and points intact and still verify. */
-check('CHAIN v63 is the newest link (v63 named pin change: the two-face step)', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v63' &&
-  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40,v41,v42,v43,v44,v45,v46,v47,v48,v49,v50,v51,v52,v53,v54,v55,v56,v57,v58,v59,v60,v61,v62,v63', B.BIOM_DATA_VERSIONS.join(','));
+check('CHAIN v66 is the newest link (v66 named pin change: the design-overhaul identity step)', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v66' &&
+  B.BIOM_DATA_VERSIONS.join(',') === 'v37,v38,v39,v40,v41,v42,v43,v44,v45,v46,v47,v48,v49,v50,v51,v52,v53,v54,v55,v56,v57,v58,v59,v60,v61,v62,v63,v64,v65,v66', B.BIOM_DATA_VERSIONS.join(','));
 const mig39 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v38', 'v39');
 check('MIGRATE v38->v39 runs the v39 step', mig39.appliedSteps.indexOf('v39') !== -1, mig39.appliedSteps.join(','));
 check('MIGRATE v38->v39 is an adoption: no store rewritten', mig39.changed === false && mig39.changedStores.length === 0,
@@ -1052,6 +1052,70 @@ const migAgain63 = B.migrateBiomData(mig63.snapshot, 'v63', 'v63');
 check('MIGRATE is idempotent at v63', migAgain63.appliedSteps.length === 0 && migAgain63.changed === false &&
   migAgain63.snapshot.people[0].wallet.balance === 450);
 
+/* ---------- v64: the design-polish + security adoption -------------
+   v64 changes no stored shape (presentation, self-hosted runtimes,
+   CSP, model hash pinning — none of it touches a record): a v63
+   store opens under v64 byte-identical, and the whole chain from
+   v37 now runs twenty-seven steps. */
+const v64Store = JSON.parse(JSON.stringify(v63Store));
+const v64Before = JSON.stringify(v64Store);
+const mig64 = B.migrateBiomData(v64Store, 'v63', 'v64');
+check('MIGRATE v63->v64 runs the v64 step', mig64.appliedSteps.indexOf('v64') !== -1, mig64.appliedSteps.join(','));
+check('MIGRATE v63->v64 is a pure adoption: persons byte-identical, nothing rewritten',
+  mig64.changed === false && JSON.stringify(mig64.snapshot) === v64Before,
+  'changed=' + mig64.changed);
+const migChain64 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v37', 'v64');
+check('MIGRATE v37->v64 runs all twenty-seven steps in order', migChain64.appliedSteps.join(',') === 'v38,v39,v40,v41,v42,v43,v44,v45,v46,v47,v48,v49,v50,v51,v52,v53,v54,v55,v56,v57,v58,v59,v60,v61,v62,v63,v64', migChain64.appliedSteps.join(','));
+check('MIGRATE v37->v64 keeps the person, gains the wallet, flags the palm',
+  migChain64.snapshot.people.length === 1 && migChain64.snapshot.people[0].loyaltyPoints === 137 &&
+  migChain64.snapshot.people[0].wallet.balance === 0 && migChain64.snapshot.people[0].palmProfile.format === 'legacy');
+const migAgain64 = B.migrateBiomData(mig64.snapshot, 'v64', 'v64');
+check('MIGRATE is idempotent at v64', migAgain64.appliedSteps.length === 0 && migAgain64.changed === false &&
+  migAgain64.snapshot.people[0].wallet.balance === 450);
+
+/* ---------- v65: the TSG Palm Engine adoption -----------------------
+   v65 changes no stored shape (the inference runtime is code, not
+   data; the embedding byte format is unchanged — parity-gated in
+   tests/v65-tsg-engine.test.js): a v64 store opens under v65
+   byte-identical, and the whole chain from v37 now runs
+   twenty-eight steps. */
+const v65Store = JSON.parse(JSON.stringify(v64Store));
+const v65Before = JSON.stringify(v65Store);
+const mig65 = B.migrateBiomData(v65Store, 'v64', 'v65');
+check('MIGRATE v64->v65 runs the v65 step', mig65.appliedSteps.indexOf('v65') !== -1, mig65.appliedSteps.join(','));
+check('MIGRATE v64->v65 is a pure adoption: persons byte-identical, nothing rewritten',
+  mig65.changed === false && JSON.stringify(mig65.snapshot) === v65Before,
+  'changed=' + mig65.changed);
+const migChain65 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v37', 'v65');
+check('MIGRATE v37->v65 runs all twenty-eight steps in order', migChain65.appliedSteps.join(',') === 'v38,v39,v40,v41,v42,v43,v44,v45,v46,v47,v48,v49,v50,v51,v52,v53,v54,v55,v56,v57,v58,v59,v60,v61,v62,v63,v64,v65', migChain65.appliedSteps.join(','));
+check('MIGRATE v37->v65 keeps the person, gains the wallet, flags the palm',
+  migChain65.snapshot.people.length === 1 && migChain65.snapshot.people[0].loyaltyPoints === 137 &&
+  migChain65.snapshot.people[0].wallet.balance === 0 && migChain65.snapshot.people[0].palmProfile.format === 'legacy');
+const migAgain65 = B.migrateBiomData(mig65.snapshot, 'v65', 'v65');
+check('MIGRATE is idempotent at v65', migAgain65.appliedSteps.length === 0 && migAgain65.changed === false &&
+  migAgain65.snapshot.people[0].wallet.balance === 450);
+
+/* ---------- v66: the design-overhaul adoption ------------------------
+   v66 changes presentation only (House System v2 tokens, adaptive
+   shell, desktop sheets, list–detail): a v65 store opens under v66
+   byte-identical, and the whole chain from v37 now runs
+   twenty-nine steps. */
+const v66Store = JSON.parse(JSON.stringify(v65Store));
+const v66Before = JSON.stringify(v66Store);
+const mig66 = B.migrateBiomData(v66Store, 'v65', 'v66');
+check('MIGRATE v65->v66 runs the v66 step', mig66.appliedSteps.indexOf('v66') !== -1, mig66.appliedSteps.join(','));
+check('MIGRATE v65->v66 is a pure adoption: persons byte-identical, nothing rewritten',
+  mig66.changed === false && JSON.stringify(mig66.snapshot) === v66Before,
+  'changed=' + mig66.changed);
+const migChain66 = B.migrateBiomData(JSON.parse(JSON.stringify(v37Store)), 'v37', 'v66');
+check('MIGRATE v37->v66 runs all twenty-nine steps in order', migChain66.appliedSteps.join(',') === 'v38,v39,v40,v41,v42,v43,v44,v45,v46,v47,v48,v49,v50,v51,v52,v53,v54,v55,v56,v57,v58,v59,v60,v61,v62,v63,v64,v65,v66', migChain66.appliedSteps.join(','));
+check('MIGRATE v37->v66 keeps the person, gains the wallet, flags the palm',
+  migChain66.snapshot.people.length === 1 && migChain66.snapshot.people[0].loyaltyPoints === 137 &&
+  migChain66.snapshot.people[0].wallet.balance === 0 && migChain66.snapshot.people[0].palmProfile.format === 'legacy');
+const migAgain66 = B.migrateBiomData(mig66.snapshot, 'v66', 'v66');
+check('MIGRATE is idempotent at v66', migAgain66.appliedSteps.length === 0 && migAgain66.changed === false &&
+  migAgain66.snapshot.people[0].wallet.balance === 450);
+
 /* ---------- the shipped app source carries no AUTOMATIC wipe -------
    v46 note: the only erase in the app is the owner's confirmed
    Delete All Data action (DB.clearAll + B.wipeBiomData, wired in
@@ -1059,12 +1123,12 @@ check('MIGRATE is idempotent at v63', migAgain63.appliedSteps.length === 0 && mi
    and is still pinned here: deleting the whole database and
    removing store keys, the retired update-time wipe mechanics. */
 const appSrc = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
-check('APP declares the current data version (v63 — named pin change at the two-face bump)', appSrc.indexOf("APP_DATA_VERSION = 'v63'") !== -1);
+check('APP declares the current data version (v66 — named pin change at the design-overhaul bump)', appSrc.indexOf("APP_DATA_VERSION = 'v66'") !== -1);
 check('APP startup runs the migration', appSrc.indexOf('migrateBiomData') !== -1 && appSrc.indexOf('migrateDbStores') !== -1);
 check('APP contains no database deletion (the retired wipe)', appSrc.indexOf('deleteDatabase') === -1);
 check('APP contains no store-key removal (the retired wipe)', !/removeItem\(\s*'tsgbiom_/.test(appSrc));
 const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
-check('APP shell is v63 (named pin change at the two-face bump)', swSrc.indexOf('tsg-biom-shell-v63') !== -1);
+check('APP shell is v66 (named pin change at the design-overhaul bump)', swSrc.indexOf('tsg-biom-shell-v66') !== -1);
 
 console.log(fail === 0 ? 'ALL MIGRATION TESTS PASSED (' + pass + ')' : fail + ' FAILURES, ' + pass + ' passed');
 process.exit(fail === 0 ? 0 : 1);

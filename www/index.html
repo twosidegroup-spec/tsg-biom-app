@@ -3,14 +3,25 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- v64 (Phase A Step 5.1, Seat 2): Content-Security-Policy, meta-delivered
+     because GitHub Pages cannot set response headers. Meta CSP cannot carry
+     frame-ancestors / report-uri / sandbox — those arrive only with a
+     header-capable host; the limit is stated in the README posture table.
+     script-src 'wasm-unsafe-eval' is mandatory: without it Chrome refuses
+     WebAssembly compilation and BOTH runtimes (MediaPipe, ONNX) die.
+     connect-src is pinned to the TSG Biom API origin (Seat 2 M-7 decision):
+     this build syncs to that server only. All runtimes are self-hosted
+     under vendor/ from v64, so no CDN origin appears anywhere below. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; script-src-attr 'none'; worker-src 'self' blob:; connect-src 'self' https://tsg-biom-api.vercel.app; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'none'; child-src 'none'; manifest-src 'self'">
+<meta name="referrer" content="no-referrer">
 <title>TSG Biom — Palmprint for Stores</title>
 <meta name="description" content="TSG Biom by TwoSide Group: hardware-free palmprint enrollment and verification through a phone or tablet camera, with bKash / Nagad Biom Pay for pharmacies, retail, supermarkets and malls.">
-<meta name="theme-color" content="#075e55">
+<meta name="theme-color" content="#0b4ea2">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-180.png">
 <link rel="stylesheet" href="styles.css">
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"></script>
+<script src="vendor/mediapipe-hands-0.4.1675469240/hands.js"></script>
 <script src="biometrics.js"></script>
 </head>
 <body class="mode-customer">
@@ -49,6 +60,7 @@
       <h2>Open your wallet</h2>
       <p class="sub">Your wallet lives on this device and opens without a scan — tap your profile to open it. Choosing a profile is not a security check: your palm authorises payments, not entry.</p>
       <h2 style="margin-top:22px">Choose your wallet</h2>
+      <div id="walletProfilesSkeleton" class="profilecards" aria-hidden="true"><div class="skelcard"></div><div class="skelcard"></div></div>
       <div id="walletProfiles" class="profilecards"></div>
       <p class="sub" style="margin-top:16px">No palm registered yet? <button class="btn small" data-go="enroll">Register a palm</button> — registration issues your Biom ID and creates your wallet at balance 0.</p>
     </div>
@@ -78,7 +90,7 @@
         <button class="qa-tile" id="wQuickHistory"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M12 7.4V12l3.1 2"/></svg><span>History</span></button>
       </div>
       <button class="btn" id="wCloseWallet" style="margin-top:12px">Close Wallet / Switch User</button>
-      <div class="card seccard">
+      <div class="card seccard" id="wLinkedCard">
         <h2>Linked Wallets</h2>
         <div id="wHomeAccounts"></div>
       </div>
@@ -86,6 +98,11 @@
         <h2>Recent Activity</h2>
         <div id="wHomeStatement"></div>
       </div>
+      <aside class="card seccard hidden" id="activityInspector" aria-label="Activity detail">
+        <h2>Activity detail</h2>
+        <div class="kv" id="activityDetailBody"></div>
+        <button class="btn" id="activityDetailClose" style="margin-top:10px">Close detail</button>
+      </aside>
     </div>
 
     <div id="walletAdd" class="card hidden">
@@ -100,6 +117,7 @@
         <button type="button" class="chip" data-amt="1000">BDT 1,000</button>
         <button type="button" class="chip" data-amt="5000">BDT 5,000</button>
       </div>
+      <p class="balanceline" id="wAddProjected" style="margin-top:10px"></p>
       <label>From funding account</label>
       <select id="wAddAccountSelect"></select>
       <h2 style="margin-top:20px">Link a new funding account</h2>
@@ -122,7 +140,8 @@
       <h2>Send Money (demo)</h2>
       <p class="sub">Demo money between wallets on this device, in three steps: <b>first</b> the receiver is found by <b>their palm</b> — if the scanned palm matches no registered Biom ID, no money can be sent — <b>then</b> you enter the amount, and <b>finally</b> your own palm authorises the send.</p>
       <p class="balanceline">Your balance: <b id="wSendBalance">BDT 0</b></p>
-      <div class="progresslabel">Step 1 of 3 — Scan the receiver's palm</div>
+      <div class="progresslabel" id="wSendProgressLabel">Step 1 of 3 — Scan the receiver's palm</div>
+      <div class="progress" style="margin:10px 0 4px"><i id="wSendProgressBar"></i></div>
       <button class="btn primary big" id="wSendScanReceiver" style="margin-top:10px">Scan the Receiver's Palm</button>
       <div id="wSendAmountBlock" class="hidden" style="margin-top:16px">
         <div id="wSendReceiverLine"></div>
@@ -135,6 +154,7 @@
           <button type="button" class="chip" data-amt="1000">BDT 1,000</button>
           <button type="button" class="chip" data-amt="5000">BDT 5,000</button>
         </div>
+        <p class="balanceline" id="wSendProjected" style="margin-top:10px"></p>
         <div class="row" style="margin-top:12px">
           <div><button class="btn" id="wSendChangeReceiver">Change receiver</button></div>
           <div><button class="btn primary" id="wSendContinue">Continue</button></div>
@@ -160,6 +180,7 @@
         <button type="button" class="chip" data-amt="1000">BDT 1,000</button>
         <button type="button" class="chip" data-amt="5000">BDT 5,000</button>
       </div>
+      <p class="balanceline" id="wPayProjected" style="margin-top:10px"></p>
       <div id="wPayMsg" style="margin-top:12px"></div>
       <div class="row" style="margin-top:14px">
         <div><button class="btn" id="wPayBack">Back</button></div>
@@ -245,7 +266,7 @@
           <button class="setrow" data-acct-toggle="security"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 2.8v5.4c0 4.6-3 8-7 9.8-4-1.8-7-5.2-7-9.8V5.8Z"/><path d="M9.2 12l2 2 3.6-3.8"/></svg></span><span class="setlbl">Security</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
           <div class="setdetail hidden" id="acDetail-security"><div class="kv" id="acSecBody"></div></div>
           <button class="setrow" data-acct-toggle="notif"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 10a6 6 0 0 1 12 0c0 4 1.4 5.6 2.4 6.6H3.6C4.6 15.6 6 14 6 10Z"/><path d="M10 20a2.2 2.2 0 0 0 4 0"/></svg></span><span class="setlbl">Notifications</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
-          <div class="setdetail hidden" id="acDetail-notif"><p class="sub" style="margin:0">TSG Biom sends no notifications. Scan results are announced on screen and by voice on this device. Every scan also syncs in the background to the secure TSG Biom vault — palm codes only, never a palm image.</p></div>
+          <div class="setdetail hidden" id="acDetail-notif"><p class="sub" style="margin:0">TSG Biom sends no notifications. Scan results are announced on screen and by voice on this device. Every scan also syncs in the background to your TSG Biom server — sealed palm codes only, never a palm image.</p></div>
           <button class="setrow" data-acct-toggle="lang"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M3.4 12h17.2M12 3.4c2.4 2.3 3.6 5.2 3.6 8.6s-1.2 6.3-3.6 8.6c-2.4-2.3-3.6-5.2-3.6-8.6s1.2-6.3 3.6-8.6Z"/></svg></span><span class="setlbl">Language</span><span class="setval">English</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
           <div class="setdetail hidden" id="acDetail-lang"><p class="sub" style="margin:0">The app interface is English. Bangla is not available in this build.</p></div>
           <button class="setrow owner-only" data-go="more"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8a7 7 0 0 1 12 3M17 16a7 7 0 0 1-12-3"/><path d="M19 4v5h-5M5 20v-5h5"/></svg></span><span class="setlbl">Scan Sync</span><span class="setval">Owner mode</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span></button>
@@ -254,7 +275,7 @@
         </div>
       </div>
     </div>
-    <div class="versionline" id="versionLine">TSG Biom · App v63 · TwoSide Group</div>
+    <div class="versionline" id="versionLine">TSG Biom · App v66 · TwoSide Group</div>
   </section>
 
   <!-- DESK (HOME) -->
@@ -302,7 +323,7 @@
     <p class="sub">Everything else in TSG Biom, one tap away.</p>
     <div class="morelinks">
       <button class="morelink" data-go="account"><span>My Account</span><small>Your palm identity, linked wallets, limits and settings</small></button>
-      <button class="morelink owner-only" data-go="stores"><span>Store Modes</span><small>CVS / Pharmacy, Supermarket, Retail, Mall terminal setups</small></button>
+      <button class="morelink owner-only" data-go="stores"><span>Store Modes</span><small>Pharmacy, Supermarket, Retail, Mall terminal setups</small></button>
       <button class="morelink owner-only" data-go="logs"><span>Transactions / Logs</span><small>Every scan result and Biom Pay record on this device</small></button>
       <button class="morelink owner-only" data-go="partner"><span>Partner Integration</span><small>bKash / Nagad merchant connection status</small></button>
       <button class="morelink owner-only" data-go="registry"><span>People Registry</span><small>Everyone enrolled on this device</small></button>
@@ -358,6 +379,7 @@
       <p class="sub" style="margin:0 0 10px">From v63 this device registers itself automatically: the app carries a built-in <b>registration key</b> whose only server power is registering this device. The server then issues this device its <b>own credential</b> (below), every write is signed with it, and it can be revoked on its own if this device is ever lost. The registration key cannot read or write anyone's palm banks. Bank writes are version-checked on the server, so a stale device can no longer overwrite a newer bank.</p>
       <label>Server endpoint URL</label>
       <input id="syncEndpoint" placeholder="https://tsg-biom-api.vercel.app" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <p class="sub" style="margin:6px 0 0">This build connects only to the TSG Biom server above — the endpoint is fixed for this build, so every device syncs to the same vault.</p>
       <label style="margin-top:10px">This device's ID (registered automatically)</label>
       <input id="syncDeviceId" placeholder="Registered on first sync" autocomplete="off" autocapitalize="off" spellcheck="false">
       <label style="margin-top:10px">This device's secret (registered automatically)</label>
@@ -390,21 +412,40 @@
       <div id="wipeMsg" style="margin-top:10px"></div>
     </div>
     <div class="card" style="margin-top:16px"><h2>How the real scanning works</h2>
-      <p class="sub" style="margin:0">
-        TSG Biom is palm-only. MediaPipe landmarks locate the palm, a 96&times;96 palm patch is cut out and aligned from the wrist and knuckle anchors, and an EDCC palmprint encoder reads the palm's own print pattern — the method family used by real palmprint systems.
-        Enrolment runs one 900&nbsp;ms burst and banks the three sharpest time-spaced templates, bit-packed. At verification the live patch is packed the same way and a five-shift popcount matcher scores it against the enrolled templates — the best match decides.
-        Nothing here is simulated — if no hand or no clear print is seen, the scan fails openly.
-        Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.
-      </p>
+      <div class="scanprep">
+        <p><b>Palm only.</b> MediaPipe landmarks locate the palm; a 96&times;96 patch is cut out and aligned from the wrist and knuckle anchors.</p>
+        <p><b>Real matching.</b> An EDCC palmprint encoder reads the palm's own print pattern, and verification scores the live patch against the enrolled templates — the best match decides.</p>
+        <p><b>Nothing is simulated.</b> If no hand or no clear print is seen, the scan fails openly. Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.</p>
+      </div>
+      <details class="copyfold">
+        <summary>The full explanation</summary>
+        <p class="sub" style="margin:0">
+          TSG Biom is palm-only. MediaPipe landmarks locate the palm, a 96&times;96 palm patch is cut out and aligned from the wrist and knuckle anchors, and an EDCC palmprint encoder reads the palm's own print pattern — the method family used by real palmprint systems.
+          Enrolment runs one 900&nbsp;ms burst and banks the three sharpest time-spaced templates, bit-packed. At verification the live patch is packed the same way and a five-shift popcount matcher scores it against the enrolled templates — the best match decides.
+          Nothing here is simulated — if no hand or no clear print is seen, the scan fails openly.
+          Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.
+        </p>
+      </details>
     </div>
   </section>
 
   <!-- ENROLL -->
   <section class="page" id="page-enroll">
+    <div class="enroll-split">
+      <aside class="enroll-side">
+        <div class="enroll-side-brand">TSG BIOM<small>TWOSIDE GROUP</small></div>
+        <h2 class="enroll-side-title">How it works</h2>
+        <div class="scanprep enroll-side-lines">
+          <p><span class="enroll-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.6M12 18.9v2.6M2.5 12h2.6M18.9 12h2.6M5 5l1.8 1.8M17.2 17.2 19 19M19 5l-1.8 1.8M6.8 17.2 5 19"/></svg></span><span><b>Good light.</b> Face a light so your palm is clearly lit — most failed scans are lighting, not the palm.</span></p>
+          <p><span class="enroll-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 11.8V6.2a1.5 1.5 0 0 1 3 0v4.3m0-5.8a1.5 1.5 0 0 1 3 0v5.3m0-4.8a1.5 1.5 0 0 1 3 0v5.8m0-3.6a1.5 1.5 0 0 1 3 0v4.7c0 4.3-3 6.9-6.9 6.9-3.4 0-5.7-1.9-7.1-5L3.7 12c-.4-.9.7-1.8 1.5-1.2L7 12.4"/></svg></span><span><b>Whole palm in the frame,</b> at a natural distance. There is nothing to line up: the app finds the hand by itself.</span></p>
+          <p><span class="enroll-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6.5 9.5 17 4 11.5"/></svg></span><span><b>Hold steady, then tap Scan Palm.</b> One short burst banks your palm — a photo or a screen is never accepted.</span></p>
+        </div>
+      </aside>
+      <div class="enroll-main">
     <h1>Create your Biom wallet</h1>
     <p class="sub">One-time registration — your name, your phone number, then your palm. Completing it creates your Biom ID and your wallet, and you will not be asked again.</p>
     <div class="progresslabel" id="enrollProgress">Step 1 of 3 — Your details</div>
-    <div class="progress" style="margin:10px 0 16px"><i id="enrollProgressBar" style="width:33%"></i></div>
+    <div class="progress" style="margin:10px 0 16px"><i id="enrollProgressBar"></i></div>
 
     <div id="enroll-details" class="card">
       <div class="row">
@@ -436,8 +477,16 @@
 
     <div id="enroll-palm" class="card hidden">
       <h2>Step 2 — Palm scan (real palmprint)</h2>
-      <p class="sub">The camera opens when this step opens — nothing is captured until you tap <b>Scan Palm</b>. Position your open hand in the frame, anywhere in view, at a natural distance — there is nothing to line up: the app finds the hand by itself. On the tap, the app watches live, and the moment a sharp open palm is seen, a single 900&nbsp;ms capture burst runs, and the app banks the three sharpest time-spaced templates from it. Liveness is checked across the burst: a real hand drifts naturally by a tiny amount and its landmarks carry real depth variance — a photo or a screen cannot, so a single photo is never accepted. A palm pressed right against the lens cannot be read, so keep a natural distance. The palm square is cut out and aligned from the hand landmarks, and an <b>EDCC palmprint encoder</b> reads the palm's own print pattern — the templates are stored bit-packed on this device. Labelled honestly: this is <b>Palm — Palmprint</b>, the print-pattern method real palmprint systems use. Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.</p>
+      <div class="scanprep">
+        <p><b>Good light.</b> Face a light so your palm is clearly lit — most failed scans are lighting, not the palm.</p>
+        <p><b>Whole palm in the frame,</b> at a natural distance. There is nothing to line up: the app finds the hand by itself.</p>
+        <p><b>Hold steady, then tap Scan Palm.</b> One short burst banks your palm — a photo or a screen is never accepted.</p>
+      </div>
       <p class="sub">Your palm is stored as a <b>palm code, sealed (encrypted) under this device's Biom Vault key — never a photo</b>. The code is kept on this device and in the secure TSG Biom vault, so your registration stays backed up.</p>
+      <details class="copyfold">
+        <summary>How the palm scan works, in full</summary>
+        <p class="sub">The camera opens when this step opens — nothing is captured until you tap <b>Scan Palm</b>. Position your open hand in the frame, anywhere in view, at a natural distance — there is nothing to line up: the app finds the hand by itself. On the tap, the app watches live, and the moment a sharp open palm is seen, a single 900&nbsp;ms capture burst runs, and the app banks the three sharpest time-spaced templates from it. Liveness is checked across the burst: a real hand drifts naturally by a tiny amount and its landmarks carry real depth variance — a photo or a screen cannot, so a single photo is never accepted. A palm pressed right against the lens cannot be read, so keep a natural distance. The palm square is cut out and aligned from the hand landmarks, and an <b>EDCC palmprint encoder</b> reads the palm's own print pattern — the templates are stored bit-packed on this device. Labelled honestly: this is <b>Palm — Palmprint</b>, the print-pattern method real palmprint systems use. Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.</p>
+      </details>
       <div class="camtoggle" data-cam-toggle="enrollPalm" role="group" aria-label="Palm camera choice">
         <button type="button" data-facing="user" class="on">Front camera</button>
         <button type="button" data-facing="environment">Back camera</button>
@@ -448,10 +497,16 @@
         <button type="button" data-flash="on">Flash On</button>
       </div>
       <p class="camnote flashnote" data-flash-note="enrollPalm"></p>
+      <div class="scanpill" id="eScanPill"><span class="scanpill-dot"></span><span id="eScanPillText">Ready</span></div>
       <div class="camwrap"><video id="palmVideo" autoplay playsinline muted></video>
         <div class="corners" aria-hidden="true"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i></div>
         <div class="camstatus" id="palmStatus">Camera not started.</div>
         <div id="palmBurstRing" class="burstring hidden"><span>0%</span></div></div>
+      <div class="scaninds">
+        <div class="scanind" id="eIndHand"><span class="dot"></span><span class="indtxt">Hand detected</span></div>
+        <div class="scanind" id="eIndLight"><span class="dot"></span><span class="indtxt">Good light</span></div>
+        <div class="scanind" id="eIndSteady"><span class="dot"></span><span class="indtxt">Holding steady</span></div>
+      </div>
       <div class="row" style="margin-top:12px">
         <div><button class="btn" id="palmStart">Start Camera</button></div>
         <div><button class="btn primary" id="palmCapture" disabled>Scan Palm</button></div>
@@ -462,9 +517,11 @@
     <div id="enroll-done" class="card hidden">
       <h2>Enrollment complete</h2>
       <div id="enrollDoneBody" class="kv"></div>
-      <button class="btn" id="enrollDoneRegistry">Open People Registry</button>
+      <button class="btn owner-only" id="enrollDoneRegistry">Open People Registry</button>
       <button class="btn primary" id="enrollDoneWallet">Open My Wallet</button>
-      <button class="btn" id="enrollDoneTerminal">Verify This Person</button>
+      <button class="btn owner-only" id="enrollDoneTerminal">Verify This Person</button>
+    </div>
+      </div>
     </div>
   </section>
 
@@ -503,9 +560,15 @@
         <button type="button" data-flash="on">Flash On</button>
       </div>
       <p class="camnote flashnote" data-flash-note="terminal"></p>
+      <div class="scanpill" id="tScanPill"><span class="scanpill-dot"></span><span id="tScanPillText">Ready</span></div>
       <div class="camwrap" style="margin-top:14px"><video id="termVideo" autoplay playsinline muted></video>
         <div class="corners" aria-hidden="true"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i></div>
         <div class="camstatus" id="termStatus">Camera not started.</div></div>
+      <div class="scaninds">
+        <div class="scanind" id="tIndHand"><span class="dot"></span><span class="indtxt">Hand detected</span></div>
+        <div class="scanind" id="tIndLight"><span class="dot"></span><span class="indtxt">Good light</span></div>
+        <div class="scanind" id="tIndSteady"><span class="dot"></span><span class="indtxt">Holding steady</span></div>
+      </div>
       <div class="row" style="margin-top:12px">
         <div><button class="btn big" id="termStart">Start Camera</button></div>
       </div>
@@ -520,7 +583,7 @@
     <h1>Store Modes</h1>
     <p class="sub">The same Biom ID and the same real scans, shaped for each kind of store. Launch opens the terminal with that store selected.</p>
     <div class="modegrid">
-      <div class="card modecard"><h3>CVS / Pharmacy</h3>
+      <div class="card modecard"><h3>Pharmacy</h3>
         <p>Prescription pickup identity check, age verification for restricted items, loyalty at the counter, and Biom Pay against a linked bKash / Nagad wallet.</p>
         <button class="btn primary" data-launch="GreenCare Pharmacy (CVS)">Launch Terminal</button></div>
       <div class="card modecard"><h3>Supermarket</h3>
@@ -544,6 +607,14 @@
       <thead><tr><th>Person</th><th>Biom ID</th><th>Type / Store</th><th>Palm</th><th>Wallet</th><th></th></tr></thead>
       <tbody id="registryBody"></tbody>
     </table></div>
+    <aside class="card hidden" id="registryDetail" style="margin-top:14px" aria-label="Person detail">
+      <h2 id="registryDetailName">Person detail</h2>
+      <div class="kv" id="registryDetailBody"></div>
+      <div class="row" style="margin-top:12px">
+        <div><button class="btn" id="registryDetailOwnerBtn">Make owner</button></div>
+        <div><button class="btn" id="registryDetailClose">Close detail</button></div>
+      </div>
+    </aside>
   </section>
 
   <!-- ADD ANGLES (v43) -->
@@ -562,9 +633,15 @@
         <button type="button" data-flash="on">Flash On</button>
       </div>
       <p class="camnote flashnote" data-flash-note="topup"></p>
+      <div class="scanpill" id="uScanPill"><span class="scanpill-dot"></span><span id="uScanPillText">Ready</span></div>
       <div class="camwrap"><video id="topVideo" autoplay playsinline muted></video>
         <div class="corners" aria-hidden="true"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i></div>
         <div class="camstatus" id="topStatus">Camera not started.</div></div>
+      <div class="scaninds">
+        <div class="scanind" id="uIndHand"><span class="dot"></span><span class="indtxt">Hand detected</span></div>
+        <div class="scanind" id="uIndLight"><span class="dot"></span><span class="indtxt">Good light</span></div>
+        <div class="scanind" id="uIndSteady"><span class="dot"></span><span class="indtxt">Holding steady</span></div>
+      </div>
       <div class="row" style="margin-top:12px">
         <div><button class="btn" id="topStart">Start Camera</button></div>
         <div><button class="btn primary" id="topCapture" disabled>Run Guided Capture</button></div>
@@ -629,10 +706,12 @@
 
 <footer class="footer">
   TSG Biom — TwoSide Group (TS Technologies / TS Intelligence). Real scanning only: no simulated results.<br>
-  Camera access needs a secure (HTTPS) page and your permission. Biometric descriptors on this terminal stay on this device.
+  Camera access needs a secure (HTTPS) page and your permission. Palm codes are sealed (encrypted) on this device; with Scan Sync on, the sealed codes — never a palm image — are also kept on your TSG Biom server, so a registration survives a lost phone.
 </footer>
 
-<div id="toast" class="hidden" style="position:fixed;left:50%;transform:translateX(-50%);bottom:22px;background:var(--surface2);border:1px solid var(--accent);color:var(--text);padding:12px 18px;border-radius:12px;z-index:99;font-size:14px;max-width:92vw"></div>
+<div id="sheetBackdrop" class="sheet-backdrop" aria-hidden="true"></div>
+
+<div id="toast" class="hidden" role="status"></div>
 
 <script src="app.js"></script>
 </body>

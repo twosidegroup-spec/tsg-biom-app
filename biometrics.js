@@ -3348,6 +3348,393 @@
     return out;
   }
 
+
+  /* ================= TSG Palm Engine (v65) =================
+     TwoSide Group's OWN inference runtime for the PalmNet network
+     above — this factory is the whole engine. It replaces ONNX
+     Runtime Web entirely: no third-party code runs the model.
+     The engine executes the TSGP container (program.json schedule
+     + float32 weights blob) produced by the TSG converter from the
+     pinned PalmNet R3 model; the conversion is a byte-exact repack
+     (per-tensor max diff 0.0) and the engine passed the parity
+     gate against both ONNX Runtime references on the full bench
+     EVAL protocol (720 ROIs, 43,200 scores, zero verdict
+     differences at the 0.5895 bar — record in
+     ~/workspace/tsg-biom-team/tsg-palm-engine/gate/parity-report.json).
+     palmEngineSource() stringifies this factory into the PalmNet
+     Blob worker, the same assembly pattern palmnetPreprocessSource
+     has always used. */
+
+function createTsgPalmEngine() {
+  var program = null;
+  var weights = null; // Float32Array over the whole blob
+
+  function tensorView(name) {
+    var idx = program.weights.tensors[name];
+    if (!idx) throw new Error('TSG Palm Engine: unknown weight tensor ' + name);
+    return {
+      d: weights.subarray(idx.offset, idx.offset + idx.count),
+      s: idx.dims.slice()
+    };
+  }
+
+  function numel(shape) {
+    var n = 1;
+    for (var i = 0; i < shape.length; i++) n *= shape[i];
+    return n;
+  }
+
+  /* ---------------- Conv ----------------
+     NCHW, dilation 1 (the graph uses nothing else), pads as
+     [top, left, bottom, right]. Three paths: 1x1 dense (the
+     MAC-heavy pointwise layers, run as a GEMM over pixels),
+     depthwise (group == inC == outC), and a general direct path
+     for the remaining dense kernels (stem 3x3 stride 2). */
+  function conv(x, w, b, attrs) {
+    var N = x.s[0], Cin = x.s[1], H = x.s[2], W = x.s[3];
+    var Cout = w.s[0], Cg = w.s[1], KH = w.s[2], KW = w.s[3];
+    var group = attrs.group || 1;
+    var sh = (attrs.strides || [1, 1])[0], sw = (attrs.strides || [1, 1])[1];
+    var pads = attrs.pads || [0, 0, 0, 0];
+    var pt = pads[0], pl = pads[1], pb = pads[2], pr = pads[3];
+    var Hout = Math.floor((H + pt + pb - KH) / sh) + 1;
+    var Wout = Math.floor((W + pl + pr - KW) / sw) + 1;
+    var out = new Float32Array(N * Cout * Hout * Wout);
+    var xd = x.d, wd = w.d, bd = b ? b.d : null;
+    var n, oc, ic, oh, ow, kh, kw;
+    var reluEpilogue = attrs.epilogue === 'relu';
+    if (KH === 1 && KW === 1 && group === 1 && sh === 1 && sw === 1) {
+      // Pointwise conv as a GEMM over pixels, 4 output channels
+      // per pass so each input stream is reused four times.
+      var HW = H * W;
+      for (n = 0; n < N; n++) {
+        var xBase = n * Cin * HW, oBase = n * Cout * HW;
+        for (var ocB = 0; ocB < Cout; ocB += 4) {
+          var ocN = Math.min(4, Cout - ocB);
+          var oOffs = [0, 0, 0, 0], wRows = [0, 0, 0, 0];
+          for (var q4 = 0; q4 < ocN; q4++) {
+            oOffs[q4] = oBase + (ocB + q4) * HW;
+            wRows[q4] = (ocB + q4) * Cin;
+            var bias4 = bd ? bd[ocB + q4] : 0;
+            for (var p4 = 0; p4 < HW; p4++) out[oOffs[q4] + p4] = bias4;
+          }
+          for (ic = 0; ic < Cin; ic++) {
+            var iOff4 = xBase + ic * HW;
+            var wv0 = wd[wRows[0] + ic];
+            if (ocN === 4) {
+              var wv1 = wd[wRows[1] + ic], wv2 = wd[wRows[2] + ic], wv3 = wd[wRows[3] + ic];
+              var o0 = oOffs[0], o1 = oOffs[1], o2 = oOffs[2], o3 = oOffs[3];
+              for (var p = 0; p < HW; p++) {
+                var xv = xd[iOff4 + p];
+                out[o0 + p] += wv0 * xv; out[o1 + p] += wv1 * xv;
+                out[o2 + p] += wv2 * xv; out[o3 + p] += wv3 * xv;
+              }
+            } else {
+              for (var q5 = 0; q5 < ocN; q5++) {
+                var wv5 = wd[wRows[q5] + ic], o5b = oOffs[q5];
+                for (var p5 = 0; p5 < HW; p5++) out[o5b + p5] += wv5 * xd[iOff4 + p5];
+              }
+            }
+          }
+          if (reluEpilogue) {
+            for (var q6 = 0; q6 < ocN; q6++) {
+              var o6b = oOffs[q6];
+              for (var p6 = 0; p6 < HW; p6++) if (out[o6b + p6] < 0) out[o6b + p6] = 0;
+            }
+          }
+        }
+      }
+      return { d: out, s: [N, Cout, Hout, Wout] };
+    }
+    if (group === Cin && Cout === Cin) {
+      // Depthwise: one kernel per channel.
+      for (n = 0; n < N; n++) {
+        for (oc = 0; oc < Cout; oc++) {
+          var cBase = (n * Cin + oc);
+          var biasD = bd ? bd[oc] : 0;
+          var wOff = oc * KH * KW;
+          for (oh = 0; oh < Hout; oh++) {
+            var ih0 = oh * sh - pt;
+            for (ow = 0; ow < Wout; ow++) {
+              var iw0 = ow * sw - pl;
+              var acc = biasD;
+              for (kh = 0; kh < KH; kh++) {
+                var ih = ih0 + kh;
+                if (ih < 0 || ih >= H) continue;
+                var xRow = (cBase * H + ih) * W;
+                var wRowD = wOff + kh * KW;
+                for (kw = 0; kw < KW; kw++) {
+                  var iw = iw0 + kw;
+                  if (iw < 0 || iw >= W) continue;
+                  acc += wd[wRowD + kw] * xd[xRow + iw];
+                }
+              }
+              out[(cBase * Hout + oh) * Wout + ow] = acc;
+            }
+          }
+        }
+      }
+      if (reluEpilogue) for (var ri = 0; ri < out.length; ri++) if (out[ri] < 0) out[ri] = 0;
+      return { d: out, s: [N, Cout, Hout, Wout] };
+    }
+    // General grouped/dense direct convolution.
+    var CinG = Cin / group, CoutG = Cout / group;
+    for (n = 0; n < N; n++) {
+      for (var gI = 0; gI < group; gI++) {
+        for (oc = 0; oc < CoutG; oc++) {
+          var ocA = gI * CoutG + oc;
+          var biasG = bd ? bd[ocA] : 0;
+          var wBase = ocA * CinG * KH * KW;
+          for (oh = 0; oh < Hout; oh++) {
+            var ih0G = oh * sh - pt;
+            for (ow = 0; ow < Wout; ow++) {
+              var iw0G = ow * sw - pl;
+              var accG = biasG;
+              for (ic = 0; ic < CinG; ic++) {
+                var icA = gI * CinG + ic;
+                var xBaseG = ((n * Cin + icA) * H);
+                var wBaseIc = wBase + ic * KH * KW;
+                for (kh = 0; kh < KH; kh++) {
+                  var ihG = ih0G + kh;
+                  if (ihG < 0 || ihG >= H) continue;
+                  var xRowG = (xBaseG + ihG) * W;
+                  var wRowG = wBaseIc + kh * KW;
+                  for (kw = 0; kw < KW; kw++) {
+                    var iwG = iw0G + kw;
+                    if (iwG < 0 || iwG >= W) continue;
+                    accG += wd[wRowG + kw] * xd[xRowG + iwG];
+                  }
+                }
+              }
+              out[((n * Cout + ocA) * Hout + oh) * Wout + ow] = accG;
+            }
+          }
+        }
+      }
+    }
+    if (reluEpilogue) for (var rj = 0; rj < out.length; rj++) if (out[rj] < 0) out[rj] = 0;
+    return { d: out, s: [N, Cout, Hout, Wout] };
+  }
+
+  function elementwise(a, b, fn) {
+    if (a.d.length === b.d.length && a.s.join() === b.s.join()) {
+      var out = new Float32Array(a.d.length);
+      for (var i = 0; i < out.length; i++) out[i] = fn(a.d[i], b.d[i]);
+      return { d: out, s: a.s.slice() };
+    }
+    // Squeeze-excite broadcast: [N,C,1,1] over [N,C,H,W] (either side).
+    var big = a, small = b, flip = false;
+    if (b.s.length === 4 && a.s.length === 4 && b.d.length > a.d.length) { big = b; small = a; flip = true; }
+    if (big.s.length === 4 && small.s.length === 4 && small.s[2] === 1 && small.s[3] === 1 &&
+        small.s[0] === big.s[0] && small.s[1] === big.s[1]) {
+      var oB = new Float32Array(big.d.length);
+      var HWb = big.s[2] * big.s[3], Cb = big.s[1];
+      for (var nB = 0; nB < big.s[0]; nB++) {
+        for (var chB = 0; chB < Cb; chB++) {
+          var svB = small.d[nB * Cb + chB];
+          var baseB = (nB * Cb + chB) * HWb;
+          if (flip) { for (var pB = 0; pB < HWb; pB++) oB[baseB + pB] = fn(svB, big.d[baseB + pB]); }
+          else { for (var pB2 = 0; pB2 < HWb; pB2++) oB[baseB + pB2] = fn(big.d[baseB + pB2], svB); }
+        }
+      }
+      return { d: oB, s: big.s.slice() };
+    }
+    // Div tail broadcast: [N,1] over [N,C].
+    if (b.d.length === a.s[0] && a.s.length === 2 && b.s.length === 2 && b.s[1] === 1) {
+      var o2 = new Float32Array(a.d.length);
+      var C = a.s[1];
+      for (var r = 0; r < a.s[0]; r++) {
+        var bv = b.d[r];
+        for (var c = 0; c < C; c++) o2[r * C + c] = fn(a.d[r * C + c], bv);
+      }
+      return { d: o2, s: a.s.slice() };
+    }
+    throw new Error('TSG Palm Engine: unsupported broadcast ' + a.s + ' vs ' + b.s);
+  }
+
+  function runNode(node, T) {
+    var ins = node.in.map(function (name) { return T[name]; });
+    var attrs = node.attrs || {};
+    switch (node.op) {
+      case 'ConstantTensor':
+        return tensorView(node.out);
+      case 'Conv':
+        return conv(ins[0], ins[1], ins.length > 2 && node.in[2] ? ins[2] : null, attrs);
+      case 'HardSigmoid': {
+        var alpha = typeof attrs.alpha === 'number' ? attrs.alpha : 0.2;
+        var beta = typeof attrs.beta === 'number' ? attrs.beta : 0.5;
+        var o = new Float32Array(ins[0].d.length);
+        for (var i = 0; i < o.length; i++) {
+          var v = alpha * ins[0].d[i] + beta;
+          o[i] = v < 0 ? 0 : (v > 1 ? 1 : v);
+        }
+        return { d: o, s: ins[0].s.slice() };
+      }
+      case 'HardSwish': {
+        // Fused by the converter from x * HardSigmoid(x).
+        var aHS = typeof attrs.alpha === 'number' ? attrs.alpha : 0.1666666716337204;
+        var bHS = typeof attrs.beta === 'number' ? attrs.beta : 0.5;
+        var oHS = new Float32Array(ins[0].d.length);
+        for (var iHS = 0; iHS < oHS.length; iHS++) {
+          var xHS = ins[0].d[iHS];
+          var hHS = aHS * xHS + bHS;
+          oHS[iHS] = xHS * (hHS < 0 ? 0 : (hHS > 1 ? 1 : hHS));
+        }
+        return { d: oHS, s: ins[0].s.slice() };
+      }
+      case 'Relu': {
+        var o2 = new Float32Array(ins[0].d.length);
+        for (var j = 0; j < o2.length; j++) o2[j] = ins[0].d[j] > 0 ? ins[0].d[j] : 0;
+        return { d: o2, s: ins[0].s.slice() };
+      }
+      case 'Mul':
+        return elementwise(ins[0], ins[1], function (a, b) { return a * b; });
+      case 'Add':
+        return elementwise(ins[0], ins[1], function (a, b) { return a + b; });
+      case 'Div':
+        return elementwise(ins[0], ins[1], function (a, b) { return a / b; });
+      case 'GlobalAveragePool': {
+        var s = ins[0].s, NN = s[0], CC = s[1], HH = s[2], WW = s[3];
+        var o3 = new Float32Array(NN * CC);
+        var cnt = HH * WW;
+        for (var n3 = 0; n3 < NN; n3++) {
+          for (var c3 = 0; c3 < CC; c3++) {
+            var base = (n3 * CC + c3) * cnt;
+            var acc = 0;
+            for (var p3 = 0; p3 < cnt; p3++) acc += ins[0].d[base + p3];
+            o3[n3 * CC + c3] = acc / cnt;
+          }
+        }
+        return { d: o3, s: [NN, CC, 1, 1] };
+      }
+      case 'Flatten': {
+        var axis = typeof attrs.axis === 'number' ? attrs.axis : 1;
+        var s4 = ins[0].s;
+        var d0 = 1, d1 = 1;
+        for (var q = 0; q < axis; q++) d0 *= s4[q];
+        for (var r2 = axis; r2 < s4.length; r2++) d1 *= s4[r2];
+        return { d: ins[0].d, s: [d0, d1] };
+      }
+      case 'Gemm': {
+        // Y = alpha * op(A) * op(B) + beta * C ; this graph: transB=1 only.
+        if (!attrs.transB) throw new Error('TSG Palm Engine: Gemm without transB is not in the PalmNet graph');
+        var A = ins[0], Bm = ins[1], Cv = ins.length > 2 && node.in[2] ? ins[2] : null;
+        var M = A.s[0], K = A.s[1], Nn = Bm.s[0];
+        var o4 = new Float32Array(M * Nn);
+        for (var mI = 0; mI < M; mI++) {
+          for (var nI = 0; nI < Nn; nI++) {
+            var acc4 = Cv ? Cv.d[nI] : 0;
+            var aOff = mI * K, wOff4 = nI * K;
+            for (var kI = 0; kI < K; kI++) acc4 += A.d[aOff + kI] * Bm.d[wOff4 + kI];
+            o4[mI * Nn + nI] = acc4;
+          }
+        }
+        return { d: o4, s: [M, Nn] };
+      }
+      case 'BatchNormalization': {
+        var X = ins[0], scale = ins[1], bias = ins[2], mean = ins[3], vari = ins[4];
+        var eps = typeof attrs.epsilon === 'number' ? attrs.epsilon : 1e-5;
+        var s5 = X.s, C5 = s5[1];
+        var per = X.d.length / C5;
+        var o5 = new Float32Array(X.d.length);
+        for (var c5 = 0; c5 < C5; c5++) {
+          var inv = scale.d[c5] / Math.sqrt(vari.d[c5] + eps);
+          var sh5 = bias.d[c5] - mean.d[c5] * inv;
+          // Layouts in this graph: [N,C] (per = 1 row block) — handle
+          // both [N,C] (stride C) and [N,C,H,W] (stride HW) honestly.
+          if (s5.length === 2) {
+            for (var idx = c5; idx < X.d.length; idx += C5) o5[idx] = X.d[idx] * inv + sh5;
+          } else {
+            var HW5 = s5[2] * s5[3];
+            for (var n5 = 0; n5 < s5[0]; n5++) {
+              var base5 = (n5 * C5 + c5) * HW5;
+              for (var p5 = 0; p5 < HW5; p5++) o5[base5 + p5] = X.d[base5 + p5] * inv + sh5;
+            }
+          }
+        }
+        return { d: o5, s: s5.slice() };
+      }
+      case 'ReduceL2': {
+        var axes = attrs.axes || [1];
+        if (axes.length !== 1 || axes[0] !== 1 || ins[0].s.length !== 2) {
+          throw new Error('TSG Palm Engine: ReduceL2 shape outside the PalmNet graph');
+        }
+        var s6 = ins[0].s, o6 = new Float32Array(s6[0]);
+        for (var r6 = 0; r6 < s6[0]; r6++) {
+          var acc6 = 0;
+          for (var c6 = 0; c6 < s6[1]; c6++) { var v6 = ins[0].d[r6 * s6[1] + c6]; acc6 += v6 * v6; }
+          o6[r6] = Math.sqrt(acc6);
+        }
+        return { d: o6, s: [s6[0], 1] };
+      }
+      case 'Clip': {
+        var mn = ins.length > 1 && node.in[1] ? ins[1].d[0] : -Infinity;
+        var mx = ins.length > 2 && node.in[2] ? ins[2].d[0] : Infinity;
+        var o7 = new Float32Array(ins[0].d.length);
+        for (var i7 = 0; i7 < o7.length; i7++) {
+          var v7 = ins[0].d[i7];
+          o7[i7] = v7 < mn ? mn : (v7 > mx ? mx : v7);
+        }
+        return { d: o7, s: ins[0].s.slice() };
+      }
+      case 'Shape':
+        return { shapeOf: ins[0].s.slice() };
+      case 'Expand': {
+        var target = ins[1].shapeOf;
+        var src = ins[0];
+        if (numel(target) === src.d.length) return { d: src.d, s: target.slice() };
+        var o8 = new Float32Array(numel(target));
+        // Only broadcast in this graph: [N,1] -> [N,C].
+        if (src.s.length === 2 && src.s[1] === 1 && target.length === 2 && target[0] === src.s[0]) {
+          for (var r8 = 0; r8 < target[0]; r8++) {
+            for (var c8 = 0; c8 < target[1]; c8++) o8[r8 * target[1] + c8] = src.d[r8];
+          }
+          return { d: o8, s: target.slice() };
+        }
+        throw new Error('TSG Palm Engine: Expand shape outside the PalmNet graph');
+      }
+      default:
+        throw new Error('TSG Palm Engine: unsupported op ' + node.op);
+    }
+  }
+
+  return {
+    load: function (prog, weightsBuffer) {
+      if (!prog || prog.format !== 'tsg-palm-engine-program') {
+        throw new Error('TSG Palm Engine: not a TSGP program');
+      }
+      var f32 = new Float32Array(weightsBuffer);
+      if (f32.length !== prog.weights.totalFloats) {
+        throw new Error('TSG Palm Engine: weights size mismatch (' + f32.length + ' != ' + prog.weights.totalFloats + ')');
+      }
+      program = prog;
+      weights = f32;
+      return this;
+    },
+    run: function (input, inputDims) {
+      if (!program) throw new Error('TSG Palm Engine: not loaded');
+      var T = {};
+      var wNames = Object.keys(program.weights.tensors);
+      for (var wi = 0; wi < wNames.length; wi++) T[wNames[wi]] = tensorView(wNames[wi]);
+      T[program.inputs[0].name] = { d: input, s: inputDims.slice() };
+      for (var i = 0; i < program.nodes.length; i++) {
+        var node = program.nodes[i];
+        T[node.out] = runNode(node, T);
+      }
+      var outName = program.outputs[0];
+      var out = T[outName];
+      return { name: outName, data: out.d, dims: out.s.slice() };
+    }
+  };
+}
+
+  /* The engine's own source, for worker assembly (app.js) and
+     for the main-thread fallback (which calls the factory
+     directly through the export below). */
+  function palmEngineSource() {
+    return 'var createTsgPalmEngine = ' + createTsgPalmEngine.toString() + ';\n';
+  }
+
   /* ================= v49: money-scan strict rule + banking guard ==
      Ordered 2026-11-24 after the Add Money audit
      (AUDIT-addmoney-v48.md). Two independent routes explained how
@@ -5413,7 +5800,7 @@
      therefore the identity, and a v62 store — sealed banks, hand
      stamps, wallet, points, and a queued sync outbox row
      included — opens under v63 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62', 'v63'];
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62', 'v63', 'v64', 'v65', 'v66'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -5439,6 +5826,21 @@
     'v61': function (snap) { return snap; },
     'v62': function (snap) { return snap; },
     'v63': function (snap) { return snap; },
+    /* v64: pure adoption, exactly like the v59/v62/v63 steps — the
+       design-polish + security release changes no stored shape, so a
+       v63 store opens byte-identical under v64 (proven by the
+       migration suite's whole-chain byte-identity check). */
+    'v64': function (snap) { return snap; },
+    /* v65: pure adoption — the TSG Palm Engine release changes
+       no stored shape (embeddings are byte-format identical; the
+       engine passed the parity gate against the runtime it
+       replaces), so a v64 store opens byte-identical under v65. */
+    'v65': function (snap) { return snap; },
+    /* v66: pure adoption — the House System v2 design overhaul
+       changes presentation only (tokens, adaptive shell, sheets,
+       list–detail), no stored shape, so a v65 store opens
+       byte-identical under v66. */
+    'v66': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
@@ -5676,6 +6078,8 @@
     PALMNET_DEDUPE_COSINE: PALMNET_DEDUPE_COSINE,
     palmnetPreprocessRoi: palmnetPreprocessRoi,
     palmnetPreprocessSource: palmnetPreprocessSource,
+    createTsgPalmEngine: createTsgPalmEngine,
+    palmEngineSource: palmEngineSource,
     palmnetNormaliseEmbedding: palmnetNormaliseEmbedding,
     palmnetEmbeddingSane: palmnetEmbeddingSane,
     palmnetCosine: palmnetCosine,
