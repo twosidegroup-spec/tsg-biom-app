@@ -77,11 +77,29 @@ for (const name of Object.keys(surfaces)) {
   check('COPY ' + name + ' never claims encrypted templates',
     falseClaims.every(function (p) { return low.indexOf(p) === -1; }));
 }
-check('COPY Scan Sync card says encoded palm codes', htmlSrc.indexOf('posts the encoded palm codes') !== -1);
-check('COPY Scan Sync card states the interim truth', htmlSrc.indexOf('The codes are encoded, not yet encrypted; encryption arrives in the security release.') !== -1);
+/* v61 named pin changes: B1 shipped, so the v59 interim-truth
+   pins are replaced by the v61 truth. The Scan Sync card now
+   says the codes are sealed under the vault key before they are
+   stored or posted; My Account states the bank's own state —
+   sealed, sealed under another key, or still encoded (the
+   pinned encoded sentence survives verbatim in the encoded
+   branch). The interim promise is retired from all USER-VISIBLE
+   copy: the ban below covers index.html in full and app.js from
+   renderAccount on (the app.js header keeps the v59 changelog
+   paragraph as history, above that point). */
+check('COPY Scan Sync card says palm codes post (v61 wording)', htmlSrc.indexOf('posts the palm codes') !== -1);
+check('COPY Scan Sync card states the v61 truth (sealed before storing/posting)',
+  htmlSrc.indexOf('From v61 the codes are sealed on this device under its Biom Vault key before they are stored or posted') !== -1);
+check('COPY the interim promise is retired from user-visible copy (v61 named pin change)',
+  htmlSrc.indexOf('encryption arrives in the security release') === -1 &&
+  htmlSrc.indexOf('The codes are encoded, not yet encrypted') === -1 &&
+  appSrc.slice(appSrc.indexOf('function renderAccount()')).indexOf('encryption arrives in the security release') === -1);
+check('COPY My Account states the sealed truth for a sealed bank (v61)',
+  appSrc.indexOf('Palm templates are stored on this device encrypted under its Biom Vault key (AES-GCM)') !== -1);
 check('COPY My Account security text says encoded palm codes', appSrc.indexOf('stored on this device as encoded palm codes') !== -1);
-check('COPY My Account sync lines say encoded palm codes (both states)',
-  (appSrc.match(/encoded palm codes also sync|encoded palm codes sync/g) || []).length === 2);
+check('COPY My Account sync lines name the vault sealing in both states (v61 named pin change)',
+  (appSrc.match(/palm codes also sync/g) || []).length >= 1 &&
+  (appSrc.match(/sealed under this device/g) || []).length >= 2);
 
 /* ---------- 0.1 Delete All Data copy is true about the server ---------- */
 check('COPY Delete All intro no longer claims there is no copy anywhere else',

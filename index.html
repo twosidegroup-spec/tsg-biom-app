@@ -271,8 +271,49 @@
       <label class="check"><input type="checkbox" id="fieldExhaustiveToggle2"> Exhaustive shift logging — evaluate all five shifts per comparison and log them in the scan record</label>
       <p class="sub" style="margin:8px 0 0">The full field-test panel, live metrics and the CSV export live under Transactions / Logs.</p>
     </div>
+    <div class="card" style="margin-top:16px"><h2>Biom Vault — palm template encryption</h2>
+      <p class="sub" style="margin:0 0 10px">From v61, palm templates on this device are sealed (AES-GCM) under a vault key generated on this device and never sent anywhere: the on-device store, Scan Sync records and your server all hold ciphertext, not readable palm templates. Matching still happens on this device, on the opened bank, exactly as before. <b>If the vault key is lost and you have not saved the recovery sheet, the sealed banks cannot be opened and each person must re-enrol.</b> Save the sheet somewhere safe and offline.</p>
+      <div class="kv"><b>Status:</b> <span id="vaultStatus">…</span></div>
+      <div class="kv" style="margin-top:6px"><b>Last conversion:</b> <span id="vaultReport">—</span></div>
+      <div id="vaultBanks" style="margin-top:10px"></div>
+      <div id="vaultSetup" class="hidden" style="margin-top:12px">
+        <div class="error"><b>Save your recovery sheet now.</b> It is the only way back if this device's vault key is ever lost. After you complete setup it can be shown again only with your vault passphrase.</div>
+        <div class="vaultsheet" id="vaultSheetSetup"></div>
+        <label style="margin-top:12px">Vault passphrase (protects the sheet on this device)</label>
+        <input id="vaultPass1" type="password" placeholder="At least 6 characters" autocomplete="off">
+        <label style="margin-top:10px">Repeat the passphrase</label>
+        <input id="vaultPass2" type="password" placeholder="Repeat it" autocomplete="off">
+        <label style="margin-top:10px">To confirm you saved the sheet, type SAVED:</label>
+        <input id="vaultAckInput" placeholder="SAVED" autocomplete="off" autocapitalize="characters">
+        <div class="row" style="margin-top:10px">
+          <div><button class="btn primary" id="vaultAckBtn">Complete vault setup</button></div>
+        </div>
+        <div class="sub" id="vaultSetupMsg" style="margin-top:8px"></div>
+      </div>
+      <div id="vaultActions" class="hidden" style="margin-top:12px">
+        <div class="row">
+          <div><button class="btn" id="vaultConvertBtn">Encrypt any unsealed banks now</button></div>
+        </div>
+        <label style="margin-top:12px">Show the recovery sheet again (needs your vault passphrase)</label>
+        <input id="vaultShowPass" type="password" placeholder="Vault passphrase" autocomplete="off">
+        <div class="row" style="margin-top:10px">
+          <div><button class="btn" id="vaultShowBtn">Show recovery sheet</button></div>
+          <div><button class="btn hidden" id="vaultHideBtn">Hide</button></div>
+        </div>
+        <div class="vaultsheet hidden" id="vaultSheetView"></div>
+        <div class="sub" id="vaultShowMsg" style="margin-top:8px"></div>
+        <label style="margin-top:12px">Move a vault to this device — paste a recovery sheet</label>
+        <textarea id="vaultImportCode" rows="3" placeholder="Paste the recovery sheet from the other device" autocomplete="off" autocapitalize="characters" spellcheck="false" style="width:100%"></textarea>
+        <label style="margin-top:10px">New passphrase for this device (optional)</label>
+        <input id="vaultImportPass" type="password" placeholder="Optional" autocomplete="off">
+        <div class="row" style="margin-top:10px">
+          <div><button class="btn" id="vaultImportBtn">Import recovery sheet</button></div>
+        </div>
+        <div class="sub" id="vaultImportMsg" style="margin-top:8px"></div>
+      </div>
+    </div>
     <div class="card" style="margin-top:16px"><h2>Scan Sync</h2>
-      <p class="sub" style="margin:0 0 10px">Mirror every scan on this device to your own TSG Biom server, so real scans can be reviewed off-device. Each scan posts a small record (who, which hand, the scores, the result) and each palm-bank change posts the encoded palm codes — <b>never a palm image</b>. The codes are encoded, not yet encrypted; encryption arrives in the security release. Matching always stays on this device; sync runs in the background and never delays a scan. Off by default.</p>
+      <p class="sub" style="margin:0 0 10px">Mirror every scan on this device to your own TSG Biom server, so real scans can be reviewed off-device. Each scan posts a small record (who, which hand, the scores, the result) and each palm-bank change posts the palm codes — <b>never a palm image</b>. From v61 the codes are sealed on this device under its Biom Vault key before they are stored or posted, once the vault is set up (More → Biom Vault); a bank the vault has not sealed yet posts in its encoded form, and the vault card above shows which banks are sealed. Matching always stays on this device; sync runs in the background and never delays a scan. Off by default.</p>
       <label>Server endpoint URL</label>
       <input id="syncEndpoint" placeholder="https://your-project.vercel.app" autocomplete="off" autocapitalize="off" spellcheck="false">
       <label style="margin-top:10px">Device key</label>

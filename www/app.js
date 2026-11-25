@@ -104,8 +104,43 @@
      terminal Biom Pay — keeps its palm scan, strict rule
      and all, exactly as before; quick verify stays an
      explicit scan. No data-shape change — the v60
-     migration step is a pure adoption. */
-  var APP_DATA_VERSION = 'v60';
+     migration step is a pure adoption.
+
+     v61 (2026-11-25) is Phase B item B1, shipping ALONE:
+     envelope encryption of the stored palm templates
+     (Seat 2's spec, seam corrected by Seat 3, boundary per
+     coordinator decision CD-2). Every stored template
+     string — packed EDCC codes, PalmNet embeddings and the
+     archived legacy codes — is wrapped in an AES-GCM
+     envelope (enc.v1.<kid>.<nonce||ciphertext||tag>) under
+     a per-Biom-ID key derived (HKDF) from this device's
+     vault key, so the store, the sync records and the
+     server's data repo hold ciphertext, not readable palm
+     templates. The envelope lives at the storage boundary
+     (the DB funnel below): banks are decrypted as they load
+     and encrypted as they save and as sync emits them, so
+     the synchronous matchers, the banking guard, the strict
+     money rule and the worker read exactly the plaintext
+     they always read — the bytes reaching both matchers are
+     bit-identical to v60, which the parity gate in
+     tests/v61-b1.test.js proves with EXACT score equality
+     (not tolerance). Existing banks convert in the first
+     v61 boot (Vault.convertBanks over B.convertBanksV61)
+     and are re-pushed so the server copies become
+     ciphertext too; the vault card (More → Biom Vault)
+     reports how many converted and shows each bank's state.
+     Fail-safe throughout: if WebCrypto or the vault key is
+     unavailable, banks stay in their encoded form and keep
+     working — nothing is ever bricked by a crypto failure.
+     CODEC FREEZE: from v61 the template CONTENT is frozen —
+     thresholds, model bytes, fusion, the hand gate, the
+     frame rule, the guard, the strict rule, flash, quality
+     gates, the v57 camera switching, the v58 manual scan
+     gating and the v60 wallet entry are all untouched, and
+     any future template-content change requires a full
+     calibration re-run. The migration step is the identity
+     (representation, not shape — see biometrics.js). */
+  var APP_DATA_VERSION = 'v61';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -178,7 +213,27 @@
        knows how to surface, instead of silence forever. The
        request itself is not cancelled — a late write of the same
        value may still land, which is harmless for these stores. */
+    /* v61 (B1): the people store crosses the vault boundary
+       here — the ONE funnel every people read/write in the app
+       passes through, on both backends. put() seals a COPY of
+       the row (the caller's in-memory person stays plaintext);
+       all() opens the rows it returns. Both are pass-through
+       when no vault key is available (fail-safe: the encoded
+       form keeps working) and for every other store. The raw
+       pair below keeps the exact v49-bounded bodies; the vault
+       conversion pass uses them directly, because it must see
+       the at-rest form the funnel exists to hide. */
     put: function (store, value) {
+      var self = this;
+      if (store !== 'people') return self._putRaw(store, value);
+      return vaultEncryptRow(value).then(function (sealed) { return self._putRaw(store, sealed); });
+    },
+    all: function (store) {
+      var self = this;
+      if (store !== 'people') return self._allRaw(store);
+      return self._allRaw(store).then(function (rows) { return vaultDecryptRows(rows); });
+    },
+    _putRaw: function (store, value) {
       var self = this;
       if (this.useLS || !this.db) {
         var rows = this.lsGet(store);
@@ -199,7 +254,7 @@
         req.onerror = function () { reject(req.error); };
       }), DB_OP_TIMEOUT_MS);
     },
-    all: function (store) {
+    _allRaw: function (store) {
       var self = this;
       if (this.useLS || !this.db) return Promise.resolve(this.lsGet(store));
       return B.withTimeout(new Promise(function (resolve, reject) {
@@ -381,18 +436,44 @@
       });
       return true;
     }
+    var profileNoteSeq = 0;
+    var profilePushedSeq = {};
     function noteProfile(person) {
       if (!active()) return false;
       var core = deps.B.syncProfileRecord(person, deps.now());
       if (!core) return false;
-      ensureLoaded().then(function () {
+      /* v61 (B1): the emit boundary seals the bank before it is
+         queued, via the optional deps.encryptProfileCore (the
+         app wires the vault there; rigs that do not provide it
+         get the pre-v61 plaintext core, byte-identical). If
+         sealing fails, NOTHING is queued — a mirror update is
+         deferred rather than letting a plaintext bank reach the
+         server by accident; the next bank change re-emits.
+         ORDER: the push stays inside the same ensureLoaded slot
+         noteScan uses, so with no sealing dep the queue order is
+         exactly the v56 call order. With a dep, sealing starts
+         immediately and the push waits for the seal (cross-type
+         order can then slip, which carries no server semantics —
+         profiles upsert by Biom ID, scans are append-only); the
+         per-person sequence guard keeps the LAST call's bank the
+         queued one even if an earlier seal resolves late. */
+      var mySeq = ++profileNoteSeq;
+      var sealing = deps.encryptProfileCore ? deps.encryptProfileCore(core) : null;
+      function pushNow(sealedCore) {
+        if (!sealedCore) return;
+        if ((profilePushedSeq[sealedCore.biomId] || 0) > mySeq) return; // a newer note already queued
+        profilePushedSeq[sealedCore.biomId] = mySeq;
         // Only the newest bank per person matters: an older queued
         // upsert for the same Biom ID is replaced, never duplicated.
-        queue = queue.filter(function (it) { return !(it.type === 'profile' && it.record.biomId === core.biomId); });
-        queue.push({ type: 'profile', record: core });
+        queue = queue.filter(function (it) { return !(it.type === 'profile' && it.record.biomId === sealedCore.biomId); });
+        queue.push({ type: 'profile', record: sealedCore });
         persist();
         scheduleFlush();
-      });
+      }
+      ensureLoaded().then(function () {
+        if (!sealing) { pushNow(core); return; }
+        return sealing.then(pushNow);
+      }).catch(function () {});
       return true;
     }
     function flush() {
@@ -491,7 +572,8 @@
     fetchFn: function (url, opts) { return fetch(url, opts); },
     now: function () { return Date.now(); },
     uuid: syncUuid,
-    onStatus: function () { renderSyncStatus(); }
+    onStatus: function () { renderSyncStatus(); },
+    encryptProfileCore: function (core) { return Vault.encryptProfileCore(core); }
   });
   function renderSyncStatus() {
     var el = $('syncStatus');
@@ -518,6 +600,407 @@
     });
     if (nowBtn) nowBtn.addEventListener('click', function () {
       Sync.flush().then(function () { renderSyncStatus(); });
+    });
+  }
+
+  /* ---------------- Biom Vault (v61, Phase B item B1) ------------------
+     Custody for the envelope key the DB funnel and the sync emit
+     boundary seal banks with (the crypto itself lives in
+     biometrics.js — see its envelope section for the design, the
+     seam list and the parity argument).
+
+     The vault key is a random 256-bit key generated ON this
+     device at the first v61 run (Seat 2: "generated on the owner
+     device at first Phase B run"). It is held in its own
+     IndexedDB database ('tsg-biom-vault') as a CryptoKey —
+     non-extractable once setup completes — or, where IndexedDB
+     is unavailable and the app runs on its localStorage store,
+     as raw key material in device storage (the disclosed
+     fallback for a platform with no key store). The key never
+     syncs, is never sent to the API and never enters a log.
+
+     Setup window: a freshly created key starts EXTRACTABLE with
+     its raw bytes held in the vault record, so the recovery
+     sheet can always be produced until the owner completes
+     setup (passphrase + typed acknowledgement). Completing
+     setup wraps the raw key under the passphrase (the re-export
+     path), re-imports the key non-extractable and destroys the
+     held raw bytes. Key loss without the recovery sheet means
+     the sealed banks cannot be opened and each person
+     re-enrols — the designed, disclosed consequence, stated on
+     the vault card in plain words.
+
+     Delete All Data does NOT destroy the vault: the key is not
+     biometric data, and keeping it means banks re-enrolled
+     after a wipe seal under the same key the owner's recovery
+     sheet restores. */
+  var Vault = {
+    key: null, kid: null, ready: false, pendingAck: false,
+    unavailable: false, createdTs: 0, hasWrap: false,
+    lastConversion: null, _deriveCache: {}
+  };
+  var vaultRawHeld = null; // raw key bytes, setup window only
+  var VAULT_LS_KEY = 'tsgbiom_vault_v1';
+  var VAULT_REPORT_KEY = 'tsgbiom_vault_report';
+
+  function vaultStoreRead() {
+    if (DB.useLS || !('indexedDB' in window)) {
+      try {
+        var raw = localStorage.getItem(VAULT_LS_KEY);
+        return Promise.resolve(raw ? JSON.parse(raw) : null);
+      } catch (e) { return Promise.resolve(null); }
+    }
+    return new Promise(function (resolve) {
+      var settled = false;
+      var done = function (rec) { if (!settled) { settled = true; resolve(rec || null); } };
+      var req;
+      try { req = indexedDB.open('tsg-biom-vault', 1); } catch (e) { done(null); return; }
+      req.onupgradeneeded = function () { req.result.createObjectStore('vault', { keyPath: 'key' }); };
+      req.onsuccess = function () {
+        var db = req.result;
+        try {
+          var get = db.transaction('vault', 'readonly').objectStore('vault').get('main');
+          get.onsuccess = function () { var rec = get.result || null; try { db.close(); } catch (e) {} done(rec); };
+          get.onerror = function () { try { db.close(); } catch (e) {} done(null); };
+        } catch (e) { try { db.close(); } catch (e2) {} done(null); }
+      };
+      req.onerror = function () { done(null); };
+      req.onblocked = function () { done(null); };
+      setTimeout(function () { done(null); }, 2500);
+    });
+  }
+  function vaultStoreWrite(rec) {
+    if (DB.useLS || !('indexedDB' in window)) {
+      try {
+        localStorage.setItem(VAULT_LS_KEY, JSON.stringify({
+          kid: rec.kid, rawB64: rec.raw ? B.bankEncBytesToB64(rec.raw) : null,
+          wrapped: rec.wrapped || null, pendingAck: !!rec.pendingAck, createdTs: rec.createdTs || 0
+        }));
+      } catch (e) {}
+      return Promise.resolve();
+    }
+    return new Promise(function (resolve) {
+      var settled = false;
+      var done = function () { if (!settled) { settled = true; resolve(); } };
+      var req;
+      try { req = indexedDB.open('tsg-biom-vault', 1); } catch (e) { done(); return; }
+      req.onupgradeneeded = function () { req.result.createObjectStore('vault', { keyPath: 'key' }); };
+      req.onsuccess = function () {
+        var db = req.result;
+        try {
+          var put = db.transaction('vault', 'readwrite').objectStore('vault').put({
+            key: 'main', kid: rec.kid, cryptoKey: rec.cryptoKey || null,
+            raw: rec.raw || null, wrapped: rec.wrapped || null,
+            pendingAck: !!rec.pendingAck, createdTs: rec.createdTs || 0
+          });
+          put.onsuccess = function () { try { db.close(); } catch (e) {} done(); };
+          put.onerror = function () { try { db.close(); } catch (e) {} done(); };
+        } catch (e) { try { db.close(); } catch (e2) {} done(); }
+      };
+      req.onerror = done;
+      req.onblocked = done;
+      setTimeout(done, 2500);
+    });
+  }
+  function vaultApplyRecord(rec, importedKey) {
+    Vault.kid = rec.kid;
+    Vault.key = importedKey || rec.cryptoKey || null;
+    Vault.pendingAck = !!rec.pendingAck;
+    Vault.createdTs = rec.createdTs || 0;
+    Vault.hasWrap = !!rec.wrapped;
+    Vault._deriveCache = {};
+    vaultRawHeld = rec.raw ? new Uint8Array(rec.raw) : null;
+    Vault.ready = !!Vault.key;
+  }
+  Vault.init = function () {
+    if (!B.bankEncAvailable()) { Vault.unavailable = true; return Promise.resolve(false); }
+    return vaultStoreRead().then(function (rec) {
+      if (rec && rec.kid) {
+        if (rec.rawB64 && !rec.cryptoKey) {
+          // localStorage form: re-import the held raw key.
+          var raw = B.bankEncB64ToBytes(rec.rawB64);
+          if (!raw) { Vault.unavailable = true; return false; }
+          return B.vaultImportKey(raw, false).then(function (key) {
+            vaultApplyRecord({ kid: rec.kid, wrapped: rec.wrapped, pendingAck: rec.pendingAck, createdTs: rec.createdTs, raw: rec.pendingAck ? raw : null }, key);
+            return true;
+          }).catch(function () { Vault.unavailable = true; return false; });
+        }
+        vaultApplyRecord(rec, null);
+        return Vault.ready;
+      }
+      // First v61 run on this device: generate the vault key.
+      var rawNew = B.vaultGenerateRaw();
+      return B.vaultKeyId(rawNew).then(function (kid) {
+        return B.vaultImportKey(rawNew, true).then(function (key) {
+          var fresh = { kid: kid, cryptoKey: key, raw: rawNew, wrapped: null, pendingAck: true, createdTs: Date.now() };
+          return vaultStoreWrite(fresh).then(function () {
+            vaultApplyRecord(fresh, key);
+            return true;
+          });
+        });
+      }).catch(function () { Vault.unavailable = true; return false; });
+    }).catch(function () { Vault.unavailable = true; return false; });
+  };
+  function vaultDerive(biomId) {
+    if (!Vault.key) return Promise.reject(new Error('no vault key'));
+    var id = String(biomId || '');
+    if (!Vault._deriveCache[id]) Vault._deriveCache[id] = B.vaultDeriveBankKey(Vault.key, id);
+    return Vault._deriveCache[id];
+  }
+  /* The DB funnel's two transforms. Both are total: any failure
+     resolves the row(s) unchanged, so a crypto problem degrades
+     to the encoded form and never breaks a save or a load. */
+  function vaultEncryptRow(person) {
+    if (!Vault.ready || !person || typeof person !== 'object') return Promise.resolve(person);
+    return B.bankEncryptPerson(person, vaultDerive, Vault.kid)
+      .then(function (res) { return res.person; })
+      .catch(function () { return person; });
+  }
+  function vaultDecryptRows(rows) {
+    if (!Vault.ready || !Array.isArray(rows) || !rows.length) return Promise.resolve(rows);
+    return Promise.all(rows.map(function (row) {
+      if (!row || typeof row !== 'object' || !row.palmProfile) return row;
+      if (B.bankTemplateState(row).sealed === 0) return row;
+      return B.bankDecryptPerson(row, vaultDerive)
+        .then(function (res) { return res.person; })
+        .catch(function () { return row; });
+    }));
+  }
+  Vault.encryptProfileCore = function (core) {
+    if (!Vault.ready) return Promise.resolve(core);
+    return B.bankEncryptProfileCore(core, vaultDerive, Vault.kid);
+  };
+  /* The v61 conversion sweep: seal every still-encoded bank in
+     the raw store, write back only the rows that changed, then
+     re-push the converted banks so the server copies become
+     ciphertext too (through the normal sync engine — with sync
+     off this queues nothing and calls nothing). Idempotent: a
+     sweep over sealed banks writes nothing. Runs at every boot;
+     after the first v61 boot it is a read-only check. */
+  Vault.convertBanks = function () {
+    if (!Vault.ready) {
+      Vault.lastConversion = { ts: Date.now(), skipped: Vault.unavailable ? 'webcrypto-unavailable' : 'no-vault-key' };
+      return Promise.resolve(Vault.lastConversion);
+    }
+    return DB._allRaw('people').then(function (rows) {
+      return B.convertBanksV61(rows, vaultDerive, Vault.kid).then(function (res) {
+        var changedIds = {};
+        var writes = res.people.map(function (row, i) {
+          if (row === rows[i]) return null;
+          changedIds[rows[i].id] = true;
+          return DB._putRaw('people', row);
+        }).filter(Boolean);
+        return Promise.all(writes).then(function () {
+          var report = {
+            ts: Date.now(), banksConverted: res.banksConverted,
+            banksAlreadySealed: res.banksAlreadySealed, banksFailed: res.banksFailed,
+            templatesSealed: res.templatesSealed
+          };
+          Vault.lastConversion = report;
+          try { localStorage.setItem(VAULT_REPORT_KEY, JSON.stringify(report)); } catch (e) {}
+          if (!res.banksConverted) return report;
+          return DB.all('people').then(function (people) {
+            people.forEach(function (p) { if (changedIds[p.id]) Sync.noteProfile(p); });
+            return Sync.flush();
+          }).then(function () { return report; }).catch(function () { return report; });
+        });
+      });
+    }).catch(function () { return Vault.lastConversion; });
+  };
+  Vault.statusMap = function () {
+    return DB._allRaw('people').then(function (rows) {
+      var map = {};
+      rows.forEach(function (row) {
+        if (!row || typeof row !== 'object' || !row.palmProfile) return;
+        var st = B.bankTemplateState(row);
+        var kid = null;
+        var prof = row.palmProfile;
+        var firstSealed = null;
+        [prof.codes, prof.neural && prof.neural.embeddings, prof.legacyCodes].forEach(function (arr) {
+          if (firstSealed || !Array.isArray(arr)) return;
+          for (var i = 0; i < arr.length; i++) if (B.bankEncIsSealed(arr[i])) { firstSealed = arr[i]; break; }
+        });
+        if (firstSealed) kid = B.bankEncKidOf(firstSealed);
+        var state = st.state;
+        if (state === 'sealed' && kid && Vault.kid && kid !== Vault.kid) state = 'sealed-other';
+        if (state === 'sealed' && !Vault.ready) state = 'sealed-other';
+        map[row.id] = { state: state, total: st.total, sealed: st.sealed, name: row.name || '', kid: kid };
+      });
+      return map;
+    }).catch(function () { return {}; });
+  };
+  Vault.statusFor = function (biomId) {
+    return Vault.statusMap().then(function (map) {
+      return map[biomId] ? map[biomId].state : 'none';
+    });
+  };
+  Vault.completeSetup = function (passphrase) {
+    if (!vaultRawHeld) return Promise.reject(new Error('The recovery sheet is no longer held on this device — import the sheet to restore the vault.'));
+    var raw = vaultRawHeld;
+    return B.vaultWrapKey(raw, passphrase).then(function (wrapped) {
+      if (DB.useLS || !('indexedDB' in window)) {
+        return vaultStoreWrite({ kid: Vault.kid, raw: raw, wrapped: wrapped, pendingAck: false, createdTs: Vault.createdTs })
+          .then(function () {
+            Vault.pendingAck = false; Vault.hasWrap = true;
+            vaultRawHeld = null; // the sheet now opens only via the passphrase wrap
+            return true;
+          });
+      }
+      return B.vaultImportKey(raw, false).then(function (hardKey) {
+        return vaultStoreWrite({ kid: Vault.kid, cryptoKey: hardKey, raw: null, wrapped: wrapped, pendingAck: false, createdTs: Vault.createdTs })
+          .then(function () {
+            Vault.key = hardKey;
+            Vault._deriveCache = {};
+            vaultRawHeld = null;
+            Vault.pendingAck = false; Vault.hasWrap = true;
+            return true;
+          });
+      });
+    });
+  };
+  Vault.showRecovery = function (passphrase) {
+    if (vaultRawHeld) return Promise.resolve(B.vaultRecoveryEncode(vaultRawHeld));
+    return vaultStoreRead().then(function (rec) {
+      if (!rec || !rec.wrapped) return null;
+      return B.vaultUnwrapKey(rec.wrapped, passphrase).then(function (raw) {
+        return raw ? B.vaultRecoveryEncode(raw) : null;
+      });
+    });
+  };
+  Vault.importSheet = function (codeText, passphrase) {
+    var raw = B.vaultRecoveryDecode(codeText);
+    if (!raw) return Promise.resolve({ ok: false, msg: 'That recovery sheet did not decode — check it and try again.' });
+    return B.vaultKeyId(raw).then(function (kid) {
+      if (Vault.ready && Vault.kid === kid) return { ok: true, msg: 'That is already this device\'s vault key.' };
+      return Vault.statusMap().then(function (map) {
+        var conflict = Object.keys(map).some(function (id) {
+          var e = map[id];
+          return (e.state === 'sealed' || e.state === 'sealed-other' || e.state === 'mixed') && e.kid && e.kid !== kid;
+        });
+        if (conflict) {
+          return { ok: false, msg: 'This device holds banks sealed under a different vault key. Importing this sheet would leave them unreadable, so nothing was changed.' };
+        }
+        return B.vaultImportKey(raw, false).then(function (key) {
+          var wrapP = passphrase ? B.vaultWrapKey(raw, passphrase) : Promise.resolve(null);
+          return wrapP.then(function (wrapped) {
+            var lsMode = DB.useLS || !('indexedDB' in window);
+            return vaultStoreWrite({ kid: kid, cryptoKey: key, raw: lsMode ? raw : null, wrapped: wrapped, pendingAck: false, createdTs: Date.now() })
+              .then(function () {
+                Vault.key = key; Vault.kid = kid; Vault.ready = true;
+                Vault.pendingAck = false; Vault.hasWrap = !!wrapped;
+                Vault.createdTs = Date.now(); Vault._deriveCache = {};
+                vaultRawHeld = null;
+                return Vault.convertBanks().then(function () {
+                  return { ok: true, msg: 'Vault restored from the recovery sheet. Banks sealed under this key open again; any encoded banks were sealed now.' };
+                });
+              });
+          });
+        });
+      });
+    }).catch(function () { return { ok: false, msg: 'The import failed — nothing was changed.' }; });
+  };
+  function vaultStateLabel(state) {
+    return {
+      'sealed': 'Encrypted (this device\'s vault key)',
+      'sealed-other': 'Sealed under a different key — this device cannot open it',
+      'encoded': 'Encoded only — not yet encrypted',
+      'mixed': 'Partly encrypted — run the conversion to finish',
+      'none': 'No palm bank'
+    }[state] || state;
+  }
+  function renderVaultCard() {
+    var st = $('vaultStatus');
+    if (!st) return;
+    var rep = Vault.lastConversion;
+    if (!rep) { try { rep = JSON.parse(localStorage.getItem(VAULT_REPORT_KEY) || 'null'); } catch (e) { rep = null; } }
+    var repEl = $('vaultReport');
+    if (repEl) {
+      repEl.textContent = !rep ? 'No conversion has run yet'
+        : rep.skipped ? 'Skipped (' + rep.skipped + ')'
+        : rep.banksConverted + ' bank(s) sealed, ' + rep.templatesSealed + ' template(s), ' +
+          rep.banksAlreadySealed + ' already sealed, ' + rep.banksFailed + ' failed — ' + new Date(rep.ts).toLocaleString();
+    }
+    var setup = $('vaultSetup'), actions = $('vaultActions');
+    if (Vault.unavailable) {
+      st.textContent = 'Unavailable — this browser has no WebCrypto, so banks stay in their encoded form. Everything keeps working; nothing is sealed.';
+      if (setup) setup.classList.add('hidden');
+      if (actions) actions.classList.add('hidden');
+    } else if (!Vault.ready) {
+      st.textContent = 'Not available — the vault key could not be loaded. Banks stay in their encoded form and keep working.';
+      if (setup) setup.classList.add('hidden');
+      if (actions) actions.classList.add('hidden');
+    } else {
+      st.textContent = Vault.pendingAck
+        ? 'Key created on this device — setup is NOT complete until you save the recovery sheet below.'
+        : 'Active — banks are sealed as they save and opened as they load. Key id ' + String(Vault.kid).slice(0, 6) + '…';
+      if (setup) setup.classList.toggle('hidden', !Vault.pendingAck);
+      if (actions) actions.classList.remove('hidden');
+      if (Vault.pendingAck && vaultRawHeld) {
+        var sheetEl = $('vaultSheetSetup');
+        if (sheetEl) sheetEl.textContent = B.vaultRecoveryEncode(vaultRawHeld) || '';
+      }
+    }
+    Vault.statusMap().then(function (map) {
+      var box = $('vaultBanks');
+      if (!box) return;
+      var ids = Object.keys(map);
+      if (!ids.length) { box.innerHTML = '<p class="sub" style="margin:0">No enrolled banks on this device yet.</p>'; return; }
+      box.innerHTML = ids.map(function (id) {
+        var e = map[id];
+        return '<div class="kv"><b>' + esc(e.name || id) + '</b> (' + esc(id) + '): ' + esc(vaultStateLabel(e.state)) +
+          (e.total ? ' — ' + e.sealed + '/' + e.total + ' templates sealed' : '') + '</div>';
+      }).join('');
+    });
+  }
+  function wireVault() {
+    var ackBtn = $('vaultAckBtn');
+    if (ackBtn) ackBtn.addEventListener('click', function () {
+      var msg = $('vaultSetupMsg');
+      var p1 = $('vaultPass1') ? $('vaultPass1').value : '';
+      var p2 = $('vaultPass2') ? $('vaultPass2').value : '';
+      var typed = $('vaultAckInput') ? $('vaultAckInput').value.trim() : '';
+      if (p1.length < 6) { if (msg) msg.textContent = 'Choose a passphrase of at least 6 characters.'; return; }
+      if (p1 !== p2) { if (msg) msg.textContent = 'The two passphrases do not match.'; return; }
+      if (typed !== 'SAVED') { if (msg) msg.textContent = 'Type SAVED to confirm you have saved the recovery sheet.'; return; }
+      Vault.completeSetup(p1).then(function () {
+        toast('Vault setup complete — the recovery sheet is now protected by your passphrase.');
+        renderVaultCard();
+      }).catch(function (e) { if (msg) msg.textContent = String(e && e.message || e); });
+    });
+    var convBtn = $('vaultConvertBtn');
+    if (convBtn) convBtn.addEventListener('click', function () {
+      Vault.convertBanks().then(function (rep) {
+        toast(rep && rep.banksConverted ? 'Sealed ' + rep.banksConverted + ' bank(s).' : 'Conversion run — nothing new to seal.');
+        renderVaultCard();
+      });
+    });
+    var showBtn = $('vaultShowBtn');
+    if (showBtn) showBtn.addEventListener('click', function () {
+      var msg = $('vaultShowMsg');
+      var pass = $('vaultShowPass') ? $('vaultShowPass').value : '';
+      Vault.showRecovery(pass).then(function (sheet) {
+        var view = $('vaultSheetView'), hide = $('vaultHideBtn');
+        if (!sheet) { if (msg) msg.textContent = 'That passphrase did not open the sheet. If no passphrase was set at setup, the sheet exists only on the copy you saved.'; return; }
+        if (msg) msg.textContent = '';
+        if (view) { view.textContent = sheet; view.classList.remove('hidden'); }
+        if (hide) hide.classList.remove('hidden');
+      });
+    });
+    var hideBtn = $('vaultHideBtn');
+    if (hideBtn) hideBtn.addEventListener('click', function () {
+      var view = $('vaultSheetView');
+      if (view) { view.textContent = ''; view.classList.add('hidden'); }
+      hideBtn.classList.add('hidden');
+    });
+    var impBtn = $('vaultImportBtn');
+    if (impBtn) impBtn.addEventListener('click', function () {
+      var msg = $('vaultImportMsg');
+      var code = $('vaultImportCode') ? $('vaultImportCode').value : '';
+      var pass = $('vaultImportPass') ? $('vaultImportPass').value : '';
+      Vault.importSheet(code, pass).then(function (res) {
+        if (msg) msg.textContent = res.msg;
+        if (res.ok) { toast('Vault import complete.'); renderVaultCard(); }
+      });
     });
   }
 
@@ -4356,14 +4839,26 @@
         '<b>Per-transaction limit:</b> ' + (lim.perTx ? fmtBDT(lim.perTx) : 'No limit') + '<br>' +
         '<b>Daily limit:</b> ' + (lim.daily ? fmtBDT(lim.daily) : 'No limit') + '<br>' +
         '<span style="color:var(--muted)">Limits are chosen at registration. Above a limit, a Biom Pay payment is not created on palm alone — PIN confirmation is required.</span>';
-      $('acSecBody').innerHTML =
-        'Palm templates are stored on this device as encoded palm codes — never a palm image. They are not yet encrypted; encryption arrives in the security release. Matching always happens on this device.<br>' +
-        '<b>Scan sync:</b> ' + (Sync.state().on && Sync.state().configured
-          ? 'ON — scan records and encoded palm codes also sync to your own TSG Biom server (More → Scan Sync), so your scans can be reviewed off-device. The palm image itself is never sent — there is no image in what syncs.'
-          : 'OFF — nothing about your palm leaves this device. If you switch Scan Sync on (More → Scan Sync), scan records and encoded palm codes sync to your own TSG Biom server; the palm image itself is never sent.') + '<br>' +
-        '<b>Registered palm:</b> ' + (hand ? (hand === 'left' ? 'Left' : 'Right') + ' hand' : 'hand not recorded') + '<br>' +
-        '<b>Money scans:</b> Add Money, Send Money and Biom Pay use the strict money rule — a two-frame confirmation that must clearly beat every other enrolled palm.<br>' +
-        '<span style="color:var(--muted)">Erase everything on this device from More → Delete All Data.</span>';
+      /* v61 (B1): the security lines state THIS bank's actual
+         state — sealed under the vault key, sealed under another
+         key, or still in its encoded form — never a blanket
+         claim. The state comes from the at-rest store, so what
+         the owner reads is what is stored. */
+      Vault.statusFor(me.id).then(function (bankState) {
+        var firstLine = bankState === 'sealed'
+          ? 'Palm templates are stored on this device encrypted under its Biom Vault key (AES-GCM) — never a palm image. Matching always happens on this device, on the opened bank.'
+          : bankState === 'sealed-other'
+          ? 'This palm bank is sealed under a different vault key, so this device cannot open it — restore the vault from its recovery sheet (More → Biom Vault). Matching always happens on this device.'
+          : 'Palm templates are stored on this device as encoded palm codes — never a palm image. This bank is not yet encrypted — the Biom Vault (More → Biom Vault) seals banks under a key held only on this device. Matching always happens on this device.';
+        $('acSecBody').innerHTML =
+          firstLine + '<br>' +
+          '<b>Scan sync:</b> ' + (Sync.state().on && Sync.state().configured
+            ? 'ON — scan records and palm codes also sync to your own TSG Biom server (More → Scan Sync), sealed under this device\'s vault key once the vault is set up, so your scans can be reviewed off-device. The palm image itself is never sent — there is no image in what syncs.'
+            : 'OFF — nothing about your palm leaves this device. If you switch Scan Sync on (More → Scan Sync), scan records and palm codes sync to your own TSG Biom server, sealed under this device\'s vault key once the vault is set up; the palm image itself is never sent.') + '<br>' +
+          '<b>Registered palm:</b> ' + (hand ? (hand === 'left' ? 'Left' : 'Right') + ' hand' : 'hand not recorded') + '<br>' +
+          '<b>Money scans:</b> Add Money, Send Money and Biom Pay use the strict money rule — a two-frame confirmation that must clearly beat every other enrolled palm.<br>' +
+          '<span style="color:var(--muted)">Erase everything on this device from More → Delete All Data.</span>';
+      });
     });
   }
   $('acBack').addEventListener('click', function () { go('wallet'); });
@@ -5080,6 +5575,11 @@
       if (input.value.trim() !== 'DELETE') return;
       confirmBtn.disabled = true;
       cancelBtn.disabled = true;
+      /* v61: the vault key SURVIVES Delete All Data on purpose —
+         the key is not biometric data (it lives in its own store,
+         untouched by clearAll), and keeping it means banks
+         re-enrolled after a wipe seal under the same vault and a
+         saved recovery sheet stays valid. */
       loadSnapshot().then(function (snap) {
         var wiped = B.wipeBiomData(snap);
         return DB.clearAll().then(function () { return wiped; });
@@ -5109,6 +5609,7 @@
   }
   wireWipeData();
   wireSyncSettings();
+  wireVault();
 
   /* ---------------- Install (PWA) ---------------------------------------- */
   var deferredPrompt = null;
@@ -5149,12 +5650,13 @@
   syncCamToggle('terminal');
   ['enrollPalm', 'terminal'].forEach(function (g) { syncFlashToggle(g); });
   fillStoreSelects();
-  DB.open().then(function () { return migrateDbStores(); }).then(function () { renderDashboard(); fillTerminalPeople(); renderWallet(); })
+  DB.open().then(function () { return Vault.init(); }).then(function () { return migrateDbStores(); }).then(function () { return Vault.convertBanks(); }).then(function () { renderDashboard(); fillTerminalPeople(); renderWallet(); })
     .then(function () {
       // v56 Scan Sync boot: load the persisted outbox, paint the
       // settings card, and attempt a background flush. When sync
       // is off or unconfigured every step here is a no-op.
       fillSyncSettings();
+      renderVaultCard();
       return Sync.ensureLoaded();
     }).then(function () { return Sync.flush(); }).catch(function () {});
 })();

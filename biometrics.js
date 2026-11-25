@@ -4566,6 +4566,440 @@
     };
   }
 
+  /* ================= Envelope encryption (v61, Phase B item B1) =====
+     Seat 2's Spec B1, seam corrected by Seat 3 (CD-1.2), boundary
+     set by coordinator decision CD-2, parity gate per Seat 2 CD-3 /
+     Seat 3 CD-1.1. Until v60 the stored palm templates were plain
+     base64 — readable by anyone who could read the store, the sync
+     records or the data repo. From v61 every STORED template string
+     is wrapped in an AES-GCM envelope:
+
+       enc.v1.<kid>.<base64(nonce || ciphertext || tag)>
+
+     AES-GCM 256-bit, a fresh random 96-bit nonce per template
+     string, keys derived per Biom ID (HKDF-SHA-256, salt = the
+     Biom ID, info 'tsg-biom/bank/v1') from the device vault key
+     (custody lives in app.js — this file never holds a raw key
+     longer than a call).
+
+     REPRESENTATION ONLY: the envelope wraps the already-encoded
+     template string byte-for-byte; decryption unwraps it BEFORE
+     the existing decoders run, so the packed EDCC bytes and the
+     Float32 embedding bytes that reach both matchers are
+     BIT-IDENTICAL to the pre-v61 bytes. A decryption failure
+     yields NO template (the string is left sealed and the
+     existing readers fail closed on it) — evidence goes missing,
+     never shifted. That is the property the parity gate proves
+     and the reason calibration survives this release untouched.
+
+     THE SEAM (Seat 3's correction — encrypting only the four
+     functions Seat 2 first named would have sealed PalmNet and
+     left EDCC, the leg every legacy bank has, in plaintext):
+     the template representations that exist in this codebase are
+       1. palmProfile.codes[] — packed EDCC strings
+          (palmprintPackedToBase64 / palmprintPackedFromBase64,
+          :1567-1590) — the EDCC storage form since v45;
+       2. palmProfile.neural.embeddings[] — PalmNet Float32 LE
+          strings (palmnetEmbeddingToBase64 /
+          palmnetEmbeddingFromBase64, :3124-3153);
+       3. palmProfile.legacyCodes[] — the v3 byte-code strings the
+          v45 migration archived verbatim (the byte-code codec
+          palmprintCodeToBase64 / palmprintCodeFromBase64,
+          :1321-1346); unreadable by the current pipeline but
+          still template material at rest, so they seal too.
+     The byte-code pair's other use is transient (enrolment pose
+     selection packs its output before anything is stored), so
+     representations 1-3 are the complete at-rest set.
+
+     THE BOUNDARY (CD-2): the matchers, the banking guard and the
+     worker bundle are synchronous and stay synchronous, so the
+     envelope does NOT live inside the codec functions. It lives
+     at the store boundary in app.js: decrypt at bank load,
+     encrypt at bank save and at sync emit. Plaintext template
+     strings exist only in memory during a session — the same
+     concession every scan already makes.
+
+     DUAL-READ: a string without the enc.v1. prefix decodes
+     exactly as it did before v61, everywhere. That is what makes
+     the conversion non-destructive and lets sealed and encoded
+     banks coexist during transition.
+
+     CODEC FREEZE (declared with this release): from v61 the
+     template CONTENT — the packed EDCC bytes, the embedding
+     values, both bars and the fusion rule — is frozen. The
+     envelope changes only the wrapping. Any future change to
+     template content is a codec change requiring a full
+     calibration re-run (Seat 3 X4b) and must never ride along
+     with a wrapping change like this one. */
+  var BANK_ENC_PREFIX = 'enc.v1.';
+  var BANK_ENC_KDF_INFO = 'tsg-biom/bank/v1';
+  var BANK_ENC_PBKDF2_ITERATIONS = 600000;
+
+  function bankEncSubtle() {
+    try {
+      var c = typeof crypto !== 'undefined' ? crypto : (typeof globalThis !== 'undefined' ? globalThis.crypto : null);
+      return c && c.subtle && typeof c.subtle.encrypt === 'function' ? c.subtle : null;
+    } catch (e) { return null; }
+  }
+  function bankEncAvailable() { return !!bankEncSubtle(); }
+  function bankEncRandomBytes(n) {
+    var c = typeof crypto !== 'undefined' ? crypto : globalThis.crypto;
+    var out = new Uint8Array(n);
+    c.getRandomValues(out);
+    return out;
+  }
+  function bankEncUtf8(str) {
+    if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(str);
+    var bin = unescape(encodeURIComponent(str)), out = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  function bankEncFromUtf8(bytes) {
+    if (typeof TextDecoder !== 'undefined') return new TextDecoder().decode(bytes);
+    var bin = '';
+    for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return decodeURIComponent(escape(bin));
+  }
+  function bankEncBytesToB64(bytes) {
+    if (typeof Buffer !== 'undefined') return Buffer.from(bytes).toString('base64');
+    var s = '';
+    for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return typeof btoa === 'function' ? btoa(s) : null;
+  }
+  function bankEncB64ToBytes(str) {
+    if (typeof str !== 'string' || !str.length) return null;
+    try {
+      if (typeof Buffer !== 'undefined') return new Uint8Array(Buffer.from(str, 'base64'));
+      if (typeof atob === 'function') {
+        var bin = atob(str), out = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+        return out;
+      }
+    } catch (e) { return null; }
+    return null;
+  }
+  function bankEncIsSealed(s) { return typeof s === 'string' && s.indexOf(BANK_ENC_PREFIX) === 0; }
+  function bankEncKidOf(s) {
+    if (!bankEncIsSealed(s)) return null;
+    var rest = s.slice(BANK_ENC_PREFIX.length);
+    var dot = rest.indexOf('.');
+    return dot > 0 ? rest.slice(0, dot) : null;
+  }
+
+  /* ---- vault key primitives (custody itself lives in app.js) ---- */
+  function vaultGenerateRaw() { return bankEncRandomBytes(32); }
+  function vaultKeyId(rawBytes) {
+    var subtle = bankEncSubtle();
+    if (!subtle) return Promise.reject(new Error('WebCrypto unavailable'));
+    return subtle.digest('SHA-256', rawBytes).then(function (h) {
+      var bytes = new Uint8Array(h), hex = '';
+      for (var i = 0; i < 5; i++) hex += ('0' + bytes[i].toString(16)).slice(-2);
+      return hex;
+    });
+  }
+  /* Import raw vault material as the HKDF base key. extractable
+     is the caller's custody choice: true only during the setup
+     window (so the recovery sheet can be produced), false once
+     setup completes. */
+  function vaultImportKey(rawBytes, extractable) {
+    var subtle = bankEncSubtle();
+    if (!subtle) return Promise.reject(new Error('WebCrypto unavailable'));
+    return subtle.importKey('raw', rawBytes, { name: 'HKDF' }, !!extractable, ['deriveKey']);
+  }
+  function vaultDeriveBankKey(vaultKey, biomId) {
+    var subtle = bankEncSubtle();
+    if (!subtle || !vaultKey) return Promise.reject(new Error('WebCrypto unavailable'));
+    return subtle.deriveKey(
+      { name: 'HKDF', hash: 'SHA-256', salt: bankEncUtf8(String(biomId || '')), info: bankEncUtf8(BANK_ENC_KDF_INFO) },
+      vaultKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  }
+  /* The recovery-sheet wrap: the raw vault key AES-GCM-encrypted
+     under a passphrase-derived key (PBKDF2-SHA-256, high work
+     factor). The blob is safe to store next to the vault record;
+     without the passphrase it yields nothing. */
+  function vaultWrapKey(rawBytes, passphrase) {
+    var subtle = bankEncSubtle();
+    if (!subtle) return Promise.reject(new Error('WebCrypto unavailable'));
+    var salt = bankEncRandomBytes(16), nonce = bankEncRandomBytes(12);
+    return subtle.importKey('raw', bankEncUtf8(String(passphrase || '')), { name: 'PBKDF2' }, false, ['deriveKey'])
+      .then(function (base) {
+        return subtle.deriveKey(
+          { name: 'PBKDF2', hash: 'SHA-256', salt: salt, iterations: BANK_ENC_PBKDF2_ITERATIONS },
+          base, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+      })
+      .then(function (wrapKey) { return subtle.encrypt({ name: 'AES-GCM', iv: nonce }, wrapKey, rawBytes); })
+      .then(function (ct) {
+        return JSON.stringify({ v: 1, salt: bankEncBytesToB64(salt), nonce: bankEncBytesToB64(nonce), ct: bankEncBytesToB64(new Uint8Array(ct)) });
+      });
+  }
+  function vaultUnwrapKey(wrapped, passphrase) {
+    var subtle = bankEncSubtle();
+    if (!subtle || typeof wrapped !== 'string') return Promise.resolve(null);
+    var blob;
+    try { blob = JSON.parse(wrapped); } catch (e) { return Promise.resolve(null); }
+    var salt = bankEncB64ToBytes(blob.salt), nonce = bankEncB64ToBytes(blob.nonce), ct = bankEncB64ToBytes(blob.ct);
+    if (!salt || !nonce || !ct) return Promise.resolve(null);
+    return subtle.importKey('raw', bankEncUtf8(String(passphrase || '')), { name: 'PBKDF2' }, false, ['deriveKey'])
+      .then(function (base) {
+        return subtle.deriveKey(
+          { name: 'PBKDF2', hash: 'SHA-256', salt: salt, iterations: BANK_ENC_PBKDF2_ITERATIONS },
+          base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+      })
+      .then(function (wrapKey) { return subtle.decrypt({ name: 'AES-GCM', iv: nonce }, wrapKey, ct); })
+      .then(function (raw) { return new Uint8Array(raw); })
+      .catch(function () { return null; });
+  }
+  /* Recovery sheet encoding: the 32 raw key bytes as grouped
+     RFC 4648 base32 (no padding) — 52 characters in 13 groups of
+     4, typeable from a printed sheet. Decode tolerates case,
+     spaces and dashes and rejects anything that is not exactly
+     32 bytes of key. */
+  var BANK_ENC_B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  function vaultRecoveryEncode(rawBytes) {
+    if (!rawBytes || rawBytes.length !== 32) return null;
+    var bits = 0, val = 0, out = '';
+    for (var i = 0; i < rawBytes.length; i++) {
+      val = (val << 8) | rawBytes[i]; bits += 8;
+      while (bits >= 5) { bits -= 5; out += BANK_ENC_B32[(val >>> bits) & 31]; }
+    }
+    if (bits > 0) out += BANK_ENC_B32[(val << (5 - bits)) & 31];
+    return out.replace(/(.{4})/g, '$1 ').trim();
+  }
+  function vaultRecoveryDecode(text) {
+    if (typeof text !== 'string') return null;
+    var clean = text.toUpperCase().replace(/[^A-Z2-7]/g, '');
+    if (clean.length !== 52) return null;
+    var bits = 0, val = 0, out = [];
+    for (var i = 0; i < clean.length; i++) {
+      var idx = BANK_ENC_B32.indexOf(clean[i]);
+      if (idx === -1) return null;
+      val = (val << 5) | idx; bits += 5;
+      if (bits >= 8) { bits -= 8; out.push((val >>> bits) & 0xFF); }
+    }
+    return out.length === 32 ? new Uint8Array(out) : null;
+  }
+
+  /* ---- the envelope on one template string ---- */
+  function bankEncryptString(plain, bankKey, kid) {
+    var subtle = bankEncSubtle();
+    if (!subtle || typeof plain !== 'string') return Promise.reject(new Error('cannot seal'));
+    if (bankEncIsSealed(plain)) return Promise.resolve(plain); // never double-seal
+    var nonce = bankEncRandomBytes(12);
+    return subtle.encrypt({ name: 'AES-GCM', iv: nonce }, bankKey, bankEncUtf8(plain)).then(function (ct) {
+      var ctBytes = new Uint8Array(ct), joined = new Uint8Array(nonce.length + ctBytes.length);
+      joined.set(nonce, 0); joined.set(ctBytes, nonce.length);
+      return BANK_ENC_PREFIX + String(kid || '') + '.' + bankEncBytesToB64(joined);
+    });
+  }
+  /* Dual-read: a string without the prefix IS the plaintext
+     (pre-v61 form) and returns unchanged. A sealed string that
+     cannot be opened (wrong key, corruption, tag mismatch)
+     resolves null — the caller leaves the sealed string in
+     place, so the bank reads as missing evidence, never as
+     shifted evidence and never as garbage plaintext. */
+  function bankDecryptString(s, bankKey) {
+    if (typeof s !== 'string') return Promise.resolve(null);
+    if (!bankEncIsSealed(s)) return Promise.resolve(s);
+    var subtle = bankEncSubtle();
+    if (!subtle || !bankKey) return Promise.resolve(null);
+    var rest = s.slice(BANK_ENC_PREFIX.length), dot = rest.indexOf('.');
+    if (dot <= 0) return Promise.resolve(null);
+    var joined = bankEncB64ToBytes(rest.slice(dot + 1));
+    if (!joined || joined.length <= 12 + 16) return Promise.resolve(null);
+    var nonce = joined.slice(0, 12), ct = joined.slice(12);
+    return subtle.decrypt({ name: 'AES-GCM', iv: nonce }, bankKey, ct)
+      .then(function (pt) { return bankEncFromUtf8(new Uint8Array(pt)); })
+      .catch(function () { return null; });
+  }
+
+  /* ---- bank-level transforms over a person record ----
+     Every stored template string lives in exactly three arrays
+     (the seam list above): palmProfile.codes,
+     palmProfile.neural.embeddings, palmProfile.legacyCodes.
+     bankBankRefs collects them all; the coverage test in
+     tests/v61-b1.test.js list-checks this enumeration against
+     the record the sync builder emits. */
+  function bankBankRefs(prof) {
+    var refs = [];
+    function collect(arr) {
+      if (!Array.isArray(arr)) return;
+      for (var i = 0; i < arr.length; i++) if (typeof arr[i] === 'string') refs.push({ arr: arr, idx: i });
+    }
+    if (!prof || typeof prof !== 'object') return refs;
+    collect(prof.codes);
+    if (prof.neural && typeof prof.neural === 'object') collect(prof.neural.embeddings);
+    collect(prof.legacyCodes);
+    return refs;
+  }
+  function bankTemplateState(person) {
+    var prof = person && typeof person === 'object' ? person.palmProfile : null;
+    var refs = bankBankRefs(prof);
+    var sealed = 0;
+    refs.forEach(function (r) { if (bankEncIsSealed(r.arr[r.idx])) sealed++; });
+    return {
+      total: refs.length, sealed: sealed,
+      state: refs.length === 0 ? 'none' : sealed === 0 ? 'encoded' : sealed === refs.length ? 'sealed' : 'mixed'
+    };
+  }
+  function clonePersonWithProfile(person) {
+    var np = {};
+    Object.keys(person).forEach(function (k) { np[k] = person[k]; });
+    var prof = person.palmProfile, nprof = {};
+    Object.keys(prof).forEach(function (k) { nprof[k] = prof[k]; });
+    if (Array.isArray(prof.codes)) nprof.codes = prof.codes.slice();
+    if (Array.isArray(prof.legacyCodes)) nprof.legacyCodes = prof.legacyCodes.slice();
+    if (prof.neural && typeof prof.neural === 'object') {
+      var nn = {};
+      Object.keys(prof.neural).forEach(function (k) { nn[k] = prof.neural[k]; });
+      if (Array.isArray(prof.neural.embeddings)) nn.embeddings = prof.neural.embeddings.slice();
+      nprof.neural = nn;
+    }
+    np.palmProfile = nprof;
+    return np;
+  }
+  /* Encrypt a copy of the person's bank. deriveKey(biomId) must
+     resolve the per-bank AES-GCM key. Fail-safe by construction:
+     a string that cannot be sealed is left EXACTLY as it was and
+     counted under failed — an enrolment is never bricked by a
+     crypto failure. The input person is never mutated. When
+     every template string ends sealed, the copy's profile is
+     stamped enc:'v1' (the marker the sync record and the API
+     whitelist carry). */
+  function bankEncryptPerson(person, deriveKey, kid) {
+    if (!person || typeof person !== 'object' || !person.palmProfile || typeof person.palmProfile !== 'object') {
+      return Promise.resolve({ person: person, sealed: 0, already: 0, failed: 0 });
+    }
+    var np = clonePersonWithProfile(person);
+    var refs = bankBankRefs(np.palmProfile);
+    if (!refs.length) return Promise.resolve({ person: np, sealed: 0, already: 0, failed: 0 });
+    return Promise.resolve()
+      .then(function () { return deriveKey(person.id); })
+      .then(function (bankKey) {
+        var counts = { sealed: 0, already: 0, failed: 0 };
+        var chain = Promise.resolve();
+        refs.forEach(function (r) {
+          chain = chain.then(function () {
+            var cur = r.arr[r.idx];
+            if (bankEncIsSealed(cur)) { counts.already++; return null; }
+            return bankEncryptString(cur, bankKey, kid).then(function (sealedStr) {
+              r.arr[r.idx] = sealedStr; counts.sealed++;
+            }).catch(function () { counts.failed++; });
+          });
+        });
+        return chain.then(function () { return counts; });
+      })
+      .catch(function () { return { sealed: 0, already: 0, failed: refs.length }; })
+      .then(function (counts) {
+        var st = bankTemplateState(np);
+        if (st.total > 0 && st.sealed === st.total) np.palmProfile.enc = 'v1';
+        return { person: np, sealed: counts.sealed, already: counts.already, failed: counts.failed };
+      });
+  }
+  /* Decrypt a copy of the person's bank (the load boundary).
+     Plaintext strings pass through untouched (dual-read); a
+     sealed string that cannot be opened stays sealed and is
+     counted under failed. When nothing failed, the copy carries
+     no enc marker — the in-memory form is exactly the pre-v61
+     form the matchers have always read. */
+  function bankDecryptPerson(person, deriveKey) {
+    if (!person || typeof person !== 'object' || !person.palmProfile || typeof person.palmProfile !== 'object') {
+      return Promise.resolve({ person: person, opened: 0, failed: 0, plain: 0 });
+    }
+    var np = clonePersonWithProfile(person);
+    var refs = bankBankRefs(np.palmProfile);
+    var hasSealed = refs.some(function (r) { return bankEncIsSealed(r.arr[r.idx]); });
+    if (!hasSealed) {
+      if (np.palmProfile.enc) delete np.palmProfile.enc;
+      return Promise.resolve({ person: np, opened: 0, failed: 0, plain: refs.length });
+    }
+    return Promise.resolve()
+      .then(function () { return deriveKey(person.id); })
+      .then(function (bankKey) {
+        var counts = { opened: 0, failed: 0, plain: 0 };
+        var chain = Promise.resolve();
+        refs.forEach(function (r) {
+          chain = chain.then(function () {
+            var cur = r.arr[r.idx];
+            if (!bankEncIsSealed(cur)) { counts.plain++; return null; }
+            return bankDecryptString(cur, bankKey).then(function (pt) {
+              if (typeof pt === 'string') { r.arr[r.idx] = pt; counts.opened++; }
+              else counts.failed++;
+            });
+          });
+        });
+        return chain.then(function () { return counts; });
+      })
+      .catch(function () {
+        var failed = 0;
+        refs.forEach(function (r) { if (bankEncIsSealed(r.arr[r.idx])) failed++; });
+        return { opened: 0, failed: failed, plain: refs.length - failed };
+      })
+      .then(function (counts) {
+        if (counts.failed === 0 && np.palmProfile.enc) delete np.palmProfile.enc;
+        return { person: np, opened: counts.opened, failed: counts.failed, plain: counts.plain };
+      });
+  }
+  /* The sync-emit boundary: seal the template arrays of a
+     syncProfileRecord core and stamp enc:'v1' when every string
+     sealed. A failure anywhere rejects — the caller queues
+     nothing rather than mirror a plaintext bank by accident. */
+  function bankEncryptProfileCore(core, deriveKey, kid) {
+    if (!core || typeof core !== 'object') return Promise.resolve(core);
+    var out = {};
+    Object.keys(core).forEach(function (k) { out[k] = core[k]; });
+    out.edccCodes = Array.isArray(core.edccCodes) ? core.edccCodes.slice() : [];
+    out.neuralEmbeddings = Array.isArray(core.neuralEmbeddings) ? core.neuralEmbeddings.slice() : [];
+    var strings = [];
+    out.edccCodes.forEach(function (s, i) { strings.push({ arr: out.edccCodes, idx: i }); });
+    out.neuralEmbeddings.forEach(function (s, i) { strings.push({ arr: out.neuralEmbeddings, idx: i }); });
+    if (!strings.length) return Promise.resolve(out);
+    return Promise.resolve()
+      .then(function () { return deriveKey(core.biomId); })
+      .then(function (bankKey) {
+        var chain = Promise.resolve();
+        strings.forEach(function (r) {
+          chain = chain.then(function () {
+            return bankEncryptString(r.arr[r.idx], bankKey, kid).then(function (sealedStr) { r.arr[r.idx] = sealedStr; });
+          });
+        });
+        return chain;
+      })
+      .then(function () {
+        var allSealed = strings.every(function (r) { return bankEncIsSealed(r.arr[r.idx]); });
+        if (allSealed) out.enc = 'v1';
+        return out;
+      });
+  }
+  /* The v61 conversion over a people array (the app runs this
+     over the raw stored rows at the v61 boot; see the v61 note
+     in the migration chain). Pure over its input: rows it does
+     not change are returned by identity, and nothing but
+     template strings and the enc marker is ever touched —
+     wallets, hand stamps, model stamps, points and every other
+     field ride through byte-identical. */
+  function convertBanksV61(people, deriveKey, kid) {
+    var rows = Array.isArray(people) ? people : [];
+    var out = rows.slice();
+    var totals = { banksConverted: 0, banksAlreadySealed: 0, banksFailed: 0, templatesSealed: 0 };
+    var chain = Promise.resolve();
+    rows.forEach(function (person, i) {
+      chain = chain.then(function () {
+        var st = bankTemplateState(person);
+        if (st.total === 0) return null;
+        if (st.state === 'sealed') { totals.banksAlreadySealed++; return null; }
+        return bankEncryptPerson(person, deriveKey, kid).then(function (res) {
+          totals.templatesSealed += res.sealed;
+          if (res.failed > 0) { totals.banksFailed++; if (res.sealed > 0) out[i] = res.person; return null; }
+          if (res.sealed > 0) { out[i] = res.person; totals.banksConverted++; }
+          return null;
+        });
+      });
+    });
+    return chain.then(function () {
+      return { people: out, banksConverted: totals.banksConverted, banksAlreadySealed: totals.banksAlreadySealed, banksFailed: totals.banksFailed, templatesSealed: totals.templatesSealed };
+    });
+  }
+
   /* ================= Stored-data migration (v38) =================
      STANDING RULE (the Chairman's order, 2026-11-23): "from now keep
      data dont wipe". App updates MIGRATE the on-device store forward
@@ -4897,7 +5331,35 @@
      stored field changes, so the step is the identity and a
      v59 store — banks, wallet, hand stamps and a queued sync
      outbox row included — opens under v60 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60'];
+  /* v60 -> v61 is a CONVERSION OF REPRESENTATION, not of shape
+     (Phase B item B1 — envelope encryption, shipping alone):
+     every stored palm template string (packed EDCC codes,
+     PalmNet embeddings, archived legacy codes) is wrapped in
+     the AES-GCM envelope described in the envelope section
+     above, under a per-Biom-ID key derived from the device
+     vault key. The record SHAPE does not change — the same
+     fields hold the same templates, sealed — so this chain
+     step is the identity, deliberately: the conversion itself
+     is async WebCrypto work keyed by a vault key that must
+     never enter this pure snapshot chain, so it runs at the
+     app storage boundary (app.js Vault.convertBanks, over
+     B.convertBanksV61) in the same boot that first stamps
+     v61, right after this chain runs. Dual-read makes every
+     intermediate state valid: a bank the conversion has not
+     reached yet still opens (it is encoded, and the vault
+     card reports it as such), a sealed bank opens only under
+     the vault key, and a bank that fails to open reads as
+     missing evidence — never dropped, never shifted. The
+     parity gate (tests/v61-b1.test.js) proves the conversion
+     lossless: decrypting a converted bank returns the exact
+     pre-v61 strings, and fused scores over a fixture corpus
+     are IDENTICAL before and after. CODEC FREEZE declared
+     here: from v61 the template content is frozen; only the
+     wrapping may ever change again without a full calibration
+     re-run. A v60 store — banks of either stamp, hand stamps,
+     wallet, and a queued sync outbox row included — opens
+     under v61 with every non-template field byte-identical. */
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -4920,6 +5382,7 @@
     'v58': function (snap) { return snap; },
     'v59': function (snap) { return snap; },
     'v60': function (snap) { return snap; },
+    'v61': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
@@ -5218,6 +5681,27 @@
     migrateBiomData: migrateBiomData,
     syncScanRecord: syncScanRecord,
     syncProfileRecord: syncProfileRecord,
+    BANK_ENC_PREFIX: BANK_ENC_PREFIX,
+    bankEncAvailable: bankEncAvailable,
+    bankEncBytesToB64: bankEncBytesToB64,
+    bankEncB64ToBytes: bankEncB64ToBytes,
+    bankEncIsSealed: bankEncIsSealed,
+    bankEncKidOf: bankEncKidOf,
+    vaultGenerateRaw: vaultGenerateRaw,
+    vaultKeyId: vaultKeyId,
+    vaultImportKey: vaultImportKey,
+    vaultDeriveBankKey: vaultDeriveBankKey,
+    vaultWrapKey: vaultWrapKey,
+    vaultUnwrapKey: vaultUnwrapKey,
+    vaultRecoveryEncode: vaultRecoveryEncode,
+    vaultRecoveryDecode: vaultRecoveryDecode,
+    bankEncryptString: bankEncryptString,
+    bankDecryptString: bankDecryptString,
+    bankTemplateState: bankTemplateState,
+    bankEncryptPerson: bankEncryptPerson,
+    bankDecryptPerson: bankDecryptPerson,
+    bankEncryptProfileCore: bankEncryptProfileCore,
+    convertBanksV61: convertBanksV61,
     SYNC_SCAN_KINDS: SYNC_SCAN_KINDS,
     wipeBiomData: wipeBiomData,
     emptyBiomDataSnapshot: emptyBiomDataSnapshot,

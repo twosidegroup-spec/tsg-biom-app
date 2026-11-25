@@ -282,6 +282,7 @@ section.page.active{animation:pagein .3s ease both}
    The measured panel under a failed scan's message (wallet card,
    terminal, top-up refusal): the same surface language as the
    v52 cards — soft border, calm rows, no raw debug text. */
+.vaultsheet{margin-top:12px;background:#fbfcfc;border:1px solid var(--line2);border-radius:16px;padding:14px 16px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:15px;letter-spacing:1px;line-height:1.7;word-break:break-all;user-select:all;text-align:left}
 .diagpanel{margin-top:12px;background:#fbfcfc;border:1px solid var(--line2);border-radius:16px;padding:14px 16px;text-align:left}
 .diagtitle{font-weight:800;font-size:14.5px;margin-bottom:6px}
 .diagrow{font-size:13.5px;line-height:1.55;color:var(--text);margin-top:3px}

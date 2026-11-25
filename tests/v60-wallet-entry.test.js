@@ -222,10 +222,14 @@ check('MONEY the terminal scan binding is untouched',
   appSrc.indexOf("$('termScan').addEventListener('click', runTermScan)") !== -1);
 
 /* ---------------- versions --------------------------------------- */
-check('VERSION app data version and shell version agree at v60',
-  appSrc.indexOf("APP_DATA_VERSION = 'v60'") !== -1 && swSrc.indexOf('tsg-biom-shell-v60') !== -1);
-check('VERSION v60 is the newest chain link with an adoption step',
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v60' &&
+/* v61 named pin change (the v55–v60 precedent): the absolute v60
+   pins below become coherence pins — v60's own behaviours stay
+   pinned by the sections above; the CURRENT version is pinned by
+   the migration suite and v61-b1.test.js. */
+check('VERSION the app version pin is coherent (v60 section, converted at the v61 bump)',
+  /APP_DATA_VERSION = 'v\d+'/.test(appSrc) && /tsg-biom-shell-v\d+/.test(swSrc));
+check('VERSION v60 remains a chain link with its adoption step (v60 section, converted at the v61 bump)',
+  B.BIOM_DATA_VERSIONS.indexOf('v60') !== -1 &&
   B.migrateBiomData({ people: [], logs: [], transactions: [], meta: [] }, 'v59', 'v60').appliedSteps.join(',') === 'v60');
 
 info('rig only: source pins and extracted-function behaviour. The phone verdict — the wallet opening with no scan, the picker on the two-profile phone, money still demanding the palm — is the real-world proof, and it has not been claimed here.');
