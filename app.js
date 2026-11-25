@@ -6817,6 +6817,16 @@
       }
       var hasOwner = people.some(function (p) { return p.owner === true; });
       go('wallet');
+      /* v66 gate fix: the wallet re-render that go('wallet')
+         starts settles asynchronously and resets the scan card
+         (adds 'hidden', clears walletScanCtx). Showing the unlock
+         card synchronously lets that reset land after it — the
+         card ends up hidden with a nulled context and owner mode
+         can never open. Chain the card on a fresh renderWallet()
+         promise instead: every pending reset has landed by the
+         time the card is shown, and nothing re-renders the
+         wallet behind it. The unlock itself is unchanged. */
+      renderWallet().then(function () {
       showWalletScan({
         title: hasOwner ? 'Owner access' : 'Claim owner access',
         syncKind: 'owner-unlock', // v63 Scan Sync kind for this context
@@ -6857,6 +6867,7 @@
             });
           });
         }
+      });
       });
     });
   }
