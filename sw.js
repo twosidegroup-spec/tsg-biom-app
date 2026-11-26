@@ -4,7 +4,7 @@
    the network on every load so the bytes the app verifies are always
    the bytes currently served (the model is additionally SHA-256
    verified against the hash pinned in app code). */
-const CACHE = 'tsg-biom-shell-v67';
+const CACHE = 'tsg-biom-shell-v68';
 const SHELL = [
   './',
   './index.html',
@@ -37,6 +37,10 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return; // cross-origin: network only
   // v64 (Seat 2 M-3): same-origin model and vendor paths are also
   // network-only — never matched from, or written to, this cache.
+  // v68: the detector binary parts live under /vendor/.../parts/,
+  // so they inherit this rule — the bytes the app assembles and
+  // hash-verifies are always the bytes currently served, never a
+  // stale cached copy.
   if (url.pathname.indexOf('/models/') !== -1 || url.pathname.indexOf('/vendor/') !== -1) return;
   event.respondWith(
     caches.match(event.request).then((hit) => {

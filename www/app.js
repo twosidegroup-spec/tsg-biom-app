@@ -284,8 +284,36 @@
      computed in parallel instead of in sequence. No bar,
      model pin, guard, strict-money site, encryption,
      signing, sync or copy truth changes. The migration step
-     is the identity (see biometrics.js). */
-  var APP_DATA_VERSION = 'v67';
+     is the identity (see biometrics.js).
+
+     v68 (2026-11-26) is the DETECTOR DELIVERY release: the five
+     MediaPipe binary runtime files could not travel through
+     the text-only channel that ships this app, so on the live
+     host they answered 404 and the hand detector could never
+     run — every real scan ended at the v67 honest detector
+     message (the Chairman's screenshot, 2026-11-26 05:11).
+     The binaries now travel the way the PalmNet weights
+     already do: base64 text parts under vendor/.../parts/,
+     reassembled and SHA-256-verified in the browser against
+     pins held in code (MpRuntime, below), and handed to
+     MediaPipe as Blob URLs through locateFile — everything
+     served from this origin, no CDN, no third-party hotlink.
+     PalmProc construction now waits on that assembly; the
+     v67 detector-health behaviour is unchanged (per-call
+     health, honest end-state at three consecutive failures,
+     no camera ever switches itself, a still-loading instance
+     is never torn down). One CSP word changes, recorded
+     plainly: connect-src gains blob: — the runtime fetches
+     its files from the assembled Blob URLs, and Chromium
+     refuses blob: fetches without it (proven in the v68
+     rig). blob: names no network endpoint and its URLs are
+     minted only by this origin's own scripts; the policy
+     already carries blob: for worker-src, img-src and
+     media-src, and the M-7 API endpoint pin is unchanged.
+     No bar, model pin, guard, strict-money site,
+     encryption, signing, sync or copy truth changes. The
+     migration step is the identity (see biometrics.js). */
+  var APP_DATA_VERSION = 'v68';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -2118,6 +2146,135 @@
     return analysisScratch;
   }
 
+  /* ---------------- Detector runtime assembly (v68) --------------
+     The five MediaPipe BINARY runtime files (the two WASM
+     binaries, the packed-assets data file, the landmark model
+     and the graph) cannot travel through the text-only channel
+     that ships this app, so on the live host they answered 404
+     and the detector could never run at all — every detector
+     failure then looked exactly like "no hand" (the root cause
+     of the Chairman's 2026-11-26 camera-loop report, and of the
+     honest detector-blocked state his screenshot showed once
+     v67 stopped the looping). The binaries now travel the way
+     the PalmNet weights already do: base64 text parts under
+     vendor/mediapipe-hands-0.4.1675469240/parts/, reassembled
+     here in the browser before the Hands solution is
+     constructed, and handed to MediaPipe as one Blob URL per
+     file through locateFile. Everything is served from this
+     origin — no CDN, no third-party hotlink (TSG-ONLY
+     directive). Each file's byte length and SHA-256 are pinned
+     IN CODE below, exactly as the PalmNet pins are held: the
+     parts manifest is checked against the pins before any part
+     is fetched, and every assembled file is length- and
+     hash-verified before its Blob URL exists. Any failure —
+     manifest or part fetch, a pin disagreement, a size or hash
+     mismatch, no SubtleCrypto — resolves to "not ready" and
+     PalmProc's calls land in the v67 detector-health path: the
+     honest detector message, never a silent "no hand". */
+  var MP_PARTS_DIR = 'vendor/mediapipe-hands-0.4.1675469240/parts/';
+  var MP_EXPECTED_FILES = [
+    { name: 'hands.binarypb', bytes: 550, sha256: 'ab76c4215fca99cc2db1b5885cb8398d210e59ebe685245f72e692b4b58421e4', mime: 'application/octet-stream' },
+    { name: 'hand_landmark_lite.tflite', bytes: 2071408, sha256: 'd7fde8ac11f8ce03f8663775bfc323f4fc9f2a38062b4f4efa142874ef5b2a48', mime: 'application/octet-stream' },
+    { name: 'hands_solution_packed_assets.data', bytes: 4326731, sha256: 'bdce7b66bfc5b39ba86a47775c98e0b186fe73f8308c2279f852af4c89ffdf42', mime: 'application/octet-stream' },
+    { name: 'hands_solution_simd_wasm_bin.wasm', bytes: 6026259, sha256: '78ef7eb86ebc6424ac06b13f89b9a1fc01ff35e07520e37de98887cf88c06653', mime: 'application/wasm' },
+    { name: 'hands_solution_wasm_bin.wasm', bytes: 5917209, sha256: '4e70eaf8063e0e9ac10e682d9d6b55c08d0788f0a8d49925e2e484636526e157', mime: 'application/wasm' }
+  ];
+  function mpB64ToBytes(b64) {
+    var bin = atob(b64);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+  function mpSha256Hex(bytes) {
+    if (typeof crypto === 'undefined' || !crypto.subtle || !crypto.subtle.digest) {
+      return Promise.reject(new Error('detector integrity check unavailable (no SubtleCrypto) — the detector is disabled for this load rather than run unverified'));
+    }
+    return crypto.subtle.digest('SHA-256', bytes).then(function (h) {
+      var hex = ''; var hv = new Uint8Array(h);
+      for (var i = 0; i < hv.length; i++) hex += ('0' + hv[i].toString(16)).slice(-2);
+      return hex;
+    });
+  }
+  var MpRuntime = {
+    state: 'idle', // idle | loading | ready | failed
+    failReason: '',
+    urls: null, // filename -> Blob URL, exactly the five pinned names
+    promise: null,
+    /* Resolves true once every pinned file is assembled and
+       verified; false on any failure. A failed attempt clears
+       its own promise so a LATER scan can retry (a transient
+       network failure must not brick the detector for the whole
+       session — the honest message itself invites a retry);
+       concurrent calls share the one in-flight attempt. */
+    ensure: function () {
+      if (this.urls) return Promise.resolve(true);
+      if (this.promise) return this.promise;
+      var self = this;
+      this.state = 'loading';
+      this.promise = this.assemble().then(function (urls) {
+        self.urls = urls;
+        self.state = 'ready';
+        self.promise = null;
+        return true;
+      }, function (e) {
+        self.state = 'failed';
+        self.failReason = e && e.message ? e.message : String(e);
+        self.promise = null;
+        return false;
+      });
+      return this.promise;
+    },
+    assemble: function () {
+      var self = this;
+      var work = fetch(MP_PARTS_DIR + 'manifest.json').then(function (r) {
+        if (!r.ok) throw new Error('detector parts manifest HTTP ' + r.status);
+        return r.json();
+      }).then(function (man) {
+        var listed = {};
+        (man.files || []).forEach(function (f) { listed[f.name] = f; });
+        /* The manifest must name exactly the pinned set, with
+           the pinned sizes and hashes — checked before any part
+           is fetched, on the same fail-closed terms as the
+           PalmNet manifest pre-check. */
+        var jobs = MP_EXPECTED_FILES.map(function (exp) {
+          var f = listed[exp.name];
+          if (!f) throw new Error('detector parts manifest is missing ' + exp.name);
+          if (f.bytes !== exp.bytes || f.sha256 !== exp.sha256) {
+            throw new Error('detector parts manifest disagrees with this build for ' + exp.name + ' — the detector is disabled for this load');
+          }
+          delete listed[exp.name];
+          return self.assembleFile(exp, f);
+        });
+        if (Object.keys(listed).length) throw new Error('detector parts manifest lists files this build does not run');
+        return Promise.all(jobs);
+      }).then(function (urlsArr) {
+        var urls = {};
+        MP_EXPECTED_FILES.forEach(function (exp, i) { urls[exp.name] = urlsArr[i]; });
+        return urls;
+      });
+      /* One bound for the whole assembly: a scan must never
+         wait forever on runtime files (the v67 doctrine). */
+      return Promise.race([work, new Promise(function (resolve, reject) {
+        setTimeout(function () { reject(new Error('detector runtime assembly timed out')); }, 90000);
+      })]);
+    },
+    assembleFile: function (exp, f) {
+      return Promise.all((f.parts || []).map(function (p) {
+        return fetch(MP_PARTS_DIR + p).then(function (r) {
+          if (!r.ok) throw new Error('detector part HTTP ' + r.status + ' (' + p + ')');
+          return r.text();
+        });
+      })).then(function (texts) {
+        var bytes = mpB64ToBytes(texts.join('').replace(/\s+/g, ''));
+        if (bytes.length !== exp.bytes) throw new Error('detector file size mismatch (' + exp.name + ': ' + bytes.length + ' != ' + exp.bytes + ')');
+        return mpSha256Hex(bytes).then(function (hex) {
+          if (hex !== exp.sha256) throw new Error('detector file hash mismatch (' + exp.name + ')');
+          return URL.createObjectURL(new Blob([bytes], { type: exp.mime }));
+        });
+      });
+    }
+  };
+
   var PalmProc = {
     hands: null, pending: null, _mpLabel: null, _frameFailed: false, _everResulted: false,
     /* v67: per-call detector health. lastCallFailed() tells
@@ -2142,11 +2299,43 @@
        (B.palmAnatomicalHand); this label never decides anything. */
     lastHandedness: function () { return this._mpLabel || null; },
     init: function () {
+      /* v68: construction waits on the runtime assembly
+         (MpRuntime) — init() is now the fire-and-forget warm-up
+         the pre-warm call sites have always treated it as; the
+         scan path itself awaits ensureHands() inside
+         landmarks(). */
+      this.ensureHands();
+    },
+    /* Resolves true once the Hands instance exists (runtime
+       assembled + verified, solution constructed); false when
+       the detector cannot run — the caller marks the frame
+       failed and the v67 per-stream counting ends the scan
+       with the honest detector message. A failed attempt is
+       not cached, so a later scan retries the assembly. */
+    ensureHands: function () {
+      if (this.hands) return Promise.resolve(true);
+      if (this._initPromise) return this._initPromise;
+      var self = this;
+      this._initPromise = MpRuntime.ensure().then(function (ok) {
+        self._initPromise = null;
+        if (!ok) return false;
+        try { self.construct(); } catch (e) { return false; }
+        return !!self.hands;
+      }, function () { self._initPromise = null; return false; });
+      return this._initPromise;
+    },
+    construct: function () {
       if (this.hands) return;
       var self = this;
       /* v64 (Phase A Step 5.1, Seat 2 H-1): MediaPipe is SELF-HOSTED
-         under vendor/ — no third-party code executes in this origin. */
-      this.hands = new Hands({ locateFile: function (f) { return 'vendor/mediapipe-hands-0.4.1675469240/' + f; } });
+         under vendor/ — no third-party code executes in this origin.
+         v68: the five binary files resolve to their assembled,
+         hash-verified Blob URLs; every other file keeps its
+         vendored path. */
+      this.hands = new Hands({ locateFile: function (f) {
+        var assembled = MpRuntime.urls && MpRuntime.urls[f];
+        return assembled || ('vendor/mediapipe-hands-0.4.1675469240/' + f);
+      } });
       // v25 A/B: lite landmark model (complexity 0) - the full model
       // is the per-frame bottleneck on a budget phone CPU.
       this.hands.setOptions({ maxNumHands: 1, modelComplexity: 0, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
@@ -2160,10 +2349,19 @@
     },
     landmarks: function (image) {
       var self = this;
-      // v67: a runtime that failed to load (the Hands global
-      // missing) throws here — mark the call failed and answer
-      // no-landmarks, never throw into the scan.
-      try { this.init(); } catch (e) { this._frameFailed = true; return Promise.resolve(null); }
+      // v68: the call first waits for the runtime assembly +
+      // construction (ensureHands). A detector that cannot run
+      // — assembly failed, or the Hands global missing so
+      // construction threw — marks the call failed and answers
+      // no-landmarks, never throws into the scan (the v67 rule,
+      // unchanged).
+      return this.ensureHands().then(function (ok) {
+        if (!ok) { self._frameFailed = true; return null; }
+        return self.sendFrame(image);
+      });
+    },
+    sendFrame: function (image) {
+      var self = this;
       return new Promise(function (resolve) {
         // Orphan guard: a caller still waiting when a new call arrives
         // is released with null - a silently replaced resolver would
