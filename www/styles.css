@@ -288,6 +288,11 @@ section.page.active{animation:pagein var(--dur-page) var(--ease-std) backwards}
 .scanpill{display:inline-flex;align-items:center;gap:8px;background:var(--blue-soft);color:var(--blue-dark);
   border:1px solid #c9def6;border-radius:999px;padding:7px 14px;font-size:13px;font-weight:800;margin:10px 0}
 .scanpill-dot{width:8px;height:8px;border-radius:50%;background:var(--blue);animation:pulse 1.6s ease infinite}
+/* v74: the on-screen scan timer readout, inside the scan pill —
+   tenths of the real measured elapsed, tabular numerals so the
+   digits never jitter the pill's width. Empty = no scan yet. */
+.scantimer{font-variant-numeric:tabular-nums;font-weight:700;color:var(--blue-dark)}
+.scantimer:empty{display:none}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 .scaninds{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .scanind{display:inline-flex;align-items:center;gap:7px;background:#f2f5fb;border:1px solid var(--line2);
