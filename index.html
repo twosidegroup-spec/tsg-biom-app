@@ -17,7 +17,7 @@
 <title>TSG Biom — Palmprint for Stores</title>
 <meta name="description" content="TSG Biom by TwoSide Group: hardware-free palmprint enrollment and verification through a phone or tablet camera, with bKash / Nagad Biom Pay for pharmacies, retail, supermarkets and malls.">
 <meta name="theme-color" content="#0b4ea2">
-<meta name="biom-build" content="v71">
+<meta name="biom-build" content="v72">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-180.png">
@@ -323,6 +323,25 @@
         </div>
       </div>
       <div class="card seccard">
+        <h2>Biom Pay wallet</h2>
+        <div class="setlist">
+          <button class="setrow" id="setPayWalletRow"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10.5h18"/><circle cx="16.6" cy="15" r="1.1"/></svg></span><span class="setlbl">Biom Pay wallet</span><span class="setval" id="setPayWalletVal">Not linked</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></span></button>
+        </div>
+        <div id="payWalletPanel" class="hidden" style="margin-top:12px">
+          <p class="sub" style="margin:0 0 10px">Link the bKash or Nagad wallet that Wallet Pay pays from. This is your Biom Pay wallet — it is separate from the funding accounts you link for Add Money.</p>
+          <label for="payWalletProvider">Provider</label>
+          <select id="payWalletProvider"><option value="">Choose provider</option><option value="bKash">bKash</option><option value="Nagad">Nagad</option></select>
+          <label for="payWalletNumber" style="margin-top:12px">Wallet number</label>
+          <input id="payWalletNumber" placeholder="01XXXXXXXXX" inputmode="tel" autocomplete="off">
+          <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
+            <div><button class="btn primary" id="payWalletSaveBtn">Save wallet</button></div>
+            <div><button class="btn" id="payWalletUnlinkBtn">Unlink</button></div>
+            <div><button class="btn" id="payWalletCancelBtn">Cancel</button></div>
+          </div>
+        </div>
+        <div id="payWalletMsg" style="margin-top:10px"></div>
+      </div>
+      <div class="card seccard">
         <h2>Use this app as</h2>
         <div class="setlist">
           <button class="setrow" id="setMerchantRow"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M4 12h16"/></svg></span><span class="setlbl">Use as Merchant</span><span class="setval">Scanner &amp; receipts</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></span></button>
@@ -410,7 +429,7 @@
         </div>
       </div>
     </div>
-    <div class="versionline" id="versionLine">TSG Biom · App v71 · TwoSide Group</div>
+    <div class="versionline" id="versionLine">TSG Biom · App v72 · TwoSide Group</div>
   </section>
 
   <!-- DESK (HOME) -->

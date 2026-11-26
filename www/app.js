@@ -346,7 +346,7 @@
      allowed to rest on, and the order they are judged in,
      changed. The migration step is the identity (see
      biometrics.js). */
-  var APP_DATA_VERSION = 'v71';
+  var APP_DATA_VERSION = 'v72';
   /* ---------------- v71 boot coherence + splash ------------------
      index.html stamps its build in <meta name="biom-build">.
      If the document that painted and the app.js that is running
@@ -7828,6 +7828,146 @@
   }
   wireProfileDelete();
 
+  /* v72: the Settings wiring for the Biom Pay wallet link.
+     Until v72, profile.walletProvider / walletNumber could
+     only be set in the enrolment details form, so an existing
+     profile could never link one and Wallet Pay refused it
+     ("your profile has no linked bKash / Nagad wallet") — the
+     v71 bKash sandbox rail could never engage for it. The row
+     opens an inline panel in the Delete-panel pattern; Save
+     and Unlink run through the B.walletSetPayWallet /
+     B.walletClearPayWallet store rules (enrolment's validation)
+     and persist through the EXISTING profile-mutation path —
+     the same one enrolment's finishEnrollment and every
+     post-enrolment mutation (top-up, re-register) use:
+     DB.put('people', person), then Sync.noteProfile(person),
+     then loadWalletPeople() refreshes the cached people list
+     so walletSessionPerson() and the Pay flow's fresh reads
+     see the link immediately. The mutation is written and
+     noted through that identical DB.put → Sync.noteProfile
+     path enrolment uses; the sealed vault bank record
+     (B.syncProfileRecord, the v62 protocol) carries the
+     biometric bank and the walletLink agreement field —
+     walletProvider / walletNumber are profile fields that,
+     exactly as when set at enrolment, live on the device
+     profile and are not part of that bank record. Only the
+     signed-in customer's own profile (walletSessionPerson)
+     is editable, and the panel captures that profile's id
+     when it opens and re-verifies it at Save / Unlink.
+     A refused Save writes NOTHING. */
+  function payWalletRowText(me) {
+    if (!me || !me.walletProvider) return 'Not linked';
+    return me.walletProvider + ' ' + B.maskWalletNumber(me.walletNumber);
+  }
+  /* v72 (Seat 1 F1): the pay-wallet panel reset — a module-scope
+     helper so renderSettings() can call it on every Settings
+     render. It hides the panel, re-enables the row, and clears
+     the FULL wallet number the panel holds and any message, so
+     no stale panel from a previous profile survives an account
+     switch, a log out, or plain navigation to Settings. */
+  function resetPayWalletPanel() {
+    var panel = $('payWalletPanel'), row = $('setPayWalletRow'),
+      numberInput = $('payWalletNumber'), msg = $('payWalletMsg');
+    if (panel) panel.classList.add('hidden');
+    if (row) row.disabled = false;
+    if (numberInput) numberInput.value = '';
+    if (msg) msg.innerHTML = '';
+  }
+  function wirePayWalletLink() {
+    var row = $('setPayWalletRow');
+    if (!row) return;
+    var panel = $('payWalletPanel'), providerSel = $('payWalletProvider'), numberInput = $('payWalletNumber'),
+      saveBtn = $('payWalletSaveBtn'), unlinkBtn = $('payWalletUnlinkBtn'), cancelBtn = $('payWalletCancelBtn'),
+      msg = $('payWalletMsg');
+    /* v72 (Seat 2 F2): the id of the profile this panel was
+       opened for, captured when the panel opens (the
+       wireProfileDelete targetId pattern) and re-verified at
+       Save / Unlink — the session could have moved to another
+       profile while the panel sat open. */
+    var panelTargetId = null;
+    function closePanel() {
+      resetPayWalletPanel();
+      saveBtn.disabled = false;
+      unlinkBtn.disabled = false;
+      cancelBtn.disabled = false;
+      panelTargetId = null;
+    }
+    function panelTargetMismatch() {
+      var me = walletSessionPerson();
+      return !panelTargetId || !me || me.id !== panelTargetId;
+    }
+    function refusePanelTargetMismatch() {
+      closePanel();
+      msg.innerHTML = '<div class="error">This panel was opened for a different account — close it and try again.</div>';
+    }
+    function persist(res, doneText) {
+      /* v72 (Seat 1 F2): the panel's buttons are disabled while
+         the write is in flight (the Delete panel precedent) and
+         re-enabled if it fails; success closes the panel. */
+      saveBtn.disabled = true;
+      unlinkBtn.disabled = true;
+      cancelBtn.disabled = true;
+      return DB.put('people', res.person).then(function () {
+        Sync.noteProfile(res.person);
+        /* v72 (Seat 2 F4): the write has landed — the save has
+           SUCCEEDED from here, whatever the cache refresh below
+           does. Commit the success UI first (the row is painted
+           from the saved row itself), then refresh the cached
+           people list inside its own catch. */
+        closePanel();
+        $('setPayWalletVal').textContent = payWalletRowText(res.person);
+        msg.innerHTML = '<div class="success">' + doneText + '</div>';
+        return loadWalletPeople().then(function () {
+          $('setPayWalletVal').textContent = payWalletRowText(walletSessionPerson());
+        }).catch(function () {
+          /* The link is saved on this device; only the cached
+             people refresh failed, so the row is refreshed on
+             the next render instead — a landed save is never
+             reported as a failed one. */
+        });
+      }).catch(function (e) {
+        saveBtn.disabled = false;
+        unlinkBtn.disabled = false;
+        cancelBtn.disabled = false;
+        msg.innerHTML = '<div class="error">Could not save the wallet on this device: ' + esc(e.message || e) + '</div>';
+      });
+    }
+    row.addEventListener('click', function () {
+      msg.innerHTML = '';
+      loadWalletPeople().then(function (people) {
+        var entry = resolveWalletEntry(people);
+        if (entry) walletSessionId = entry.id;
+        var me = walletSessionPerson();
+        if (!me) { msg.innerHTML = '<div class="error">No account is open — open your wallet first.</div>'; return; }
+        panelTargetId = me.id;
+        providerSel.value = me.walletProvider || '';
+        numberInput.value = me.walletNumber || '';
+        unlinkBtn.classList.toggle('hidden', !me.walletProvider);
+        panel.classList.remove('hidden');
+        row.disabled = true;
+        numberInput.focus();
+      });
+    });
+    cancelBtn.addEventListener('click', closePanel);
+    saveBtn.addEventListener('click', function () {
+      if (panelTargetMismatch()) { refusePanelTargetMismatch(); return; }
+      var me = walletSessionPerson();
+      if (!me) return;
+      var res = B.walletSetPayWallet(me, providerSel.value, numberInput.value);
+      if (!res.ok) { msg.innerHTML = '<div class="error">' + esc(res.error) + '</div>'; return; }
+      persist(res, 'Biom Pay wallet linked: ' + esc(res.person.walletProvider) + ' ' + esc(B.maskWalletNumber(res.person.walletNumber)) + '. Wallet Pay can now pay from this wallet.');
+    });
+    unlinkBtn.addEventListener('click', function () {
+      if (panelTargetMismatch()) { refusePanelTargetMismatch(); return; }
+      var me = walletSessionPerson();
+      if (!me || !me.walletProvider) return;
+      var res = B.walletClearPayWallet(me);
+      if (!res.ok) { msg.innerHTML = '<div class="error">' + esc(res.error) + '</div>'; return; }
+      persist(res, 'Biom Pay wallet unlinked. Wallet Pay will refuse payments until a wallet is linked again.');
+    });
+  }
+  wirePayWalletLink();
+
   function wireWipeData() {
     var btn = $('wipeDataBtn');
     if (!btn) return;
@@ -8346,6 +8486,7 @@
      entry, create is a new enrolment, log out closes the
      wallet session and clears the role back to the choice. */
   function renderSettings() {
+    resetPayWalletPanel();
     return loadWalletPeople().then(function (people) {
       var entry = resolveWalletEntry(people);
       if (entry) walletSessionId = entry.id;
@@ -8357,6 +8498,7 @@
       $('setName').textContent = me.name;
       $('setPhone').textContent = me.phone || 'No phone number recorded';
       $('setBiomId').textContent = me.id;
+      $('setPayWalletVal').textContent = payWalletRowText(me);
       var withPalm = people.filter(function (p) { return personHasMethod(p); });
       $('setSwitchVal').textContent = withPalm.length > 1 ? withPalm.length + ' accounts on this device' : 'Only account on this device';
     });

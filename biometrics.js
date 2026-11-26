@@ -4789,6 +4789,57 @@ function createTsgPalmEngine() {
     copy.wallet = { balance: p.wallet.balance, statement: p.wallet.statement, linkedAccounts: p.wallet.linkedAccounts.concat([acct]) };
     return { ok: true, person: copy, account: acct };
   }
+  /* v72: the Biom Pay wallet link — person.walletProvider /
+     person.walletNumber, the two fields enrolment writes and
+     the Wallet Pay gate reads (`!fresh.walletProvider` refuses
+     the payment). Until v72 they could only be set in the
+     enrolment details form, so an EXISTING profile could never
+     link or change its Biom Pay wallet and Wallet Pay refused
+     it forever. These are the store-layer rules for setting /
+     clearing the link on an existing profile, with enrolment's
+     validation (the enrollDetailsNext handler in app.js): the
+     provider must be bKash or Nagad when a number is given, and
+     the number must normalise to a Bangladeshi mobile (01 + 9
+     digits, 880-prefix folding). Two of the refusal texts are
+     enrolment's verbatim (the choose-a-provider text and the
+     invalid-number text); the provider-without-number text is
+     a clearer variant of enrolment's position. The behaviour
+     is identical in every case: refuse, save nothing. Pure, in
+     the walletAddLinkedAccount style: the input row is never
+     mutated, the result is a NEW
+     row, and nothing but the two link fields changes on it.
+     NOTE: this is NOT wallet.linkedAccounts — those are the
+     Add Money funding accounts, a different field entirely. */
+  var WALLET_PAY_PROVIDERS = ['bKash', 'Nagad'];
+  function walletSetPayWallet(person, provider, rawNumber) {
+    if (!person || typeof person !== 'object') return { ok: false, code: 'NO_PERSON', error: 'No wallet owner was found.' };
+    var prov = String(provider == null ? '' : provider).trim();
+    var raw = String(rawNumber == null ? '' : rawNumber).trim();
+    if (raw && WALLET_PAY_PROVIDERS.indexOf(prov) === -1) {
+      return { ok: false, code: 'NO_PROVIDER', error: 'Choose bKash or Nagad, or clear the wallet number.' };
+    }
+    if (!raw && prov) {
+      return { ok: false, code: 'NO_NUMBER', error: 'Enter the wallet number for the chosen provider, or clear the provider.' };
+    }
+    if (!raw && !prov) {
+      return { ok: false, code: 'NO_PROVIDER', error: 'Choose bKash or Nagad, or clear the wallet number.' };
+    }
+    var number = normaliseWalletNumber(raw);
+    if (!number) {
+      return { ok: false, code: 'BAD_WALLET_NUMBER', error: 'Wallet number is not a valid Bangladeshi mobile number (01 + 9 digits). It was not saved.' };
+    }
+    var copy = walletCopyRow(person);
+    copy.walletProvider = prov;
+    copy.walletNumber = number;
+    return { ok: true, person: copy };
+  }
+  function walletClearPayWallet(person) {
+    if (!person || typeof person !== 'object') return { ok: false, code: 'NO_PERSON', error: 'No wallet owner was found.' };
+    var copy = walletCopyRow(person);
+    copy.walletProvider = '';
+    copy.walletNumber = '';
+    return { ok: true, person: copy };
+  }
   function walletApplyAddMoney(person, amountRaw, accountId, authResult, ts, ref) {
     if (!person || typeof person !== 'object') return { ok: false, code: 'NO_PERSON', error: 'No wallet owner was found.' };
     var amt = walletValidateAmount(amountRaw);
@@ -5817,7 +5868,7 @@ function createTsgPalmEngine() {
      therefore the identity, and a v62 store — sealed banks, hand
      stamps, wallet, points, and a queued sync outbox row
      included — opens under v63 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62', 'v63', 'v64', 'v65', 'v66', 'v67', 'v68', 'v69', 'v70', 'v71'];
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62', 'v63', 'v64', 'v65', 'v66', 'v67', 'v68', 'v69', 'v70', 'v71', 'v72'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -5893,6 +5944,13 @@ function createTsgPalmEngine() {
        its own meta key, written only by v71 code, so a v69
        store opens byte-identical under v71. */
     'v71': function (snap) { return snap; },
+    /* v72: pure adoption — the Settings Biom Pay wallet link
+       writes walletProvider/walletNumber on the live profile
+       through the existing store layer; both fields already
+       exist in the profile shape since enrolment, so no stored
+       shape changes and a v71 store opens byte-identical
+       under v72. */
+    'v72': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
@@ -6183,6 +6241,8 @@ function createTsgPalmEngine() {
     walletDemoRef: walletDemoRef,
     walletAuthorised: walletAuthorised,
     walletAddLinkedAccount: walletAddLinkedAccount,
+    walletSetPayWallet: walletSetPayWallet,
+    walletClearPayWallet: walletClearPayWallet,
     walletApplyAddMoney: walletApplyAddMoney,
     walletResolveReceiver: walletResolveReceiver,
     walletApplySend: walletApplySend,

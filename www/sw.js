@@ -18,7 +18,7 @@
    intermediary copy cannot recreate the old paint one layer
    down, and a non-OK network answer falls back to the cache
    instead of painting a host error page. */
-const CACHE = 'tsg-biom-shell-v71';
+const CACHE = 'tsg-biom-shell-v72';
 const SHELL = [
   './',
   './index.html',
