@@ -18,7 +18,17 @@
    intermediary copy cannot recreate the old paint one layer
    down, and a non-OK network answer falls back to the cache
    instead of painting a host error page. */
-const CACHE = 'tsg-biom-shell-v74';
+const CACHE = 'tsg-biom-shell-v76';
+/* v75 (flash fix): the network leg of network-first is TIMED.
+   v71–v74 raced nothing: on a stalled connection (a phone on a
+   weak signal at the moment of opening) the fetch could hang
+   indefinitely, the document or app.js never arrived, and the
+   boot splash — whose only removal code lives in app.js — stayed
+   up forever: the Chairman's stuck-splash report. A shell fetch
+   now gets SHELL_NET_TIMEOUT_MS; past it, the current cache
+   answers instead, so the shell always arrives from SOMEWHERE
+   within the bound and the app can boot. */
+const SHELL_NET_TIMEOUT_MS = 3500;
 const SHELL = [
   './',
   './index.html',
@@ -105,9 +115,46 @@ self.addEventListener('fetch', (event) => {
 
   const isNav = event.request.mode === 'navigate';
   if (isNav || isShellUrl(url)) {
-    /* v71: network-first for the document and every shell file. */
+    /* v75 (Seat 3 re-review): a shell asset stamped with THIS
+       worker's own build (?b=v75 under the v75 worker) is
+       cache-first. Builds are immutable per stamp, so the cached
+       copy is by construction the right bytes; a background
+       network refresh keeps the cache honest. This kills the
+       serial-stall chain the instrumented gate measured — under
+       network-first, a stalled network made the document and
+       each parser-blocking asset wait out the full 3.5 s timeout
+       IN SERIES (~14 s before app.js could even parse, so no
+       splash bound anchored in app.js could ever fire). With
+       cache-first assets, app.js parses within ~a second of the
+       document on any repeat load, stalled network or not, and
+       the 6 s watchdog is a real bound. Assets stamped with a
+       NEWER build (a newer document under this older worker —
+       the transition case) and unstamped requests keep the
+       network-first path below, and the document always does:
+       it is the coherence anchor. */
+    const stampedBuild = (url.search.match(/[?&]b=(v[0-9]+)/) || [])[1] || null;
+    const ownBuild = (CACHE.match(/tsg-biom-shell-(v[0-9]+)/) || [])[1] || null;
+    if (!isNav && stampedBuild && ownBuild && stampedBuild === ownBuild) {
+      event.respondWith(
+        caches.open(CACHE).then((cache) => cache.match(shellKey(url), { ignoreSearch: true })).then((hit) => {
+          const refresh = timedShellFetch(event.request).then((res) => {
+            if (res && res.ok && shellTypeOk(url, res)) {
+              const copy = res.clone();
+              caches.open(CACHE).then((cache) => cache.put(shellKey(url), copy)).catch(() => {});
+            }
+            return res;
+          }).catch(() => null);
+          return hit || refresh;
+        })
+      );
+      return;
+    }
+    /* v71: network-first for the document and every shell file.
+       v75: the network leg is timed (SHELL_NET_TIMEOUT_MS) — a
+       stalled fetch falls back to this version's cache instead
+       of hanging the boot. */
     event.respondWith(
-      fetch(event.request, { cache: 'no-cache' }).then((res) => {
+      timedShellFetch(event.request).then((res) => {
         if (res && res.ok) {
           if ((isShellUrl(url) || isNav) && shellTypeOk(url, res)) {
             const copy = res.clone();
@@ -138,7 +185,45 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
+function timedShellFetch(request) {
+  /* fetch with cache:'no-cache' (the v71 rule) raced against
+     SHELL_NET_TIMEOUT_MS. The abort keeps a stalled socket from
+     lingering; engines without AbortController simply let the
+     late answer land unused. */
+  return new Promise(function (resolve, reject) {
+    var done = false;
+    var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var timer = setTimeout(function () {
+      if (done) return; done = true;
+      if (ctl) { try { ctl.abort(); } catch (e) {} }
+      reject(new Error('shell fetch timed out'));
+    }, SHELL_NET_TIMEOUT_MS);
+    var init = { cache: 'no-cache' };
+    if (ctl) init.signal = ctl.signal;
+    fetch(request, init).then(function (res) {
+      if (done) return; done = true; clearTimeout(timer); resolve(res);
+    }).catch(function (err) {
+      if (done) return; done = true; clearTimeout(timer); reject(err);
+    });
+  });
+}
+
 function shellFallback(request, isNav) {
+  /* v75 (Seat 1, review finding 3): never answer a request
+     stamped with a NEWER build than this worker's own from this
+     cache. The cached copy belongs to this build; serving it to
+     a newer document would mix shells — app.js would be caught
+     by the coherence check, but styles and biometrics have no
+     such check. The network leg has already failed or timed
+     out, so the stamped request fails instead; the next load
+     self-heals. Same-build and older stamps are served as
+     before (an older document converges via its own coherence
+     reload). */
+  var stamped = /[?&]b=(v[0-9]+)/.exec(new URL(request.url).search || '');
+  var own = /tsg-biom-shell-(v[0-9]+)/.exec(CACHE);
+  if (stamped && own && parseInt(stamped[1].slice(1), 10) > parseInt(own[1].slice(1), 10)) {
+    return Promise.resolve(undefined);
+  }
   return caches.open(CACHE).then((cache) =>
     cache.match(shellKey(new URL(request.url)), { ignoreSearch: true }).then((hit) => {
       if (hit) return hit;

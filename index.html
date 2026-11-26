@@ -17,23 +17,28 @@
 <title>TSG Biom — Palmprint for Stores</title>
 <meta name="description" content="TSG Biom by TwoSide Group: hardware-free palmprint enrollment and verification through a phone or tablet camera, with bKash / Nagad Biom Pay for pharmacies, retail, supermarkets and malls.">
 <meta name="theme-color" content="#0b4ea2">
-<meta name="biom-build" content="v74">
+<meta name="biom-build" content="v76">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-180.png">
-<link rel="stylesheet" href="styles.css">
-<script src="vendor/mediapipe-hands-0.4.1675469240/hands.js"></script>
-<script src="biometrics.js"></script>
+<link rel="stylesheet" href="styles.css?b=v76">
+<script src="vendor/mediapipe-hands-0.4.1675469240/hands.js?b=v76"></script>
+<script src="biometrics.js?b=v76"></script>
 </head>
 <body class="mode-customer">
 <!-- v71 boot splash: a neutral branded state that paints before
      any app code runs, so a service-worker update transition can
      never show a version-mismatched design. Styled ONLY with
      style attributes — the shipped CSP (style-src-elem 'self')
-     forbids a <style> element here. app.js removes it as its
-     first DOM action; pointer-events:none means even a failed
-     removal can never block the app underneath. -->
-<div id="bootSplash" aria-hidden="true" style="position:fixed;inset:0;z-index:9999;background:#0b4ea2;color:#ffffff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;pointer-events:none;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif">
+     forbids a <style> element here. v75: app.js holds it until
+     the boot chain has rendered the first coherent screen (and
+     a 6 s watchdog in app.js guarantees it can never stick);
+     the element's own inline style also carries a pure-CSS
+     fail-open (animation bootSplashFailOpen, keyframes in
+     styles.css) that fades it at 6 s even if no script runs;
+     pointer-events:none means even a failed removal can never
+     block the app underneath. -->
+<div id="bootSplash" aria-hidden="true" style="position:fixed;inset:0;z-index:9999;background:#0b4ea2;color:#ffffff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;pointer-events:none;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;animation:bootSplashFailOpen .45s ease 6s forwards">
   <div style="font-size:30px;font-weight:800;letter-spacing:2px">TSG BIOM</div>
   <div style="font-size:12px;letter-spacing:4px;opacity:.85">TWOSIDE GROUP</div>
   <div style="width:120px;height:3px;background:rgba(255,255,255,.35);margin-top:14px"><div style="width:40%;height:100%;background:#ffffff"></div></div>
@@ -429,7 +434,7 @@
         </div>
       </div>
     </div>
-    <div class="versionline" id="versionLine">TSG Biom · App v74 · TwoSide Group</div>
+    <div class="versionline" id="versionLine">TSG Biom · App v76 · TwoSide Group</div>
   </section>
 
   <!-- DESK (HOME) -->
@@ -896,6 +901,6 @@
 
 <div id="toast" class="hidden" role="status"></div>
 
-<script src="app.js"></script>
+<script src="app.js?b=v76"></script>
 </body>
 </html>
