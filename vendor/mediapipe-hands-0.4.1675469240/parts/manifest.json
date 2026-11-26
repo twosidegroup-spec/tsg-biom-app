@@ -1,0 +1,88 @@
+{
+  "runtime": "mediapipe-hands",
+  "runtimeVersion": "0.4.1675469240",
+  "format": "tsg-vendored-binary-parts",
+  "formatVersion": 1,
+  "note": "The five MediaPipe Hands binary runtime files, carried as base64 text parts because the channel that ships this app carries UTF-8 text only (the same pattern as the PalmNet TSGP weights). The app reassembles each file in the browser, verifies byte length and SHA-256 against the values pinned in app.js (MpRuntime) and in this manifest, and hands MediaPipe a Blob URL per file through locateFile. Everything is served from this origin — no CDN, no third-party hotlink. Rebuild: ~/workspace/tsg-biom-team/v68-detector-fix/build-parts.js.",
+  "files": [
+    {
+      "name": "hands.binarypb",
+      "bytes": 550,
+      "sha256": "ab76c4215fca99cc2db1b5885cb8398d210e59ebe685245f72e692b4b58421e4",
+      "mime": "application/octet-stream",
+      "base64Chars": 736,
+      "parts": [
+        "hands.binarypb.b64.part00"
+      ]
+    },
+    {
+      "name": "hand_landmark_lite.tflite",
+      "bytes": 2071408,
+      "sha256": "d7fde8ac11f8ce03f8663775bfc323f4fc9f2a38062b4f4efa142874ef5b2a48",
+      "mime": "application/octet-stream",
+      "base64Chars": 2761880,
+      "parts": [
+        "hand_landmark_lite.tflite.b64.part00",
+        "hand_landmark_lite.tflite.b64.part01",
+        "hand_landmark_lite.tflite.b64.part02",
+        "hand_landmark_lite.tflite.b64.part03"
+      ]
+    },
+    {
+      "name": "hands_solution_packed_assets.data",
+      "bytes": 4326731,
+      "sha256": "bdce7b66bfc5b39ba86a47775c98e0b186fe73f8308c2279f852af4c89ffdf42",
+      "mime": "application/octet-stream",
+      "base64Chars": 5768976,
+      "parts": [
+        "hands_solution_packed_assets.data.b64.part00",
+        "hands_solution_packed_assets.data.b64.part01",
+        "hands_solution_packed_assets.data.b64.part02",
+        "hands_solution_packed_assets.data.b64.part03",
+        "hands_solution_packed_assets.data.b64.part04",
+        "hands_solution_packed_assets.data.b64.part05",
+        "hands_solution_packed_assets.data.b64.part06",
+        "hands_solution_packed_assets.data.b64.part07"
+      ]
+    },
+    {
+      "name": "hands_solution_simd_wasm_bin.wasm",
+      "bytes": 6026259,
+      "sha256": "78ef7eb86ebc6424ac06b13f89b9a1fc01ff35e07520e37de98887cf88c06653",
+      "mime": "application/wasm",
+      "base64Chars": 8035012,
+      "parts": [
+        "hands_solution_simd_wasm_bin.wasm.b64.part00",
+        "hands_solution_simd_wasm_bin.wasm.b64.part01",
+        "hands_solution_simd_wasm_bin.wasm.b64.part02",
+        "hands_solution_simd_wasm_bin.wasm.b64.part03",
+        "hands_solution_simd_wasm_bin.wasm.b64.part04",
+        "hands_solution_simd_wasm_bin.wasm.b64.part05",
+        "hands_solution_simd_wasm_bin.wasm.b64.part06",
+        "hands_solution_simd_wasm_bin.wasm.b64.part07",
+        "hands_solution_simd_wasm_bin.wasm.b64.part08",
+        "hands_solution_simd_wasm_bin.wasm.b64.part09",
+        "hands_solution_simd_wasm_bin.wasm.b64.part10"
+      ]
+    },
+    {
+      "name": "hands_solution_wasm_bin.wasm",
+      "bytes": 5917209,
+      "sha256": "4e70eaf8063e0e9ac10e682d9d6b55c08d0788f0a8d49925e2e484636526e157",
+      "mime": "application/wasm",
+      "base64Chars": 7889612,
+      "parts": [
+        "hands_solution_wasm_bin.wasm.b64.part00",
+        "hands_solution_wasm_bin.wasm.b64.part01",
+        "hands_solution_wasm_bin.wasm.b64.part02",
+        "hands_solution_wasm_bin.wasm.b64.part03",
+        "hands_solution_wasm_bin.wasm.b64.part04",
+        "hands_solution_wasm_bin.wasm.b64.part05",
+        "hands_solution_wasm_bin.wasm.b64.part06",
+        "hands_solution_wasm_bin.wasm.b64.part07",
+        "hands_solution_wasm_bin.wasm.b64.part08",
+        "hands_solution_wasm_bin.wasm.b64.part09"
+      ]
+    }
+  ]
+}
