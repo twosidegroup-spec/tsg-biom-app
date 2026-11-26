@@ -399,7 +399,7 @@
      strict-money rule, encryption, signing, sync or copy
      truth changes. The migration step is a pure adoption
      (see biometrics.js). */
-  var APP_DATA_VERSION = 'v76';
+  var APP_DATA_VERSION = 'v77';
   /* ---------------- boot splash lifecycle (v71, rebuilt v75) ------
      index.html stamps its build in <meta name="biom-build"> and
      paints a neutral boot splash before any app code runs.
@@ -448,8 +448,65 @@
   function dropBootSplash() {
     if (bootSplashEl && bootSplashEl.parentNode) bootSplashEl.parentNode.removeChild(bootSplashEl);
     bootSplashEl = null;
+    schedulePipelinePrewarm(); // v77: first screen is up — warm the pipeline on idle time
   }
   setTimeout(function () { dropBootSplash(); }, SPLASH_MAX_MS);
+  /* v77: search boxes re-render a full list from IndexedDB on
+     every keystroke — a guaranteed jank generator on a large
+     registry. Debouncing collapses a typing burst into one
+     render at the end of the burst; the render itself is
+     unchanged. */
+  function debounce(fn, ms) {
+    var t = null;
+    return function () {
+      var self = this, args = arguments;
+      if (t) clearTimeout(t);
+      t = setTimeout(function () { t = null; fn.apply(self, args); }, ms);
+    };
+  }
+  /* v77 (performance pass): every network wait in this app gets a
+     bound. An unbounded fetch on a stalled connection is a hang
+     the user cannot escape (the stuck-splash lesson, applied to
+     every layer): sync, the payments rail, the model loaders and
+     the build-coherence probe all ride this helper. Aborting a
+     sync request mid-flight is safe — the sync engine's sequence
+     discipline already treats a failed send as unsent and the
+     server's SEQ_DESYNC recovery covers the rare case where the
+     server consumed a sequence the client never saw confirmed. */
+  function fetchWithTimeout(url, opts, ms) {
+    if (typeof AbortController === 'undefined' || typeof fetch === 'undefined') return fetch(url, opts);
+    var ctl = new AbortController();
+    var timer = setTimeout(function () { try { ctl.abort(); } catch (e) {} }, ms || 20000);
+    var o = {};
+    if (opts) for (var k in opts) o[k] = opts[k];
+    o.signal = ctl.signal;
+    return fetch(url, o).then(function (r) { clearTimeout(timer); return r; }, function (e) { clearTimeout(timer); throw e; });
+  }
+  /* v77: the detector/model pre-warm (Pipeline.start) no longer
+     fires synchronously during init, where its assembly decode
+     and WASM load raced the boot chain and produced the long-task
+     storm measured on the rig (27 long tasks, 4.5 s of blocking
+     in the throttled boot profile). It is scheduled once the
+     first coherent screen is up — from dropBootSplash — on idle
+     time, and the first real interaction starts it immediately.
+     Scan views still call Pipeline.enterScanView() as before, so
+     a scan tapped before the idle slot pays the same awaited
+     init it always did (PalmProc.ensureHands), never a hang. */
+  var pipelinePrewarmScheduled = false;
+  function schedulePipelinePrewarm() {
+    if (pipelinePrewarmScheduled) return;
+    pipelinePrewarmScheduled = true;
+    var run = function () { try { Pipeline.start(); } catch (e) {} };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 2500 });
+    else setTimeout(run, 1200);
+    var kick = function () {
+      window.removeEventListener('pointerdown', kick, true);
+      window.removeEventListener('keydown', kick, true);
+      run();
+    };
+    window.addEventListener('pointerdown', kick, true);
+    window.addEventListener('keydown', kick, true);
+  }
   function newestBuild(a, b) {
     if (!a) return b;
     if (!b) return a;
@@ -1413,7 +1470,7 @@
       });
     },
     onProfileConflict: function () { renderSyncStatus(); },
-    fetchFn: function (url, opts) { return fetch(url, opts); },
+    fetchFn: function (url, opts) { return fetchWithTimeout(url, opts, 20000); }, // v77: bounded — a stalled sync can never hang the app
     now: function () { return Date.now(); },
     uuid: syncUuid,
     onStatus: function () { renderSyncStatus(); },
@@ -1456,7 +1513,7 @@
       return !!((c.deviceId && c.deviceSecret) || c.legacyKey);
     }
     function fetchJson(url, opts) {
-      return fetch(url, opts).then(function (r) {
+      return fetchWithTimeout(url, opts, 20000).then(function (r) { // v77: bounded — the payments rail can never wait forever
         var seqConsumed = null;
         try { seqConsumed = r.headers && typeof r.headers.get === 'function' ? r.headers.get('x-biom-seq-consumed') : null; } catch (e) {}
         return r.text().then(function (t) {
@@ -2555,8 +2612,13 @@
     if (!w || !h || Math.max(w, h) <= ANALYSIS_MAX) return image;
     var scale = ANALYSIS_MAX / Math.max(w, h);
     if (!analysisScratch) analysisScratch = document.createElement('canvas');
-    analysisScratch.width = Math.round(w * scale);
-    analysisScratch.height = Math.round(h * scale);
+    /* v77: assigning canvas.width (even the same value) clears
+       and reallocates the backing store — only assign on change.
+       The computed size is identical to before, so the analysed
+       frame is pixel-identical. */
+    var aw = Math.round(w * scale), ah = Math.round(h * scale);
+    if (analysisScratch.width !== aw) analysisScratch.width = aw;
+    if (analysisScratch.height !== ah) analysisScratch.height = ah;
     analysisScratch.getContext('2d').drawImage(image, 0, 0, analysisScratch.width, analysisScratch.height);
     return analysisScratch;
   }
@@ -2599,6 +2661,48 @@
     var bytes = new Uint8Array(bin.length);
     for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     return bytes;
+  }
+  /* v77: chunked twin of mpB64ToBytes for the assembly path.
+     The five pinned files carry ~21 MB of base64; the one-shot
+     atob + per-char copy measured as the boot profile's worst
+     long tasks (622 ms / 540 ms / 432 ms at 4x CPU throttle).
+     This decoder walks the base64 text in 256 KB quanta-aligned
+     slices and yields to the main thread between slices, so no
+     single task exceeds a frame storm while the detector loads.
+     It is byte-exact by construction (standard base64 arithmetic,
+     padding handled by the output-length guard) and the result
+     still faces the same length check and the pinned SHA-256
+     verification before any Blob URL exists — a decoder bug
+     would fail closed exactly like a corrupted part. */
+  var MP_B64_TABLE = null;
+  function mpB64ToBytesChunked(b64) {
+    if (!MP_B64_TABLE) {
+      MP_B64_TABLE = new Int16Array(128).fill(-1);
+      var alpha = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+      for (var t = 0; t < alpha.length; t++) MP_B64_TABLE[alpha.charCodeAt(t)] = t;
+      MP_B64_TABLE[61] = 0; // '=' padding contributes zero bits; the output-length guard drops its bytes (a -1 here would smear 1-bits into the final group)
+    }
+    var table = MP_B64_TABLE;
+    var len = b64.length;
+    var pad = 0;
+    if (len >= 1 && b64.charCodeAt(len - 1) === 61) pad++;
+    if (len >= 2 && b64.charCodeAt(len - 2) === 61) pad++;
+    var out = new Uint8Array((len / 4) * 3 - pad);
+    var SLICE = 262144; // chars per task — a multiple of 4 (one quantum = 4 chars)
+    var i = 0, o = 0;
+    function step() {
+      var end = Math.min(i + SLICE, len);
+      for (; i < end; i += 4) {
+        var n = (table[b64.charCodeAt(i)] << 18) | (table[b64.charCodeAt(i + 1)] << 12) |
+                (table[b64.charCodeAt(i + 2)] << 6) | table[b64.charCodeAt(i + 3)];
+        if (o < out.length) out[o++] = (n >> 16) & 255;
+        if (o < out.length) out[o++] = (n >> 8) & 255;
+        if (o < out.length) out[o++] = n & 255;
+      }
+      if (i < len) return new Promise(function (res) { setTimeout(res, 0); }).then(step);
+      return out;
+    }
+    return Promise.resolve().then(step);
   }
   function mpSha256Hex(bytes) {
     if (typeof crypto === 'undefined' || !crypto.subtle || !crypto.subtle.digest) {
@@ -2680,7 +2784,8 @@
           return r.text();
         });
       })).then(function (texts) {
-        var bytes = mpB64ToBytes(texts.join('').replace(/\s+/g, ''));
+        return mpB64ToBytesChunked(texts.join('').replace(/\s+/g, ''));
+      }).then(function (bytes) {
         if (bytes.length !== exp.bytes) throw new Error('detector file size mismatch (' + exp.name + ': ' + bytes.length + ' != ' + exp.bytes + ')');
         return mpSha256Hex(bytes).then(function (hex) {
           if (hex !== exp.sha256) throw new Error('detector file hash mismatch (' + exp.name + ')');
@@ -2772,7 +2877,29 @@
       // unchanged).
       return this.ensureHands().then(function (ok) {
         if (!ok) { self._frameFailed = true; return null; }
-        return self.sendFrame(image);
+        if (self._everResulted) return self.sendFrame(image);
+        /* v77 (Seat 3, single-flight warm-up): MediaPipe's
+           SolutionBase.initialize() is NOT re-entrancy-safe
+           while its first load is in flight — every send()
+           that arrives during the cold load re-enters it and
+           runs a complete second initialise pass, and the
+           racing passes corrupt each other's bookkeeping
+           (the boot page-error family: the packed-assets
+           loader's dataFileDownloads read, and the Emscripten
+           FS 'buffer' collision — reproduced live by Seat 3,
+           2026-11-27). Until the first result lands, sends
+           therefore CHAIN: each caller waits for the previous
+           send to settle, then sends its own frame. The
+           initialise runs exactly once; after warm-up this
+           branch is never taken again. Scan streams already
+           await each frame, so the chain costs them nothing;
+           what it removes is the duplicate 4.3 MB package
+           downloads, duplicate WASM compiles, and the wedged-
+           instance risk the race carried. */
+        var run = function () { return self.sendFrame(image); };
+        var p = (self._warmChain || Promise.resolve()).then(run, run);
+        self._warmChain = p.then(function () {}, function () {});
+        return p;
       });
     },
     sendFrame: function (image) {
@@ -2846,7 +2973,9 @@
     var w = video.videoWidth, h = video.videoHeight;
     if (!w || !h) return null;
     var scale = Math.min(1, 640 / Math.max(w, h));
-    canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
+    var gw = Math.round(w * scale), gh = Math.round(h * scale);
+    if (canvas.width !== gw) canvas.width = gw; // v77: no backing-store realloc when the size is unchanged
+    if (canvas.height !== gh) canvas.height = gh;
     canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
     return canvas;
   }
@@ -2877,7 +3006,10 @@
       // before any other frame is measured, so the numbers a
       // frame produces are unchanged.
       if (!measuresScratch) measuresScratch = document.createElement('canvas');
-      measuresScratch.width = size; measuresScratch.height = size;
+      /* v77: size-guarded assignment — the same two assignments,
+         made only when the size actually changed (assigning
+         canvas.width clears and reallocates the backing store). */
+      if (measuresScratch.width !== size || measuresScratch.height !== size) { measuresScratch.width = size; measuresScratch.height = size; }
       var canvas = measuresScratch;
       var ctx = canvas.getContext('2d');
       ctx.drawImage(source, sx, sy, side, side, 0, 0, size, size);
@@ -2920,7 +3052,8 @@
       var cw = ex - ox, ch = ey - oy;
       if (!(cw >= 40 && ch >= 40)) return null;
       if (!roiScratch) roiScratch = document.createElement('canvas');
-      roiScratch.width = cw; roiScratch.height = ch;
+      if (roiScratch.width !== cw) roiScratch.width = cw; // v77: size-guarded (see analysisImage)
+      if (roiScratch.height !== ch) roiScratch.height = ch;
       var ctx = roiScratch.getContext('2d');
       ctx.drawImage(frame, ox, oy, cw, ch, 0, 0, cw, ch);
       var img = ctx.getImageData(0, 0, cw, ch).data;
@@ -3195,6 +3328,19 @@
     // PALMNET_INPUT_SIZE (via B.palmnetPreprocessSource) —
     // nothing from app.js, and no third-party code at all.
     var engine = null;
+    /* v77: bounded fetch, defined INSIDE the worker main. This
+       function is stringified into the worker (initWorker), so
+       it must stay fully self-contained — no app.js helpers
+       exist in that scope. (An earlier v77 edit referenced the
+       main thread's fetchWithTimeout here; the v55 harness,
+       which runs this function exactly as the worker does,
+       caught it before it shipped.) */
+    function fetchBounded(url, ms) {
+      if (typeof AbortController === 'undefined') return fetch(url);
+      var ctl = new AbortController();
+      var timer = setTimeout(function () { try { ctl.abort(); } catch (e) {} }, ms || 30000);
+      return fetch(url, { signal: ctl.signal }).then(function (r) { clearTimeout(timer); return r; }, function (e) { clearTimeout(timer); throw e; });
+    }
     function b64ToBytes(b64) {
       var bin = atob(b64);
       var bytes = new Uint8Array(bin.length);
@@ -3213,7 +3359,7 @@
       });
     }
     function loadModel(manifestUrl, expectedModelId, expectedWeightsSha256, expectedWeightsBytes, expectedProgramSha256) {
-      return fetch(manifestUrl).then(function (r) {
+      return fetchBounded(manifestUrl, 30000).then(function (r) { // v77: bounded
         if (!r.ok) throw new Error('model manifest HTTP ' + r.status);
         return r.json();
       }).then(function (man) {
@@ -3239,7 +3385,7 @@
         // The program (the engine's schedule) is integrity-checked
         // against its own code pin before the weights are fetched:
         // the schedule IS code, exactly as the weights are.
-        return fetch(base + man.programFile).then(function (r) {
+        return fetchBounded(base + man.programFile, 30000).then(function (r) { // v77: bounded
           if (!r.ok) throw new Error('model program HTTP ' + r.status);
           return r.text();
         }).then(function (programText) {
@@ -3248,7 +3394,7 @@
             if (expectedProgramSha256 && phex !== expectedProgramSha256) throw new Error('model program hash mismatch');
             var program = JSON.parse(programText);
             return Promise.all(man.parts.map(function (p) {
-              return fetch(base + p).then(function (r) {
+              return fetchBounded(base + p, 30000).then(function (r) { // v77: bounded
                 if (!r.ok) throw new Error('model part HTTP ' + r.status);
                 return r.text();
               });
@@ -3428,7 +3574,7 @@
           return hex;
         });
       }
-      return fetch(self.modelManifest).then(function (r) {
+      return fetchWithTimeout(self.modelManifest, null, 30000).then(function (r) { // v77: bounded
         if (!r.ok) throw new Error('model manifest HTTP ' + r.status);
         return r.json();
       }).then(function (man) {
@@ -3446,7 +3592,7 @@
           throw new Error('PalmNet model hash mismatch: the served manifest records a different model than this build runs — neural matching is disabled for this load');
         }
         var base = self.modelManifest.replace(/[^/]*$/, '');
-        return fetch(base + man.programFile).then(function (r) {
+        return fetchWithTimeout(base + man.programFile, null, 30000).then(function (r) { // v77: bounded
           if (!r.ok) throw new Error('model program HTTP ' + r.status);
           return r.text();
         }).then(function (programText) {
@@ -3454,7 +3600,7 @@
             if (phex !== PALMNET_EXPECTED_PROGRAM_SHA256) throw new Error('model program hash mismatch');
             var program = JSON.parse(programText);
             return Promise.all(man.parts.map(function (p) {
-              return fetch(base + p).then(function (r) {
+              return fetchWithTimeout(base + p, null, 30000).then(function (r) { // v77: bounded
                 if (!r.ok) throw new Error('model part HTTP ' + r.status);
                 return r.text();
               });
@@ -3844,11 +3990,20 @@
     function setRing(pct) {
       var ring = $('palmBurstRing');
       if (!ring) return;
-      if (pct === null || pct === undefined) { ring.classList.add('hidden'); return; }
+      if (pct === null || pct === undefined) { ring.classList.add('hidden'); ring._v77pct = null; return; }
       ring.classList.remove('hidden');
-      ring.style.background = 'conic-gradient(#1B5FE0 ' + Math.round(Math.max(0, Math.min(1, pct)) * 360) + 'deg, rgba(27,95,224,0.15) 0deg)';
-      var lbl = ring.querySelector('span');
-      if (lbl) lbl.textContent = Math.round(Math.max(0, Math.min(1, pct)) * 100) + '%';
+      /* v77: the burst calls this per frame, but the ring only
+         ever displays whole percents — repainting the conic
+         gradient on every sub-percent tick was a full style
+         recalc + paint per frame in the hottest loop in the app.
+         Now the style and label are written only when the whole
+         percent actually changes, and the label node is cached. */
+      var whole = Math.round(Math.max(0, Math.min(1, pct)) * 100);
+      if (ring._v77pct === whole) return;
+      ring._v77pct = whole;
+      ring.style.background = 'conic-gradient(#1B5FE0 ' + (whole * 3.6) + 'deg, rgba(27,95,224,0.15) 0deg)';
+      if (!ring._v77lbl) ring._v77lbl = ring.querySelector('span');
+      if (ring._v77lbl) ring._v77lbl.textContent = whole + '%';
     }
     /* One watched frame: returns 'qualify' when the frame carries
        a sharp, fully-open palm whose warped patch passes the
@@ -5246,9 +5401,16 @@
               if (shown) return;
               return DB.setMeta('strengthenOffered:' + person.id, true).then(function () {
                 offerEl.classList.remove('hidden');
+                /* v77: onclick ASSIGNMENT, not addEventListener —
+                   these two buttons are persistent static elements,
+                   so every enrolment used to stack one more click
+                   listener on them for the rest of the session and
+                   a later tap fired openTopup once per past
+                   enrolment. Assignment keeps exactly one handler,
+                   bound to the latest person. */
                 var goBtn = $('enrollStrengthenBtn'), noBtn = $('enrollStrengthenDismiss');
-                if (goBtn) goBtn.addEventListener('click', function () { offerEl.classList.add('hidden'); openTopup(person.id); });
-                if (noBtn) noBtn.addEventListener('click', function () { offerEl.classList.add('hidden'); });
+                if (goBtn) goBtn.onclick = function () { offerEl.classList.add('hidden'); openTopup(person.id); };
+                if (noBtn) noBtn.onclick = function () { offerEl.classList.add('hidden'); };
               });
             }).catch(function () {});
           }
@@ -5548,7 +5710,7 @@
     fillTermMethodNote();
     startTermCamera();
   });
-  $('termSearch').addEventListener('input', renderTermPeople);
+  $('termSearch').addEventListener('input', debounce(renderTermPeople, 150)); // v77: debounced (was: full re-render per keystroke)
   function startTermCamera() {
     var status = $('termStatus');
     getTerminalPerson().then(function (person) {
@@ -7485,7 +7647,7 @@ Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: fresh
     btn.dataset.personId = p.id;
     panel.classList.remove('hidden');
   }
-  $('registrySearch').addEventListener('input', renderRegistry);
+  $('registrySearch').addEventListener('input', debounce(renderRegistry, 150)); // v77: debounced (was: full re-render per keystroke)
   $('registryDetailClose').addEventListener('click', function () { $('registryDetail').classList.add('hidden'); });
   $('registryDetailOwnerBtn').addEventListener('click', function () {
     var id = $('registryDetailOwnerBtn').dataset.personId;
@@ -8079,15 +8241,88 @@ Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: fresh
       var todayTxs = txs.filter(function (t) { return t.ts >= dayStart.getTime(); });
       var todayTotal = todayTxs.reduce(function (s, t) { return s + Number(t.amount || 0); }, 0);
       $('dailySheet').innerHTML = '<b>Biom Pay transactions today:</b> ' + todayTxs.length + '<br><b>Total authorised today:</b> BDT ' + todayTotal.toLocaleString() + '<br><b>Status of all:</b> ' + esc(PAY_STATUS);
-      $('txBody').innerHTML = txs.map(function (t) {
+      /* v77: the DOM build is capped at the latest 200 rows per
+         table. The full history stays in the device records (the
+         field-test export and every flow read the store directly,
+         never these rows) — what is capped is only the parse +
+         layout cost of painting thousands of rows on navigation. */
+      var LOG_DOM_CAP = 200;
+      $('txBody').innerHTML = txs.slice(0, LOG_DOM_CAP).map(function (t) {
         return '<tr><td>' + esc(t.id) + '</td><td>' + esc(fmtTime(t.ts)) + '</td><td>' + esc(t.personName) + '</td><td>' + esc(t.provider) + '</td><td>' + esc(t.walletMasked) + '</td><td>' + esc(t.store) + '</td><td>BDT ' + Number(t.amount).toLocaleString() + '</td><td>' + esc(t.status) + '</td></tr>';
-      }).join('') || '<tr><td colspan="8" style="color:var(--muted)">No Biom Pay transactions yet.</td></tr>';
-      $('logBody').innerHTML = logs.map(function (l) {
+      }).join('') + (txs.length > LOG_DOM_CAP ? '<tr><td colspan="8" style="color:var(--muted)">Showing the latest ' + LOG_DOM_CAP + ' of ' + txs.length + ' transactions.</td></tr>' : '') || '<tr><td colspan="8" style="color:var(--muted)">No Biom Pay transactions yet.</td></tr>';
+      $('logBody').innerHTML = logs.slice(0, LOG_DOM_CAP).map(function (l) {
         return '<tr><td>' + esc(fmtTime(l.ts)) + '</td><td>' + esc(l.personName) + '</td><td>' + esc(l.store) + '</td><td>' + esc(l.method) + '</td><td>' + esc(l.measured) + '</td><td><span class="badge ' + (l.result === 'Verified' ? 'ok' : 'bad') + '">' + esc(l.result) + '</span></td></tr>';
-      }).join('') || '<tr><td colspan="6" style="color:var(--muted)">No verifications yet.</td></tr>';
+      }).join('') + (logs.length > LOG_DOM_CAP ? '<tr><td colspan="6" style="color:var(--muted)">Showing the latest ' + LOG_DOM_CAP + ' of ' + logs.length + ' verifications.</td></tr>' : '') || '<tr><td colspan="6" style="color:var(--muted)">No verifications yet.</td></tr>';
       return renderFieldPanel();
     });
   }
+
+  /* v77: sheet/detail state classes + sheet keyboard basics.
+     styles.css used to key the desktop sheet backdrop and the
+     registry list–detail grid off body:has(...) / section:has(...)
+     selectors, which the style engine re-tests against the whole
+     subtree on EVERY DOM mutation — every render, every hidden
+     toggle, every scan-indicator class change. The same visual
+     states are now carried by two explicit classes maintained
+     here from the elements' own class changes (one observer,
+     microtask-batched, no per-mutation style invalidation):
+     body.sheet-open while any wallet sheet or the scan card is
+     visible on the wallet page, and #page-registry.detail-open
+     while the registry detail panel is visible.
+     The same block gives the sheets their dialog basics: when a
+     sheet opens, focus moves to its first control; Escape closes
+     the open sheet through its own Back/Cancel control (so the
+     flow's own close logic runs, unchanged); when it closes,
+     focus returns to whatever held it before. */
+  (function () {
+    var SHEETS = [
+      { id: 'walletAdd', closeId: 'wAddBack' },
+      { id: 'walletSend', closeId: 'wSendBack' },
+      { id: 'walletPay', closeId: 'wPayBack' },
+      { id: 'walletScanCard', closeId: 'wScanCancel' }
+    ];
+    var wasOpen = {};
+    var returnFocusTo = null;
+    function sheetOpen(sh) {
+      var el = $(sh.id);
+      return !!(el && !el.classList.contains('hidden'));
+    }
+    function syncSheetClasses() {
+      var wallet = $('page-wallet');
+      var anyOpen = false;
+      SHEETS.forEach(function (sh) { if (sheetOpen(sh)) anyOpen = true; });
+      document.body.classList.toggle('sheet-open', !!(anyOpen && wallet && wallet.classList.contains('active')));
+      var det = $('registryDetail'), reg = $('page-registry');
+      if (reg) reg.classList.toggle('detail-open', !!(det && !det.classList.contains('hidden')));
+      SHEETS.forEach(function (sh) {
+        var open = sheetOpen(sh);
+        if (open && !wasOpen[sh.id]) {
+          returnFocusTo = document.activeElement;
+          var el = $(sh.id);
+          var first = el && el.querySelector('button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]');
+          if (first) setTimeout(function () { try { first.focus(); } catch (e) {} }, 30);
+        } else if (!open && wasOpen[sh.id]) {
+          if (returnFocusTo && document.contains(returnFocusTo)) { try { returnFocusTo.focus(); } catch (e) {} }
+          returnFocusTo = null;
+        }
+        wasOpen[sh.id] = open;
+      });
+    }
+    var mo = new MutationObserver(syncSheetClasses);
+    SHEETS.forEach(function (sh) { var el = $(sh.id); if (el) mo.observe(el, { attributes: true, attributeFilter: ['class'] }); });
+    ['registryDetail', 'page-wallet'].forEach(function (id) { var el = $(id); if (el) mo.observe(el, { attributes: true, attributeFilter: ['class'] }); });
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'Escape') return;
+      for (var i = 0; i < SHEETS.length; i++) {
+        if (sheetOpen(SHEETS[i])) {
+          var btn = $(SHEETS[i].closeId);
+          if (btn) { btn.click(); ev.preventDefault(); }
+          return;
+        }
+      }
+    });
+    syncSheetClasses();
+  })();
 
   $('fieldExportBtn').addEventListener('click', function () {
     DB.all('logs').then(function (logs) {
@@ -9176,7 +9411,7 @@ Sync.noteScan({ kind: 'owner-unlock', profileName: person.name, biomId: person.i
     var swHadController = !!navigator.serviceWorker.controller;
     navigator.serviceWorker.addEventListener('controllerchange', function () {
       if (!swHadController) { swHadController = true; return; }
-      fetch('sw.js', { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (t) {
+      fetchWithTimeout('sw.js', { cache: 'no-store' }, 10000).then(function (r) { return r.text(); }).then(function (t) { // v77: bounded coherence probe
         var m = /tsg-biom-shell-(v[0-9]+)/.exec(t || '');
         var incoming = m ? m[1] : 'unknown';
         if (swReloadDoneFor[incoming]) return;
@@ -9224,7 +9459,13 @@ Sync.noteScan({ kind: 'owner-unlock', profileName: person.name, biomId: person.i
   window.TSGApp = { go: go };
   wireCamToggles();
   wireFlashToggles();
-  Pipeline.start(); // v43: warm the singleton pipeline from the first moment — MediaPipe Hands + the match worker load once, here, and stay warm across every view
+  /* v77: Pipeline.start() is deliberately NOT called here any
+     more — it is scheduled on idle time once the first screen is
+     up (schedulePipelinePrewarm, fired from dropBootSplash) and
+     kicked by the first interaction, so its assembly decode and
+     WASM load never race the boot chain. The singleton still
+     loads once and stays warm across every view (v43), and scan
+     views still enter via Pipeline.enterScanView(). */
   setFieldMode(fieldModeOn());
   syncCamToggle('terminal');
   ['enrollPalm', 'terminal'].forEach(function (g) { syncFlashToggle(g); });
@@ -9237,11 +9478,26 @@ Sync.noteScan({ kind: 'owner-unlock', profileName: person.name, biomId: person.i
       fillSyncSettings();
       renderVaultCard();
       return Sync.ensureLoaded();
-    }).then(function () { return Sync.flush(); })
-    .then(function () { return Sync.pull(); }) // v62 (B7): apply any server tombstones after the flush
+    })
     .then(function () { applyInitialFace(); }) // v63: the customer face is the default — owner surfaces detach last, once every boot render has run against the intact DOM
     .then(function () { applyRoleBoot(); }) // v67: then the role layer routes — role choice, the customer wallet, or the merchant scanner
     .then(function () { return handleBkashReturn(); }) // v71: a return from bKash's sandbox page is settled here, from the API's own execute/query answers — never from the URL parameters
     .then(function () { dropBootSplash(); }) // v75: the first coherent screen has rendered — the boot splash comes down only now, never at parse time
+    .then(function () {
+      /* v77: sync flush + pull moved OFF the boot critical path.
+         Until now the first routed screen waited on two network
+         round trips (with unbounded fetches, a stalled connection
+         held the screen hostage until the splash watchdog). The
+         sends themselves are unchanged — same order (flush then
+         pull), same sequence discipline, same tombstone
+         application (Sync's tombstone path re-renders the
+         affected surfaces when a pull lands) — they simply run
+         as background work once the user is looking at the app,
+         and every request is timeout-bounded via the sync
+         layer's fetchFn. A background sync failure is swallowed
+         here exactly as the flush's own status reporting already
+         handles it; the next flush retries from the outbox. */
+      return Sync.flush().then(function () { return Sync.pull(); }); // v62 (B7): apply any server tombstones after the flush
+    })
     .catch(function () { dropBootSplash(); }); // v75: fail-open — a boot error must never leave the splash up (the 6 s watchdog above is the second backstop)
 })();
