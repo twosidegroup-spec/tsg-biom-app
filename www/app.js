@@ -346,7 +346,42 @@
      allowed to rest on, and the order they are judged in,
      changed. The migration step is the identity (see
      biometrics.js). */
-  var APP_DATA_VERSION = 'v69';
+  var APP_DATA_VERSION = 'v71';
+  /* ---------------- v71 boot coherence + splash ------------------
+     index.html stamps its build in <meta name="biom-build">.
+     If the document that painted and the app.js that is running
+     disagree about the build, the shell is incoherent — two
+     versions mixed in one paint, the failure behind the
+     Chairman's old-design report. The app then does not run:
+     the neutral boot splash (already painted by the document
+     itself) stays up and ONE cache-bypassing reload is forced,
+     guarded per stamp-pair so it can never loop; if the shell
+     is still incoherent after that reload, the app runs rather
+     than brick the device. On a coherent boot the splash is
+     removed here, as app.js's first DOM action — nothing has
+     rendered yet, so no design of any version is ever painted
+     over or under it. */
+  var bootSplashEl = document.getElementById('bootSplash');
+  function dropBootSplash() {
+    if (bootSplashEl && bootSplashEl.parentNode) bootSplashEl.parentNode.removeChild(bootSplashEl);
+    bootSplashEl = null;
+  }
+  var buildMetaEl = document.querySelector('meta[name="biom-build"]');
+  var buildStamp = buildMetaEl ? buildMetaEl.getAttribute('content') : null;
+  if (buildStamp && buildStamp !== APP_DATA_VERSION) {
+    var cohKey = 'biomCohReload:' + buildStamp + '>' + APP_DATA_VERSION;
+    var cohDone = true;
+    try {
+      cohDone = !!sessionStorage.getItem(cohKey);
+      if (!cohDone) sessionStorage.setItem(cohKey, '1');
+    } catch (e) { cohDone = true; }
+    if (!cohDone) {
+      var cohSearch = location.search ? '&' + location.search.replace(/^\?/, '') : '';
+      location.replace(location.pathname + '?_coh=' + Date.now() + cohSearch + location.hash);
+      return;
+    }
+  }
+  dropBootSplash();
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -1234,6 +1269,176 @@
     onStatus: function () { renderSyncStatus(); },
     encryptProfileCore: function (core) { return Vault.encryptProfileCore(core); }
   });
+  /* ---------------- v71 bKash sandbox rail ------------------------------
+     The Phase E rail, sandbox scope (Chairman's order 2026-11-26
+     13:05). The palm authorisation is unchanged and still gates
+     INITIATION; the money ceremony (wallet, OTP, PIN) happens on
+     bKash's own hosted page — this app never sees a bKash PIN or
+     OTP, and the API refuses any request body that carries one.
+     Settlement truth comes only from the API's execute/query
+     relays of bKash's own responses. Modes are hard-separated by
+     the API: 'sandbox' here means the API answered mode
+     'sandbox' on BOTH the probe and the payment calls; anything
+     else fails closed — there is NO fallback from a failed or
+     unreachable sandbox rail into the demo ledger. Transport
+     reuses the device credential and the SHARED sync sequence
+     counter (a second counter would desync the device). */
+  var BkashRail = (function () {
+    function endpoint() { return syncPrefGet('biomSyncEndpoint') || SYNC_DEFAULT_ENDPOINT; }
+    function creds() {
+      return {
+        deviceId: syncPrefGet('biomSyncDeviceId'),
+        deviceSecret: syncPrefGet('biomSyncDeviceSecret'),
+        legacyKey: syncPrefGet('biomSyncDeviceKey')
+      };
+    }
+    /* v71 Seat 2 RC-2/RC-3: the payments rail NEVER falls back
+       to the registration-only bootstrap key. In Sync's model
+       that key exists solely to register a device (POST
+       /api/devices); spending it on payment routes would widen
+       its blast radius to money initiation. Transport exists
+       only with a registered device credential, or with an
+       owner-configured legacy device key — and a half-written
+       credential (an id with no secret) is refused outright,
+       never silently downgraded to a weaker auth. */
+    function hasTransport() {
+      var c = creds();
+      return !!((c.deviceId && c.deviceSecret) || c.legacyKey);
+    }
+    function fetchJson(url, opts) {
+      return fetch(url, opts).then(function (r) {
+        var seqConsumed = null;
+        try { seqConsumed = r.headers && typeof r.headers.get === 'function' ? r.headers.get('x-biom-seq-consumed') : null; } catch (e) {}
+        return r.text().then(function (t) {
+          var j = null;
+          try { j = JSON.parse(t); } catch (e) {}
+          return { status: r.status, json: j, seqConsumed: seqConsumed };
+        });
+      });
+    }
+    /* v71 Seat 2 re-review changes 1+2: this transport speaks
+       the API's REAL contract — the same header names Sync uses
+       (x-device-id / x-device-key / x-device-seq / x-device-sig;
+       lib/auth.js reads nothing else) and the signer called in
+       its defined argument order over the body OBJECT (the
+       server canonicalises the parsed body, lib/canonical.js).
+       The first v71 build invented X-Biom-* headers and called
+       the signer with shifted arguments, so no payment call
+       from the app could ever have authenticated; the API suite
+       could not see it because it drives the API with hand-built
+       fetches. The contract is now pinned end-to-end by the API
+       repo's tests/v71-app-contract.test.js, which evals THIS
+       code against the real server. */
+    function authHeaders(c, seq, sig) {
+      var h = { 'Content-Type': 'application/json' };
+      if (c.deviceId && c.deviceSecret) {
+        h['x-device-id'] = c.deviceId;
+        h['x-device-key'] = c.deviceSecret;
+        if (seq !== null && seq !== undefined) {
+          h['x-device-seq'] = String(seq);
+          h['x-device-sig'] = sig;
+        }
+      } else if (c.legacyKey) {
+        h['x-device-key'] = c.legacyKey;
+      }
+      return h;
+    }
+    function mode() {
+      var c = creds();
+      if (c.deviceId && !c.deviceSecret) return Promise.reject(new Error('device credential incomplete — payments unavailable on this device'));
+      if (!hasTransport()) return Promise.reject(new Error('no device credential for the payments rail'));
+      return fetchJson(endpoint() + '/api/payments/mode', { headers: authHeaders(c) }).then(function (r) {
+        if (!r.json || r.json.ok !== true) throw new Error('mode probe failed');
+        return r.json; // { provider:'bkash', mode:'demo'|'sandbox'|'production', bkashConfigured }
+      });
+    }
+    /* v71 Seat 2 re-review change 3: the sequence commit rule
+       is the server's own marker, never a status-code guess.
+       The API sets X-Biom-Seq-Consumed on every payments
+       response written after a signed sequence was spent —
+       including a revoked device's 403, where auth consumed
+       the number before the revocation check — and on nothing
+       else (never on the pre-auth bucket 429 / 413 / PIN-OTP
+       400, never on a 401). The local counter advances if and
+       only if the marker names the sequence this call sent.
+       This rail's own calls are serialised on payChain, and
+       each call first drains Sync (Sync.flush) — Sync and this
+       rail share ONE counter, so their signed writes never
+       allocate concurrently; Sync self-serialises its flush
+       the same way. */
+    var payChain = Promise.resolve();
+    function signedPost(path, bodyObj) {
+      var run = payChain.then(function () { return signedPostOnce(path, bodyObj, false); });
+      payChain = run.then(function () {}, function () {});
+      return run;
+    }
+    function signedPostOnce(path, bodyObj, retried) {
+      var c0 = creds();
+      if (c0.deviceId && !c0.deviceSecret) return Promise.reject(new Error('device credential incomplete — payments unavailable on this device'));
+      if (!hasTransport()) return Promise.reject(new Error('no device credential for the payments rail'));
+      return Sync.flush().then(function () {
+        var c = creds();
+        var body = JSON.stringify(bodyObj);
+        if (c.deviceId && c.deviceSecret) {
+          var seq = (parseInt(syncPrefGet('biomSyncSeq'), 10) || 0) + 1;
+          return biomSignRequest(c.deviceSecret, c.deviceId, seq, 'POST', path, bodyObj).then(function (sig) {
+            if (!sig) throw new Error('could not sign the payment request on this device');
+            return fetchJson(endpoint() + path, {
+              method: 'POST',
+              headers: authHeaders(c, seq, sig),
+              body: body
+            }).then(function (r) {
+              if (r.seqConsumed === String(seq)) {
+                try { syncPrefSet('biomSyncSeq', String(seq)); } catch (e) {}
+              }
+              /* One heal-and-retry on a sequence desync: Sync's
+                 next flush re-registers the device through its
+                 v62 reissue path when it pushes; if that replaced
+                 the credential (and reset the shared counter),
+                 retry this call once under the fresh credential.
+                 If nothing changed, the error is Sync's own
+                 honest wording — no loop, no silent downgrade. */
+              if (r.status === 401 && r.json && r.json.code === 'SEQ_DESYNC' && !retried) {
+                return Sync.flush().then(function () {
+                  var c2 = creds();
+                  if (c2.deviceId && c2.deviceId !== c.deviceId) return signedPostOnce(path, bodyObj, true);
+                  throw new Error('device signing is out of step — open Settings, check Scan Sync, tap Sync now, then try the payment again');
+                });
+              }
+              return r;
+            });
+          });
+        }
+        return fetchJson(endpoint() + path, {
+          method: 'POST',
+          headers: authHeaders(c),
+          body: body
+        });
+      });
+    }
+    function relay(path, bodyObj) {
+      return signedPost(path, bodyObj).then(function (r) {
+        if (!r.json) throw new Error('payment server unreachable');
+        return r.json;
+      });
+    }
+    return {
+      hasTransport: hasTransport,
+      mode: mode,
+      create: function (args) { return relay('/api/payments', args); },
+      execute: function (paymentID) { return relay('/api/payments/execute', { paymentID: paymentID }); },
+      query: function (paymentID) { return relay('/api/payments/query', { paymentID: paymentID }); }
+    };
+  })();
+  /* The only bKash page the app will ever navigate to: the
+     sandbox hosted checkout on bKash's own sandbox host, over
+     https. Anything else in a create response is refused. */
+  function bkashSandboxUrlOk(u) {
+    try {
+      var url = new URL(u);
+      return url.protocol === 'https:' && url.hostname === 'sandbox.payment.bkash.com';
+    } catch (e) { return false; }
+  }
   function renderSyncStatus() {
     var el = $('syncStatus');
     if (el) el.textContent = Sync.statusText();
@@ -4637,9 +4842,19 @@
   }
 
   var palmScanBusy = false;
+  /* v71: a money commit is in flight — set alongside
+     palmScanBusy by the wallet scan runner and the terminal,
+     held until the flow's final write/render settles. The
+     service-worker update reload (below) waits for BOTH flags:
+     a scan ending is not the flow ending when the payment
+     writes are still landing. */
+  var moneyCommitBusy = false;
 
   /* ---------------- Navigation ------------------------------------------- */
   function go(page) {
+    /* v71: navigation is a flow boundary — a held service-worker
+       update reload is delivered here if nothing is in flight. */
+    checkPendingSwReload();
     /* v63 two-face gate: in customer mode the owner pages do
        not exist (their DOM is detached) and navigation to them
        resolves to the wallet instead. The 'activity' target is
@@ -4737,7 +4952,9 @@
       $('statVerifs').textContent = todayLogs.length;
       $('statRate').textContent = todayLogs.length ? Math.round((verified / todayLogs.length) * 100) + '%' : '—';
       $('statWallets').textContent = people.filter(function (p) { return p.walletProvider; }).length;
-      var vol = txs.filter(function (t) { return isToday(t.ts); }).reduce(function (s, t) { return s + Number(t.amount || 0); }, 0);
+      /* v71: sandbox-rail records are excluded — test money
+         never inflates the demo volume figure. */
+      var vol = txs.filter(function (t) { return isToday(t.ts) && t.rail !== 'bkash-sandbox'; }).reduce(function (s, t) { return s + Number(t.amount || 0); }, 0);
       $('statVolume').textContent = 'BDT ' + vol.toLocaleString();
       var feed = logs.slice(-6).reverse().map(function (l) {
         return '<div><b>' + esc(fmtTime(l.ts)) + '</b> — ' + esc(l.personName) + ' · ' + esc(l.method) + ' · ' + esc(l.measured) + ' · <span class="badge ' + (l.result === 'Verified' ? 'ok' : 'bad') + '">' + esc(l.result) + '</span></div>';
@@ -4915,10 +5132,14 @@
   }
   $('palmStart').addEventListener('click', function () { startPalmCamera(); });
   camRestarters.enrollPalm = function () { startPalmCamera(); };
+  /* v71: enrolment/topup capture settle — clears the money-commit
+     hold and delivers a held service-worker update reload. */
+  function settleCaptureReload() { moneyCommitBusy = false; checkPendingSwReload(); }
   function runPalmCapture() {
     if (palmScanBusy) return;
     if (!enroll.details) return;
     palmScanBusy = true;
+    moneyCommitBusy = true; // v71: held until the capture's outcome is fully applied
     $('palmCapture').disabled = true;
     $('palmMsg').innerHTML = '';
     var control = { cancelled: false, onFrame: function (info) { var fr = enrolSession.frame({ hasHand: info.hasHand, pose: info.pose }); enrolInds.update(info, fr); } };
@@ -4931,31 +5152,35 @@
     streamEnrolPalm($('palmVideo'), $('palmStatus'), null, null, control).then(function (res) {
       palmScanBusy = false;
       setSurfacePill('e', 'Ready');
-      if (res.stopped) { $('palmCapture').disabled = false; $('palmStatus').textContent = 'Capture stopped.'; return; }
+      if (res.stopped) { $('palmCapture').disabled = false; $('palmStatus').textContent = 'Capture stopped.'; settleCaptureReload(); return; }
       if (res.spoof && res.spoof.spoof) {
         DB.put('logs', { ts: Date.now(), personId: '', personName: '(enrolment attempt)', store: '', method: 'palm', measured: 'Spoof score ' + res.spoof.score.toFixed(2) + ' - ' + res.spoof.reasons.join('; '), result: 'Spoof / Screen Replay Detected' });
         Sync.noteScan({ kind: 'enrol', profileName: '', biomId: '', result: 'Spoof / Screen Replay Detected' });
         $('palmMsg').innerHTML = '<div class="error">Spoof / Screen Replay Detected — the scan showed a screen or a recording, not a live hand (' + esc(res.spoof.reasons.join('; ')) + '). Nothing was stored. Enrolment requires the real hand, live in front of the camera.</div>';
         $('palmCapture').disabled = false;
         Snd.buzz();
+        settleCaptureReload();
         return;
       }
       if (res.detectorFailed) {
         $('palmMsg').innerHTML = '<div class="error">' + esc(DETECTOR_FAIL_MSG) + ' Nothing was stored.</div>';
         $('palmCapture').disabled = false;
         Snd.buzz();
+        settleCaptureReload();
         return;
       }
       if (!res.burst) {
         $('palmMsg').innerHTML = '<div class="error">No sharp open palm was captured' + (res.hint ? ' — last guidance shown: ' + esc(res.hint) : '') + '. Nothing was stored. Show one open palm to the camera, fingers spread, in good light, and hold it steady, then tap Scan Palm again — on the tap, the burst runs the moment a sharp palm is seen.</div>';
         $('palmCapture').disabled = false;
         Snd.buzz();
+        settleCaptureReload();
         return;
       }
       if (!res.burst.liveness.pass) {
         $('palmMsg').innerHTML = '<div class="error">Liveness check failed: ' + esc(res.burst.liveness.reason) + ' Nothing was stored. Enrol with the real hand, held live in front of the camera.</div>';
         $('palmCapture').disabled = false;
         Snd.buzz();
+        settleCaptureReload();
         return;
       }
       // v45: bank the burst's 3 sharpest time-spaced templates in
@@ -4964,6 +5189,7 @@
       if (!sel) {
         $('palmMsg').innerHTML = '<div class="error">No usable open palm with readable print detail was captured in the burst. Nothing was stored. Show one open palm to the camera, fingers spread, in good light, and try again.</div>';
         $('palmCapture').disabled = false;
+        settleCaptureReload();
         return;
       }
       // v51: the profile records the palm's ANATOMICAL hand —
@@ -5004,11 +5230,13 @@
         Snd.chime();
         Snd.speak('Palm captured');
         advanceFrom('palm');
+        settleCaptureReload(); // v71: enrolment outcome fully applied
       });
     }).catch(function (e) {
       palmScanBusy = false;
       $('palmCapture').disabled = false;
       $('palmMsg').innerHTML = '<div class="error">Palm capture failed: ' + esc(e && e.message ? e.message : e) + ' Nothing was stored.</div>';
+      settleCaptureReload();
     });
   }
   $('palmCapture').addEventListener('click', runPalmCapture);
@@ -5216,6 +5444,7 @@
 
       if (palmScanBusy) return null;
       palmScanBusy = true;
+      moneyCommitBusy = true; // v71: held until the pay writes settle (createPay runs after the scan promise)
       $('termScan').disabled = true;
       $('termResult').innerHTML = '<div class="notice">Show &amp; Pay — the customer simply holds an open palm toward the camera, like tapping a card. Scanning...</div>';
       var fieldRec = function (genuineScore, impostorMax, liveness, result, lightTag, neural) {
@@ -5384,7 +5613,7 @@
             if (person.limits && person.limits.daily) {
               return DB.all('transactions').then(function (txs) {
                 var dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
-                var todaySum = txs.filter(function (t) { return t.personId === person.id && t.ts >= dayStart.getTime(); }).reduce(function (s, t) { return s + Number(t.amount || 0); }, 0);
+                var todaySum = txs.filter(function (t) { return t.personId === person.id && t.ts >= dayStart.getTime() && t.rail !== 'bkash-sandbox'; }).reduce(function (s, t) { return s + Number(t.amount || 0); }, 0);
                 if (todaySum + amount > person.limits.daily) {
                   $('termResult').innerHTML = html + loyaltyLine + '<div class="error" style="margin-top:10px">Biom Pay not created: this payment would take today\'s total to BDT ' + (todaySum + amount).toLocaleString() + ', above this customer\'s biometric-only daily limit of BDT ' + person.limits.daily.toLocaleString() + '. Payments above the limit are not created.</div>';
                   Snd.speak('Palm recognized');
@@ -5399,7 +5628,8 @@
           Snd.speak('Palm recognized');
         });
       });
-    }).catch(function (e) { $('termResult').innerHTML = '<div class="error">Scan failed: ' + esc(e && e.message ? e.message : e) + '</div>'; });
+    }).catch(function (e) { $('termResult').innerHTML = '<div class="error">Scan failed: ' + esc(e && e.message ? e.message : e) + '</div>'; })
+    .then(function () { moneyCommitBusy = false; checkPendingSwReload(); }); // v71: the terminal flow has fully settled
   }
   $('termScan').addEventListener('click', runTermScan);
 
@@ -5470,6 +5700,10 @@
       $('walletHome').classList.toggle('hidden', !me);
       $('walletAdd').classList.add('hidden');
       $('walletSend').classList.add('hidden');
+      /* v71: walletPay joins the sheets closed on returning
+         home — pre-v71 it stayed open under the home view
+         (its Back button appeared to do nothing). */
+      $('walletPay').classList.add('hidden');
       $('walletScanCard').classList.add('hidden');
       walletScanCtx = null;
       if (me) { renderWalletHome(me); updateInboxBadge(); return; }
@@ -5739,6 +5973,7 @@
   function runWalletScan() {
     if (!walletScanCtx || palmScanBusy) return;
     palmScanBusy = true;
+    moneyCommitBusy = true; // v71: held until the flow's writes settle, not just the scan
     $('wScanRun').disabled = true;
     setScanPill('Scanning');
     var ctx = walletScanCtx;
@@ -5747,10 +5982,11 @@
       .then(function () { return ctx.run(); })
       .catch(function (e) { walletScanFailed({ fail: 'Scan failed: ' + (e && e.message ? e.message : e) }); })
       .then(function () {
-        palmScanBusy = false; walletSession.verdict();
+        palmScanBusy = false; moneyCommitBusy = false; walletSession.verdict();
         // v58: a judged scan leaves the card ARMED, not
         // re-scanning — the next scan needs a fresh tap.
         if (!$('walletScanCard').classList.contains('hidden')) setScanPill('Ready');
+        checkPendingSwReload(); // v71: deliver a held update reload now the flow has settled
       });
   }
   function hideWalletScan() {
@@ -5759,6 +5995,7 @@
     $('walletScanCard').classList.add('hidden');
     walletScanCtx = null;
     Cam.stop();
+    checkPendingSwReload(); // v71: closing the scan card is a flow boundary
   }
   /* SCAN-GUIDANCE-BEGIN — v69: per-cause guidance for a failed
      wallet scan. The Chairman's 2026-11-26 friction report was
@@ -6220,6 +6457,19 @@
     var hasStores = $('wPayStore').options.length > 0;
     $('wPayEmpty').classList.toggle('hidden', hasStores);
     $('wPayScan').disabled = !hasStores;
+    /* v71: for a bKash-linked profile, say which rail will
+       settle BEFORE the palm is scanned — sandbox, demo, or
+       unreachable — from the API's own mode answer. */
+    $('wPayRailLine').textContent = '';
+    if (me.walletProvider === 'bKash' && BkashRail.hasTransport()) {
+      BkashRail.mode().then(function (m) {
+        if (m && m.mode === 'sandbox') $('wPayRailLine').textContent = 'Settlement rail: bKash Sandbox (test mode) — after your palm authorises, you confirm on bKash\u2019s own sandbox page. No real money.';
+        else if (m && m.mode === 'demo') $('wPayRailLine').textContent = 'Settlement rail: demo ledger — the bKash sandbox is not connected on the payment server yet.';
+        else $('wPayRailLine').textContent = 'Settlement rail: the payments rail answered an unexpected mode — a bKash payment cannot start.';
+      }).catch(function () {
+        $('wPayRailLine').textContent = 'Settlement rail: payment server unreachable — a bKash payment cannot start right now.';
+      });
+    }
   });
   $('wPayBack').addEventListener('click', function () { renderWallet(); });
   $('wPayScan').addEventListener('click', function () {
@@ -6229,10 +6479,20 @@
     if (!amt.ok) { $('wPayMsg').innerHTML = '<div class="error">' + esc(amt.error) + '</div>'; return; }
     var amount = amt.amount;
     var store = $('wPayStore').value;
+    /* v71 Seat 3 RC-3: for a bKash-linked profile the rail's
+       mode is probed BEFORE the scan opens, so the words the
+       user authorises under name the rail that will actually
+       settle — sandbox test money is never called demo money.
+       ONE probe governs the whole attempt: the prompt now and
+       the branch after authorisation. A failed probe or an
+       unexpected mode stops here: no scan, no settlement. */
+    var openPayScan = function (probedMode) {
     showWalletScan({
       title: 'Biom Pay — authorise with your palm',
       syncKind: 'money-auth', // v56 Scan Sync kind for this context
-      prompt: 'Scan YOUR OWN palm to pay ' + fmtBDT(amount) + ' of demo money at ' + store + '. Only your palm can authorise a payment from your wallet.',
+      prompt: probedMode === 'sandbox'
+        ? 'Scan YOUR OWN palm to pay ' + fmtBDT(amount) + ' at ' + store + ' through the bKash Sandbox (TEST MODE — no real money). Only your palm can start a payment from your wallet.'
+        : 'Scan YOUR OWN palm to pay ' + fmtBDT(amount) + ' of demo money at ' + store + '. Only your palm can authorise a payment from your wallet.',
       run: function () {
         return DB.all('people').then(function (people) {
           var fresh = people.find(function (p) { return p.id === me.id; }) || me;
@@ -6283,24 +6543,257 @@
                 });
               });
             };
-            if (fresh.limits && fresh.limits.daily) {
-              return DB.all('transactions').then(function (txs) {
-                var dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
-                var todaySum = txs.filter(function (t) { return t.personId === fresh.id && t.ts >= dayStart.getTime(); }).reduce(function (s, t) { return s + Number(t.amount || 0); }, 0);
-                if (todaySum + amount > fresh.limits.daily) {
-                  $('wScanMsg').innerHTML = '<div class="error">Biom Pay not created: this payment would take today\'s total to ' + fmtBDT(todaySum + amount) + ', above your biometric-only daily limit of ' + fmtBDT(fresh.limits.daily) + '. Payments above the limit are not created.</div>';
-                  $('wScanRun').disabled = false;
-                  return;
-                }
-                return createWalletPay();
-              });
-            }
-            return createWalletPay();
+            var settleDemoPay = function () {
+              if (fresh.limits && fresh.limits.daily) {
+                return DB.all('transactions').then(function (txs) {
+                  var dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+                  var todaySum = txs.filter(function (t) { return t.personId === fresh.id && t.ts >= dayStart.getTime() && t.rail !== 'bkash-sandbox'; }).reduce(function (s, t) { return s + Number(t.amount || 0); }, 0);
+                  if (todaySum + amount > fresh.limits.daily) {
+                    $('wScanMsg').innerHTML = '<div class="error">Biom Pay not created: this payment would take today\'s total to ' + fmtBDT(todaySum + amount) + ', above your biometric-only daily limit of ' + fmtBDT(fresh.limits.daily) + '. Payments above the limit are not created.</div>';
+                    $('wScanRun').disabled = false;
+                    return;
+                  }
+                  return createWalletPay();
+                });
+              }
+              return createWalletPay();
+            };
+            /* v71 bKash sandbox rail: the mode probed before
+               this scan opened (Seat 3 RC-3 — one probe governs
+               the attempt) decides where the authorised payment
+               settles. 'sandbox' hands off to the sandbox flow
+               (interstitial, then bKash's own hosted page) and
+               the demo record is NOT written; 'demo' or no probe
+               keeps the exact pre-v71 behaviour. Create, execute
+               and query responses must still each carry mode
+               'sandbox' — the probe alone never settles
+               anything. The palm authorisation above has
+               already passed: the rail never weakens it. */
+            if (fresh.walletProvider === 'bKash' && probedMode === 'sandbox') return startSandboxPay(fresh, store, amount);
+            return settleDemoPay();
           });
         });
       }
     });
+    };
+    if (me.walletProvider === 'bKash' && BkashRail.hasTransport()) {
+      $('wPayMsg').innerHTML = '<div class="notice">Checking the payment rail…</div>';
+      BkashRail.mode().then(function (m) {
+        if (m && (m.mode === 'sandbox' || m.mode === 'demo')) { $('wPayMsg').innerHTML = ''; openPayScan(m.mode); return; }
+        $('wPayMsg').innerHTML = '<div class="error">Biom Pay cannot start: the payments rail answered an unexpected mode — nothing was charged.</div>';
+      }, function () {
+        $('wPayMsg').innerHTML = '<div class="error">Biom Pay cannot start: the payment server is unreachable — nothing was charged. Check the connection and try again.</div>';
+      });
+      return;
+    }
+    openPayScan(null);
   });
+
+  /* ---------------- v71 bKash sandbox payment flow --------------------
+     Runs only after the strict palm authorisation above has
+     passed and the API has answered mode 'sandbox'. The user
+     authorised under demo wording, so BEFORE anything is
+     created the interstitial restates the amount, the store
+     and the sandbox truth, and waits for an explicit tap.
+     Continue creates the payment through the API, persists a
+     pending record on-device, and only then navigates to
+     bKash's own sandbox page — the ceremony (wallet, OTP, PIN)
+     is bKash's; this app never sees it. */
+  function startSandboxPay(fresh, store, amount) {
+    hideWalletScan();
+    $('walletHome').classList.add('hidden');
+    $('walletPay').classList.remove('hidden');
+    $('wPaySandboxText').textContent = 'Pay ' + fmtBDT(amount) + ' to ' + store + ' from the bKash wallet linked to this profile (' + (fresh.walletNumber || '') + ').';
+    $('wPaySandbox').classList.remove('hidden');
+    $('wPayMsg').innerHTML = '';
+    $('wPaySandboxGo').disabled = false;
+    $('wPaySandboxCancel').disabled = false;
+    sandboxInterstitialOpen = true;
+    return Promise.resolve();
+  }
+  function closeSandboxInterstitial(note) {
+    sandboxInterstitialOpen = false;
+    $('wPaySandbox').classList.add('hidden');
+    if (note) $('wPayMsg').innerHTML = '<div class="notice">' + esc(note) + '</div>';
+    checkPendingSwReload();
+  }
+  $('wPaySandboxCancel').addEventListener('click', function () {
+    closeSandboxInterstitial('Sandbox payment cancelled before anything was created — nothing was charged.');
+  });
+  $('wPaySandboxGo').addEventListener('click', function () {
+    var fresh = walletSessionPerson();
+    var store = $('wPayStore').value;
+    var amt = B.walletValidateAmount($('wPayAmount').value);
+    if (!fresh || fresh.walletProvider !== 'bKash' || !store || !amt.ok) {
+      closeSandboxInterstitial('The payment details changed — nothing was created. Reopen Biom Pay to start again.');
+      return;
+    }
+    var amount = amt.amount;
+    $('wPaySandboxGo').disabled = true;
+    $('wPaySandboxCancel').disabled = true;
+    BkashRail.create({ biomId: fresh.id, amount: amount, payerReference: fresh.walletNumber }).then(function (res) {
+      if (!res || res.mode !== 'sandbox' || res.ok !== true || !res.paymentID || !bkashSandboxUrlOk(res.bkashURL)) {
+        throw new Error(res && res.error ? res.error : 'the sandbox refused to create the payment');
+      }
+      /* The pending record is persisted BEFORE the redirect:
+         the return is matched against it, and it is cleared
+         before anything is credited, so a refresh or a replayed
+         return can never execute or credit twice. */
+      return DB.setMeta('bkashPending', {
+        paymentID: res.paymentID, personId: fresh.id, amount: amount, store: store,
+        invoice: res.merchantInvoiceNumber || '', ts: Date.now()
+      }).then(function () { return res; });
+    }).then(function (res) {
+      sandboxInterstitialOpen = false;
+      window.location.assign(res.bkashURL);
+    }).catch(function (e) {
+      $('wPaySandboxGo').disabled = false;
+      $('wPaySandboxCancel').disabled = false;
+      $('wPayMsg').innerHTML = '<div class="error">bKash Sandbox could not start this payment (' + esc(e && e.message ? e.message : e) + '). Nothing was charged, and nothing was settled in the demo ledger.</div>';
+    });
+  });
+  /* The return from bKash's page. The callback parameters are
+     NEVER trusted: the paymentID must match the pending record
+     persisted before the redirect, and the outcome is read
+     from the API's execute + query relays of bKash's own
+     responses. The URL parameters are stripped immediately. */
+  function bkashReturnMessage(html) {
+    toast('bKash Sandbox: payment update');
+    /* Always written, even when the wallet home is not the
+       visible page at return time (a multi-profile device
+       boots to the picker): the message waits on the wallet
+       home and is what the payer sees when they open the
+       wallet — the settlement outcome is never carried by
+       the transient toast alone. (Found by the v71 gate,
+       Phase BK3: with the visibility condition the message
+       silently vanished on picker-first boots.) */
+    $('wHomeMsg').innerHTML = html;
+  }
+  function handleBkashReturn() {
+    var params = new URLSearchParams(location.search);
+    if (!params.get('bkashReturn') && !params.get('paymentID')) return Promise.resolve();
+    var paymentID = params.get('paymentID') || '';
+    try { history.replaceState(null, '', location.pathname + location.hash); } catch (e) {}
+    return DB.getMeta('bkashPending', null).then(function (pending) {
+      if (!pending || !pending.paymentID || pending.paymentID !== paymentID) {
+        bkashReturnMessage('<div class="error">bKash Sandbox return could not be matched to a payment started on this device — nothing was recorded and nothing was credited.</div>');
+        return null;
+      }
+      /* v71 Seat 3 RC-4: a pending record older than the
+         sandbox session's useful life is abandoned, not
+         executed — the link has expired. */
+      if (pending.ts && Date.now() - pending.ts > 30 * 60 * 1000) {
+        return DB.setMeta('bkashPending', null).then(function () {
+          bkashReturnMessage('<div class="error">This bKash Sandbox payment link has expired — it was started more than 30 minutes ago and is no longer being tracked. Nothing was recorded and nothing was credited. If you completed it in the sandbox, check the sandbox result before paying again.</div>');
+          return null;
+        });
+      }
+      return BkashRail.execute(paymentID).then(function (ex) {
+        return BkashRail.query(paymentID).then(function (q) { return { ex: ex, q: q }; });
+      }).then(function (both) {
+        var ex = both.ex, q = both.q;
+        if (!ex || ex.mode !== 'sandbox' || !q || q.mode !== 'sandbox') throw new Error('the rail answered an unexpected mode');
+        /* v71 Seat 2 re-review change 6 + Seat 3 re-review
+           change 4: "Completed" is a checked predicate, not
+           one trusted field. Both relays must report success,
+           for THIS payment, with agreeing amounts, in BDT,
+           against the invoice this device created, and the
+           query must show verification Complete. Anything less
+           records nothing. */
+        if ((ex.paymentID && ex.paymentID !== paymentID) || (q.paymentID && q.paymentID !== paymentID)) {
+          throw new Error('the rail answered for a different payment than the one started on this device');
+        }
+        var relayedInvoice = q.merchantInvoice || ex.merchantInvoice || '';
+        if (relayedInvoice && pending.invoice && relayedInvoice !== pending.invoice) {
+          throw new Error('the rail answered for a different invoice than the one created on this device');
+        }
+        if ((ex.currency && ex.currency !== 'BDT') || (q.currency && q.currency !== 'BDT')) {
+          throw new Error('the rail answered in an unexpected currency');
+        }
+        var exAmt = ex.amount != null ? Number(ex.amount) : null;
+        var qAmt = q.amount != null ? Number(q.amount) : null;
+        if (exAmt !== null && qAmt !== null && exAmt !== qAmt) {
+          throw new Error('execute and query disagree on the amount');
+        }
+        var finalStatus = q.transactionStatus || ex.transactionStatus || '';
+        if (ex.ok !== true || q.ok !== true || finalStatus !== 'Completed' || q.verificationStatus !== 'Complete') {
+          return DB.setMeta('bkashPending', null).then(function () {
+            bkashReturnMessage('<div class="error">bKash Sandbox payment did not complete (status: ' + esc(finalStatus || 'unknown') + '). No money moved, nothing was recorded and no points were awarded.</div>');
+            return null;
+          });
+        }
+        var executedAmount = exAmt !== null ? exAmt : qAmt;
+        var trxID = ex.trxID || q.trxID || '';
+        return Promise.all([DB.all('people'), DB.all('transactions')]).then(function (rr) {
+          var person = rr[0].find(function (p) { return p.id === pending.personId; }) || null;
+          if (!person) {
+            return DB.setMeta('bkashPending', null).then(function () {
+              bkashReturnMessage('<div class="error">bKash Sandbox reports the payment completed, but the wallet profile is no longer on this device — it could not be recorded here.</div>');
+              return null;
+            });
+          }
+          /* v71 Seat 3 RC-2: the write is idempotent by
+             paymentID. If this payment is already recorded —
+             an earlier return wrote it and a later step was
+             interrupted — it is NOT written or credited a
+             second time; the pending record is simply
+             retired. */
+          var existing = rr[1].find(function (t) { return t && t.rail === 'bkash-sandbox' && t.paymentID === paymentID; }) || null;
+          if (existing) {
+            return DB.setMeta('bkashPending', null).then(function () {
+              bkashReturnMessage('<div class="success">bKash Sandbox — TEST MODE — no real money moved.<br>This payment was already recorded on this device (bKash Sandbox TrxID: ' + esc(existing.trxID || '') + ') — it has not been credited twice.</div>');
+              return null;
+            });
+          }
+          /* A Completed answer with NO TrxID from either
+             response is recorded as what it is — completed
+             but unreferenced (Seat 3 re-review change 4) —
+             never dressed as a normal referenced record. */
+          var rec = {
+            id: 'BKASH-SANDBOX-' + (trxID || paymentID), ts: Date.now(), personId: person.id, personName: person.name,
+            provider: 'bKash', walletMasked: B.maskWalletNumber(person.walletNumber),
+            store: pending.store, amount: executedAmount, method: 'palm', rail: 'bkash-sandbox',
+            trxID: trxID, paymentID: paymentID,
+            status: trxID ? 'Completed — bKash Sandbox (TEST MODE)' : 'Completed — bKash Sandbox (TEST MODE) · TrxID not returned by bKash'
+          };
+          return DB.put('transactions', rec).then(function () {
+            /* Points follow the v59 D6 rule — credited only
+               now, from the EXECUTED amount the API returned.
+               If bKash executed a different amount than the
+               one authorised here, nothing is credited and
+               the discrepancy is stated, not hidden. */
+            var discrepancy = executedAmount !== Number(pending.amount);
+            var pts = discrepancy ? 0 : Math.floor(executedAmount / 10);
+            if (pts > 0) person.loyaltyPoints = (person.loyaltyPoints || 0) + pts;
+            return DB.put('people', person).then(function () {
+              Inbox.add(person.id, Inbox.event('bkash', {
+                amount: executedAmount, ref: rec.id,
+                detail: 'At ' + pending.store + ' · bKash Sandbox TrxID ' + trxID + ' · TEST MODE — no real money'
+              }));
+              /* The pending record is retired only now that
+                 the payment is fully recorded — a crash
+                 anywhere above leaves it in place, and the
+                 idempotent write above makes the re-run
+                 safe. */
+              return DB.setMeta('bkashPending', null).then(function () {
+                return renderWallet().then(function () {
+                  bkashReturnMessage('<div class="success">bKash Sandbox — TEST MODE — no real money moved.<br>Payment of ' + fmtBDT(executedAmount) + ' at ' + esc(pending.store) + ' completed in the bKash sandbox.' +
+                    (trxID ? '<br>bKash Sandbox TrxID: ' + esc(trxID) : '<br>bKash did not return a TrxID for this payment — the completion is recorded from its Execute and Query answers.') +
+                    (pts > 0 ? '<br>Palm Loyalty: +' + pts + ' points awarded — balance ' + Number(person.loyaltyPoints || 0) + ' points.' : '') +
+                    (discrepancy ? '<br><b>Note:</b> bKash executed ' + fmtBDT(executedAmount) + ' but this device authorised ' + fmtBDT(Number(pending.amount)) + ' — no points were awarded for this payment.' : '') +
+                    '</div>');
+                  Snd.chime();
+                });
+              });
+            });
+          });
+        });
+      }).catch(function (e) {
+        bkashReturnMessage('<div class="error">The sandbox payment could not be confirmed with the payment server (' + esc(e && e.message ? e.message : e) + '). It is NOT recorded here — check the bKash sandbox result before paying again.</div>');
+        return null;
+      });
+    });
+  }
 
   /* ---------------- My Account (v52) --------------------------------
      The customer account surface: every value is read live from
@@ -6701,6 +7194,7 @@
   function runTopupCapture() {
     if (topupBusy || palmScanBusy || !topupPersonId) return;
     topupBusy = true; palmScanBusy = true;
+    moneyCommitBusy = true; // v71: the bank writes land after the scan flags clear — hold the update reload until they settle
     $('topCapture').disabled = true;
     $('topMsg').innerHTML = '';
     var control = { cancelled: false, onFrame: function (info) { var fr = topupSession.frame({ hasHand: info.hasHand, pose: info.pose }); topupInds.update(info, fr); } };
@@ -6933,7 +7427,7 @@
       topupBusy = false; palmScanBusy = false;
       $('topCapture').disabled = false;
       $('topMsg').innerHTML = '<div class="error">Add-angles capture failed: ' + esc(e && e.message ? e.message : e) + ' Nothing was changed.</div>';
-    });
+    }).then(function () { settleCaptureReload(); }); // v71: topup flow fully settled (success or failure)
   }
   /* ---------------- v53 owner re-registration ------------------
      The remedy for the lockout, behind the same style of gate
@@ -7472,7 +7966,11 @@
     var TITLES = {
       add: 'Add money successful',
       send: 'Send money successful',
-      pay: 'Payment done'
+      pay: 'Payment done',
+      /* v71: the bKash sandbox rail gets its own title — a
+         sandbox payment is never announced with the demo
+         ledger's bare "Payment done". */
+      bkash: 'bKash Sandbox payment — TEST MODE'
     };
     function event(kind, opts) {
       opts = opts || {};
@@ -7578,7 +8076,9 @@
      the record's own masked wallet. */
   function merchantBalanceSummary(txs, peopleById, nowTs) {
     var pays = (Array.isArray(txs) ? txs : []).filter(function (t) {
-      return t && typeof t.amount === 'number' && isFinite(t.amount);
+      /* v71: bKash sandbox records are not merchant receipts —
+         test money never enters the Balance chain. */
+      return t && typeof t.amount === 'number' && isFinite(t.amount) && t.rail !== 'bkash-sandbox';
     }).slice();
     pays.sort(function (a, b) {
       var d = (a.ts || 0) - (b.ts || 0);
@@ -8030,8 +8530,56 @@
      v59: registered here instead of an inline <script> in
      index.html (Seat 1 Spec B3 prerequisite — a future CSP
      without 'unsafe-inline' must not kill SW registration).
-     Behaviour identical: register sw.js on window load. */
+     Behaviour identical: register sw.js on window load.
+     v71 (Order 1): update DELIVERY. The v71 worker is
+     network-first, so a fresh load already paints the current
+     shell; this block covers the transition load itself — the
+     one governed by the OLD worker, which serves its cached
+     shell first. When the new worker takes control
+     (controllerchange) and there WAS a previous controller,
+     the page reloads once into the new shell — never on first
+     install (no previous controller: the claim is not an
+     update), never mid-flow: if a scan or a money commit is in
+     flight the reload is held and delivered by
+     checkPendingSwReload() when the flow settles. The
+     once-guard is keyed by the incoming shell version read
+     from the served sw.js, so the NEXT update in the same
+     long-lived tab is delivered too. */
+  var swReloadPending = false;
+  var swReloadDoneFor = {};
+  /* v71: the bKash sandbox interstitial (below) is a flow too —
+     an authorised payment is waiting on the user's tap, and a
+     reload there would silently discard the authorisation. */
+  var sandboxInterstitialOpen = false;
+  function swFlowBusy() { return palmScanBusy || moneyCommitBusy || sandboxInterstitialOpen; }
+  function checkPendingSwReload() {
+    if (swReloadPending && !swFlowBusy()) {
+      swReloadPending = false;
+      window.location.reload();
+    }
+  }
   if ('serviceWorker' in navigator) {
+    var swHadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', function () {
+      if (!swHadController) { swHadController = true; return; }
+      fetch('sw.js', { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (t) {
+        var m = /tsg-biom-shell-(v[0-9]+)/.exec(t || '');
+        var incoming = m ? m[1] : 'unknown';
+        if (swReloadDoneFor[incoming]) return;
+        var done = false;
+        try { done = !!sessionStorage.getItem('biomSwReloaded:' + incoming); } catch (e) { done = false; }
+        if (done) { swReloadDoneFor[incoming] = true; return; }
+        try { sessionStorage.setItem('biomSwReloaded:' + incoming, '1'); } catch (e) {}
+        swReloadDoneFor[incoming] = true;
+        swReloadPending = true;
+        checkPendingSwReload();
+      }).catch(function () {
+        if (swReloadDoneFor.session) return;
+        swReloadDoneFor.session = true;
+        swReloadPending = true;
+        checkPendingSwReload();
+      });
+    });
     window.addEventListener('load', function () {
       navigator.serviceWorker.register('sw.js').catch(function (e) { console.warn('SW registration failed', e); });
     });
@@ -8066,5 +8614,6 @@
     .then(function () { return Sync.pull(); }) // v62 (B7): apply any server tombstones after the flush
     .then(function () { applyInitialFace(); }) // v63: the customer face is the default — owner surfaces detach last, once every boot render has run against the intact DOM
     .then(function () { applyRoleBoot(); }) // v67: then the role layer routes — role choice, the customer wallet, or the merchant scanner
+    .then(function () { return handleBkashReturn(); }) // v71: a return from bKash's sandbox page is settled here, from the API's own execute/query answers — never from the URL parameters
     .catch(function () {});
 })();
