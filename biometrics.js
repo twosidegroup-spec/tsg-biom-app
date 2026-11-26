@@ -4989,10 +4989,19 @@ function createTsgPalmEngine() {
      stamp — exactly what the API's profile shape whitelists. */
   var SYNC_SCAN_KINDS = ['enrol', 'verify', 'identify', 'wallet-open', 'money-auth', 'topup', 're-register', 'delete-all', 'field-test', 'owner-unlock'];
   function syncScoreOrNull(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
+  /* v74: a scan's real measured duration (ms, the on-screen
+     timer's own performance.now() measurement) rides its sync
+     record when one was measured; anything else stays off the
+     record entirely, so unmeasured scans and records from older
+     versions stay byte-identical and read as unmeasured — never
+     estimated. */
+  function syncDurationOrNull(v) {
+    return (typeof v === 'number' && isFinite(v) && v >= 0 && v <= 3600000) ? v : null;
+  }
   function syncScanRecord(fields) {
     if (!fields || typeof fields !== 'object') return null;
     if (SYNC_SCAN_KINDS.indexOf(fields.kind) === -1) return null;
-    return {
+    var rec = {
       kind: fields.kind,
       profileName: typeof fields.profileName === 'string' ? fields.profileName : '',
       biomId: typeof fields.biomId === 'string' ? fields.biomId : '',
@@ -5001,6 +5010,11 @@ function createTsgPalmEngine() {
       palmnetScore: syncScoreOrNull(fields.palmnetScore),
       result: typeof fields.result === 'string' ? fields.result : ''
     };
+    /* Additive (v74): the measured duration rides only when a
+       real one was supplied. */
+    var dur = syncDurationOrNull(fields.durationMs);
+    if (dur !== null) rec.durationMs = dur;
+    return rec;
   }
   /* v62 (Phase B step 2.2, shape only): the bKash wallet link
      shape. A person MAY carry a walletLink once the tokenised
@@ -5044,6 +5058,9 @@ function createTsgPalmEngine() {
        byte-identical. */
     var link = syncWalletLinkShape(person.walletLink);
     if (link) rec.walletLink = link;
+    /* Additive (v74): the phone rides only when the person
+       carries one, for the dashboard person detail. */
+    if (typeof person.phone === 'string' && person.phone.trim() !== '') rec.phone = person.phone;
     return rec;
   }
 
@@ -5868,7 +5885,7 @@ function createTsgPalmEngine() {
      therefore the identity, and a v62 store — sealed banks, hand
      stamps, wallet, points, and a queued sync outbox row
      included — opens under v63 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62', 'v63', 'v64', 'v65', 'v66', 'v67', 'v68', 'v69', 'v70', 'v71', 'v72', 'v73'];
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62', 'v63', 'v64', 'v65', 'v66', 'v67', 'v68', 'v69', 'v70', 'v71', 'v72', 'v73', 'v74'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -5957,6 +5974,11 @@ function createTsgPalmEngine() {
        stamp honesty) changes no stored shape, so a v72 store
        opens byte-identical under v73. */
     'v73': function (snap) { return snap; },
+    /* v74: pure adoption — the on-screen scan timer release
+       (Chairman's order, 2026-11-26): display-only timing on the
+       scan surfaces; no stored shape changes, so a v73 store
+       opens byte-identical under v74. */
+    'v74': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {

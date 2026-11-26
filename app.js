@@ -345,8 +345,40 @@
      are untouched; only the evidence the verdicts are
      allowed to rest on, and the order they are judged in,
      changed. The migration step is the identity (see
-     biometrics.js). */
-  var APP_DATA_VERSION = 'v73';
+     biometrics.js).
+
+     v74 (2026-11-26) is the ON-SCREEN SCAN TIMER release
+     (Chairman's order, 2026-11-26: "add a timer so that I
+     can understand how much time needed for the system to
+     scan or detect registered palm or how much time needed
+     for a registration"). Every scan surface — the wallet
+     scan card (Add Money, Send Money identification and
+     authorisation, Wallet Pay, quick verify, owner unlock),
+     the merchant terminal, enrolment palm capture and the
+     Add Angles / Strengthen capture — carries a live elapsed
+     readout inside its scan pill: it starts on the scan tap
+     (the v58 manual-scan moment analysis actually begins),
+     ticks in tenths off performance.now(), and freezes at
+     the verdict with the total stated ("Scanned in 1.8s" /
+     "Captured in 1.8s"); where a success closes the wallet
+     scan card, the same measured time rides the success
+     message the flow already shows. The timer is display
+     only — it reads no frame, touches no verdict and adds
+     one textContent write per 100 ms tick outside the scan
+     loop. No bar, model pin, guard, strict-money rule,
+     encryption, signing, sync or copy truth changes. The
+     migration step is a pure adoption (see biometrics.js).
+     Scope extension (Chairman, 2026-11-26 19:40): the same
+     measured duration is stamped on every scan's sync record
+     (all kinds, via the sync engine's optional scanDurationMs
+     dep and B.syncScanRecord's additive field) and shown on
+     the dashboard — Scan Log Duration column, scans over the
+     2.0 s bar flagged, and the person detail carrying the
+     registration record (the profile record now also carries
+     the person's phone, additively) plus their scan history
+     with durations. A scan with no timer reading rides
+     unmeasured — never estimated. */
+  var APP_DATA_VERSION = 'v74';
   /* ---------------- v71 boot coherence + splash ------------------
      index.html stamps its build in <meta name="biom-build">.
      If the document that painted and the app.js that is running
@@ -752,6 +784,20 @@
     }
     function noteScan(fields) {
       if (!active()) return false;
+      /* v74: stamp the record with the scan's real measured
+         duration when the wiring supplies it (the optional
+         scanDurationMs dep — rigs without it keep the pre-v74
+         record shape, the v62 optional-dep discipline). The
+         caller's own durationMs always wins; a scan with no
+         timer reading rides unmeasured, never estimated. */
+      if (fields && fields.durationMs === undefined && typeof deps.scanDurationMs === 'function') {
+        try {
+          var measured = deps.scanDurationMs(fields.kind);
+          if (typeof measured === 'number' && isFinite(measured) && measured >= 0) {
+            fields = Object.assign({}, fields, { durationMs: measured });
+          }
+        } catch (e) {}
+      }
       var core = deps.B.syncScanRecord(fields);
       if (!core) return false;
       var rec = fillRecord(core, fields && typeof fields.ts === 'number' ? fields.ts : deps.now());
@@ -1247,6 +1293,9 @@
     B: B,
     modelId: B.PALMNET_MODEL_ID,
     appVersion: APP_DATA_VERSION,
+    /* v74: the sync engine stamps each scan record with the
+       real duration its on-screen timer measured. */
+    scanDurationMs: function (kind) { return scanDurationForKind(kind); },
     registrationOnlyKey: true,
     getPrefs: function () {
       return {
@@ -4641,6 +4690,7 @@
 
     function spoofOut(sp) {
       DB.put('logs', { ts: Date.now(), personId: '', personName: '(wallet scan)', store: '', method: 'palm', measured: 'Spoof score ' + sp.score.toFixed(2) + ' - ' + sp.reasons.join('; '), result: 'Spoof / Screen Replay Detected' });
+      scanTimerStop('w'); // v74 (Seat 1 fix): freeze at the verdict determination, before the record stamps
       Sync.noteScan({ kind: 'identify', profileName: '', biomId: '', result: 'Spoof / Screen Replay Detected' });
       Snd.buzz();
       return { fail: 'Spoof / Screen Replay Detected — the scan showed a screen or a recording, not a live hand (' + sp.reasons.join('; ') + '). Nothing was verified. Present the real hand, live in front of the camera.' };
@@ -4954,6 +5004,12 @@
     if (page !== 'enroll' && enrollControl) enrollControl.cancelled = true;
     if (page !== 'topup' && topupControl) topupControl.cancelled = true;
     if (page !== 'wallet') { if (walletControl) walletControl.cancelled = true; walletSession.leave(); }
+    // v74: leaving a scan view freezes its timer readout — no
+    // tick is left running on a page that is no longer shown.
+    if (page !== 'wallet') scanTimerStop('w');
+    if (page !== 'enroll') scanTimerStop('e');
+    if (page !== 'terminal') scanTimerStop('t');
+    if (page !== 'topup') scanTimerStop('u');
     if (page === 'wallet') { renderWallet(); Pipeline.enterScanView(); }
     if (page === 'more') { fillSyncSettings(); }
     if (page === 'account') { renderAccount(); }
@@ -5095,6 +5151,7 @@
           '<b>Wallet:</b> ' + (person.walletProvider ? esc(person.walletProvider) + ' ' + esc(B.maskWalletNumber(person.walletNumber)) : 'Not linked') + '<br>' +
           '<b>Biometric-only limits:</b> ' + (person.limits.perTx ? 'BDT ' + Number(person.limits.perTx).toLocaleString() + ' per transaction' : 'No per-transaction limit') + (person.limits.daily ? ', BDT ' + Number(person.limits.daily).toLocaleString() + ' per day' : '') + '<br>' +
           '<b>Palm Loyalty:</b> Active — 0 points<br>' +
+          (ScanTimers.e.hasRun() ? '<b>Palm capture time:</b> ' + ScanTimers.e.elapsedText() + ' (the palm-capture step of this registration, measured on this device)<br>' : '') + // v74: the registration timer's total, stated on the completion screen (only when a capture actually ran this session)
           '<b>Demo wallet:</b> Created — this Biom ID is the wallet account, balance BDT 0. Open My Wallet to use it; your palm is asked for only when money moves. Demo money inside the app, not real funds.';
         enroll = { details: null, palm: null, types: { palm: true } };
         /* v69: a fresh enrolment is a thin bank by definition
@@ -5209,10 +5266,12 @@
     enrolSession.enter();
     enrolInds.reset();
     setSurfacePill('e', 'Scanning');
+    scanTimerStart('e', 'Captured in '); // v74: the Scan Palm tap starts the capture — and its timer
     // v67: no swap callback — enrolment watches on the chosen
     // camera only (auto-swap deleted, Chairman's order).
     streamEnrolPalm($('palmVideo'), $('palmStatus'), null, null, control).then(function (res) {
       palmScanBusy = false;
+      scanTimerStop('e'); // v74: the capture outcome is known — freeze the capture time (banking continues below)
       setSurfacePill('e', 'Ready');
       if (res.stopped) { $('palmCapture').disabled = false; $('palmStatus').textContent = 'Capture stopped.'; settleCaptureReload(); return; }
       if (res.spoof && res.spoof.spoof) {
@@ -5296,6 +5355,7 @@
       });
     }).catch(function (e) {
       palmScanBusy = false;
+      scanTimerStop('e'); // v74
       $('palmCapture').disabled = false;
       $('palmMsg').innerHTML = '<div class="error">Palm capture failed: ' + esc(e && e.message ? e.message : e) + ' Nothing was stored.</div>';
       settleCaptureReload();
@@ -5372,6 +5432,19 @@
      never processed twice), and Next Customer re-arms instantly. */
   var termSession = B.createScanSession();
   var termControl = null;
+  /* v74 (Seat 1 re-review): runTermScan's in-flight claim — set
+     synchronously at the SCAN tap, before the registry lookup,
+     so a second tap during the lookup window returns without
+     touching the running scan's timer. Round 2 of the re-review
+     showed the claim must be held for the WHOLE invocation —
+     tap to that invocation's settle — because the verdict's
+     log/payment writes continue after both scan guards drop:
+     the claim is a per-invocation TOKEN (an object only that
+     invocation captured), and the settle handler acts only
+     when the live claim is still its own token, so a stale
+     chain can never reset, stop or release a newer scan's
+     timer or claim. */
+  var termScanClaim = null;
   function cancelTermScan() { if (termControl) termControl.cancelled = true; }
   /* v58 MANUAL SCAN: entering the terminal ARMS it — the
      session is entered and the camera opens on the selected
@@ -5394,6 +5467,7 @@
     // customer — armed, not scanning (v58).
     cancelTermScan();
     termSession.reset();
+    scanTimerReset('t'); // v74: a different customer starts from a blank timer
     $('termNext').classList.add('hidden');
     fillTermMethodNote();
     startTermCamera();
@@ -5431,6 +5505,7 @@
     // presentation. v58: it does not start the next scan — the
     // customer positions their palm, then SCAN is tapped.
     termSession.reset();
+    scanTimerReset('t'); // v74: the next customer starts from a blank timer
     $('termNext').classList.add('hidden');
     $('termResult').innerHTML = '';
     $('termStatus').textContent = 'Ready — tap SCAN when the next customer has positioned their palm.';
@@ -5491,20 +5566,42 @@
   }
 
   function runTermScan() {
+    /* v74 (Seat 1 re-review): a scan (or this tap's own lookup)
+       is already in flight — a second tap changes nothing and
+       must not touch the running scan's timer. The claim is a
+       token this invocation alone holds until its own settle:
+       a tap during the verdict/log/payment window after the
+       verdict also returns here, because the session is not
+       over until the chain settles. */
+    if (termScanClaim || palmScanBusy) return;
+    var myClaim = {};
+    termScanClaim = myClaim;
+    var tookOver = false; // did this invocation reach the scan proper?
+    function releaseClaim() { if (termScanClaim === myClaim) termScanClaim = null; }
     var personId = $('termPerson').value;
     var method = 'palm';
     var amount = Number($('termAmount').value || 0);
     $('termNext').classList.add('hidden');
     $('termResult').innerHTML = '<div class="notice">Scanning — comparing against the stored enrollment...</div>';
+    /* v74 (Seat 1 fix): the timer starts at the tap, exactly as
+       on the wallet card — the registry lookup is part of the
+       scan session the user experiences. The exits below that
+       start no scan release the claim and reset it again, so a
+       rejected tap never leaves a ticking or frozen readout
+       behind. */
+    setSurfacePill('t', 'Scanning');
+    scanTimerStart('t', 'Scanned in ');
     DB.all('people').then(function (people) {
       var person = people.find(function (p) { return p.id === personId; });
-      if (!person) { $('termResult').innerHTML = '<div class="error">Select an enrolled person first. Enroll on this device if the registry is empty.</div>'; return null; }
+      if (!person) { releaseClaim(); scanTimerReset('t'); setSurfacePill('t', 'Ready'); $('termResult').innerHTML = '<div class="error">Select an enrolled person first. Enroll on this device if the registry is empty.</div>'; return null; }
       if (!personHasMethod(person)) {
+        releaseClaim(); scanTimerReset('t'); setSurfacePill('t', 'Ready');
         $('termResult').innerHTML = '<div class="error">' + notEnrolledMessage(person) + ' No scan was run and nothing was verified.</div>';
         return null;
       }
 
-      if (palmScanBusy) return null;
+      if (palmScanBusy) { releaseClaim(); scanTimerReset('t'); setSurfacePill('t', 'Ready'); return null; }
+      tookOver = true; // the scan proper runs under the shared claim; THIS invocation's token stays held until its settle
       palmScanBusy = true;
       moneyCommitBusy = true; // v71: held until the pay writes settle (createPay runs after the scan promise)
       $('termScan').disabled = true;
@@ -5560,6 +5657,9 @@
       termControl = control;
       termInds.reset();
       setSurfacePill('t', 'Scanning');
+      /* v74: the timer already runs from the tap (see the head
+         of this function) — it is NOT restarted here, so the
+         measured span covers the whole session. */
       // v67: no swap callback — the terminal scan runs on the
       // camera the user chose, start to finish (the v37-v66
       // mid-scan auto-swap is deleted, Chairman's order).
@@ -5579,6 +5679,7 @@
         // v43: a terminal verdict fired — the session enters its
         // cooldown and the terminal offers Next Customer.
         termSession.verdict();
+        scanTimerStop('t'); // v74: the verdict is determined — freeze the total in the pill
         setSurfacePill('t', 'Ready');
         $('termNext').classList.remove('hidden');
         if (out.fail) { Snd.buzz(); $('termResult').innerHTML = '<div class="error">' + esc(out.fail) + '</div>' + scanDiagHTML(out.diag); return; }
@@ -5591,8 +5692,14 @@
           var html;
           // v20 latency line: the exact end-to-end scan time, shown on
           // the confirmation card (palm streaming scans carry it).
+          /* v74 (Seat 1 fix): this line is the stream's internal
+             engine span (first frame to verdict), NOT the scan
+             total — the pill's frozen "Scanned in Xs" is the one
+             total for the scan, so the engine line is labelled
+             as what it is and can no longer be read as a second,
+             different total on the same screen. */
           var latencyLine = (typeof out.latencyMs === 'number')
-            ? '<div class="who">' + (verified ? 'Verified' : 'Scanned') + ' in ' + out.latencyMs.toLocaleString() + ' ms' + (r && typeof r.similarity === 'number' ? ' • Score ' + r.similarity.toFixed(2) : '') + '</div>'
+            ? '<div class="who">Engine match time: ' + out.latencyMs.toLocaleString() + ' ms' + (r && typeof r.similarity === 'number' ? ' • Score ' + r.similarity.toFixed(2) : '') + '</div>'
             : '';
           if (!verified) {
             html = '<div class="resultbig bad"><div class="verdict">NOT VERIFIED</div><div class="who">' + esc(person.name) + ' — Palm scan did not match</div>' + latencyLine + '<div class="meas">' + esc(r.reason) + '<br>Measured: ' + esc(out.measured) + '</div></div>';
@@ -5691,7 +5798,16 @@
         });
       });
     }).catch(function (e) { $('termResult').innerHTML = '<div class="error">Scan failed: ' + esc(e && e.message ? e.message : e) + '</div>'; })
-    .then(function () { moneyCommitBusy = false; checkPendingSwReload(); }); // v71: the terminal flow has fully settled
+    /* v74 (Seat 1 re-review, round 2): the settle acts ONLY on
+       its own invocation's token. If the live claim is still
+       this invocation's, release it — and if the scan never
+       took over (the lookup failed), blank the timer too, so
+       the terminal can never wedge shut. If a newer invocation
+       somehow held the claim, this stale settle would touch
+       nothing of its timer or claim. (With the claim held to
+       settle, a newer invocation cannot in fact start until
+       this settle has run.) */
+    .then(function () { if (termScanClaim === myClaim) { termScanClaim = null; if (!tookOver) { scanTimerReset('t'); setSurfacePill('t', 'Ready'); } } scanTimerStop('t'); moneyCommitBusy = false; checkPendingSwReload(); }); // v71: the terminal flow has fully settled // v74: backstop stop for the no-verdict exits (stopped / early return)
   }
   $('termScan').addEventListener('click', runTermScan);
 
@@ -6007,6 +6123,7 @@
     walletSession.enter();
     resetScanIndicators();
     setScanPill('Ready');
+    scanTimerReset('w'); // v74: a fresh card never shows a previous scan's time
     $('walletScanCard').classList.remove('hidden');
     $('wScanTitle').textContent = ctx.title;
     $('wScanPrompt').textContent = ctx.prompt;
@@ -6038,6 +6155,7 @@
     moneyCommitBusy = true; // v71: held until the flow's writes settle, not just the scan
     $('wScanRun').disabled = true;
     setScanPill('Scanning');
+    scanTimerStart('w', 'Scanned in '); // v74: the tap is where analysis begins (v58) — the timer starts here
     var ctx = walletScanCtx;
     walletControl = { cancelled: false, onFrame: function (info) { var fr = walletSession.frame({ hasHand: info.hasHand, pose: info.pose }); updateScanIndicators(info, fr); } };
     Promise.resolve()
@@ -6045,6 +6163,7 @@
       .catch(function (e) { walletScanFailed({ fail: 'Scan failed: ' + (e && e.message ? e.message : e) }); })
       .then(function () {
         palmScanBusy = false; moneyCommitBusy = false; walletSession.verdict();
+        scanTimerStop('w'); // v74: the verdict is rendered by now — freeze the total in the pill
         // v58: a judged scan leaves the card ARMED, not
         // re-scanning — the next scan needs a fresh tap.
         if (!$('walletScanCard').classList.contains('hidden')) setScanPill('Ready');
@@ -6053,12 +6172,112 @@
   }
   function hideWalletScan() {
     if (walletControl) walletControl.cancelled = true;
+    scanTimerStop('w'); // v74: leaving the card ends any still-ticking readout (a frozen verdict time is kept)
     walletSession.leave();
     $('walletScanCard').classList.add('hidden');
     walletScanCtx = null;
     Cam.stop();
     checkPendingSwReload(); // v71: closing the scan card is a flow boundary
   }
+  /* SCAN-TIMER-BEGIN — v74: the on-screen scan timer (Chairman's
+     order, 2026-11-26, quoted in the header note). Pure and
+     injectable — the v74 suite drives it over a fake clock and
+     fake interval timers. One timer per scan surface (w/e/t/u,
+     bound to that surface's pill readout). The measured span is
+     the user-facing scan: start() is called at the scan tap —
+     the v58 manual-scan moment analysis actually begins — and
+     stop() at the verdict; the displayed value is the real
+     elapsed milliseconds on THIS device, rendered in tenths by
+     toFixed(1) (nearest tenth of the true value — never floored,
+     never cached, never carried between scans). The tick is one
+     textContent write every 100 ms on a pill element OUTSIDE the
+     frame loop: the scan pipeline never reads the timer, so it
+     cannot slow a scan or change a verdict. */
+  function createScanTimer(deps) {
+    deps = deps || {};
+    var nowFn = typeof deps.now === 'function' ? deps.now : function () { return performance.now(); };
+    var setInt = typeof deps.setInterval === 'function' ? deps.setInterval : function (fn, ms) { return setInterval(fn, ms); };
+    var clearInt = typeof deps.clearInterval === 'function' ? deps.clearInterval : function (id) { clearInterval(id); };
+    var TICK_MS = 100;
+    var el = null, startMs = null, frozenMs = null, tickId = null, stopLabel = '', stopStampMs = null;
+    function elapsedMs() {
+      if (startMs === null) return 0;
+      if (frozenMs !== null) return frozenMs;
+      var d = nowFn() - startMs;
+      return d > 0 ? d : 0;
+    }
+    function fmt(ms) { return (ms / 1000).toFixed(1) + 's'; }
+    function paint() { if (el && frozenMs === null) el.textContent = fmt(elapsedMs()); }
+    function clearTick() { if (tickId !== null) { clearInt(tickId); tickId = null; } }
+    return {
+      bind: function (element) { el = element || null; },
+      start: function (label) {
+        clearTick();
+        stopLabel = typeof label === 'string' ? label : '';
+        startMs = nowFn(); frozenMs = null; stopStampMs = null;
+        paint();
+        tickId = setInt(paint, TICK_MS);
+      },
+      stop: function () {
+        if (startMs === null) return 0;
+        if (frozenMs === null) {
+          frozenMs = elapsedMs();
+          stopStampMs = nowFn();
+          clearTick();
+          if (el) el.textContent = stopLabel + fmt(frozenMs);
+        }
+        return frozenMs;
+      },
+      reset: function () {
+        clearTick(); startMs = null; frozenMs = null; stopStampMs = null;
+        if (el) el.textContent = '';
+      },
+      elapsedMs: elapsedMs,
+      elapsedText: function () { return fmt(elapsedMs()); },
+      running: function () { return startMs !== null && frozenMs === null; },
+      hasRun: function () { return startMs !== null; },
+      startedAtMs: function () { return startMs; },
+      stoppedAtMs: function () { return stopStampMs; },
+      TICK_MS: TICK_MS
+    };
+  }
+  /* SCAN-TIMER-END */
+  var ScanTimers = { w: createScanTimer(), e: createScanTimer(), t: createScanTimer(), u: createScanTimer() };
+  function scanTimerStart(prefix, label) {
+    var tm = ScanTimers[prefix]; if (!tm) return;
+    tm.bind($(prefix + 'ScanTimer')); tm.start(label);
+  }
+  function scanTimerStop(prefix) { var tm = ScanTimers[prefix]; if (tm) tm.stop(); }
+  function scanTimerReset(prefix) { var tm = ScanTimers[prefix]; if (tm) tm.reset(); }
+  /* v74 (scope extension): which surface timer measured the scan
+     a sync record describes, so noteScan can stamp the record
+     with the same real duration the on-screen timer showed.
+     Kind-unique surfaces answer directly. verify / money-auth /
+     identify run on BOTH the wallet card and the terminal: the
+     scan in progress — or, for records written just after a
+     verdict, the surface that stopped most recently — is the
+     measurement (palmScanBusy serialises scans, so at most one
+     surface is mid-scan when a record is written). No live timer
+     reading -> null: the record rides unmeasured, never
+     estimated. */
+  function scanDurationForKind(kind) {
+    var direct = { 'enrol': 'e', 'topup': 'u', 're-register': 'u', 'owner-unlock': 'w', 'field-test': 't' }[kind];
+    if (direct) {
+      var tm = ScanTimers[direct];
+      return tm && tm.hasRun() ? Math.round(tm.elapsedMs()) : null;
+    }
+    var cands = [ScanTimers.w, ScanTimers.t].filter(function (t) { return t && t.hasRun(); });
+    if (!cands.length) return null;
+    var running = cands.filter(function (t) { return t.running(); });
+    var pool = running.length ? running : cands;
+    pool.sort(function (a, b) {
+      var av = running.length ? (a.startedAtMs() || 0) : (a.stoppedAtMs() || 0);
+      var bv = running.length ? (b.startedAtMs() || 0) : (b.stoppedAtMs() || 0);
+      return bv - av;
+    });
+    return Math.round(pool[0].elapsedMs());
+  }
+
   /* SCAN-GUIDANCE-BEGIN — v69: per-cause guidance for a failed
      wallet scan. The Chairman's 2026-11-26 friction report was
      one session cycling "unauthorised" → "antispoof" → "no
@@ -6152,6 +6371,7 @@
     // too — the Chairman asked to see every scan, not only passes.
     // (No diag = no judged scan — a camera failure queues nothing.)
     if (ctx && ctx.syncKind && out && out.diag) {
+      scanTimerStop('w'); // v74 (Seat 1 fix): freeze first, so the record stamps the shown total
       Sync.noteScan({ kind: ctx.syncKind, profileName: '', biomId: '', hand: out.diag.probeHand || null, edccScore: typeof out.diag.edcc === 'number' ? out.diag.edcc : null, palmnetScore: typeof out.diag.neural === 'number' ? out.diag.neural : null, result: 'Denied' });
     }
     /* v69: under the verdict, the cause's own next step — and,
@@ -6331,12 +6551,13 @@
                    stored. A refused scan or a failed apply never
                    reaches this line, so it can never notify. */
                 Inbox.add(res.person.id, Inbox.event('add', { amount: res.entry.amount, balanceAfter: res.entry.balanceAfter, ref: res.entry.ref, detail: 'From ' + res.entry.accountType + ' — ' + res.entry.accountLabel + ' · Demo money' }));
+                scanTimerStop('w'); // v74 (Seat 1 fix): freeze first, so the record stamps the shown total
                 Sync.noteScan({ kind: 'money-auth', profileName: fresh.name, biomId: fresh.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
                 balanceFlashPending = true;
                 hideWalletScan();
                 return renderWallet();
               }).then(function () {
-                $('wHomeMsg').innerHTML = '<div class="success">' + fmtBDT(res.entry.amount) + ' of demo money added from ' + esc(res.entry.accountType) + ' — ' + esc(res.entry.accountLabel) + '. New demo balance: ' + fmtBDT(res.entry.balanceAfter) + '.<br>Reference: ' + esc(res.entry.ref) + ' (demo reference — not a ' + esc(res.entry.accountType) + ' transaction ID).</div>';
+                $('wHomeMsg').innerHTML = '<div class="success">' + fmtBDT(res.entry.amount) + ' of demo money added from ' + esc(res.entry.accountType) + ' — ' + esc(res.entry.accountLabel) + '. New demo balance: ' + fmtBDT(res.entry.balanceAfter) + '.<br>Reference: ' + esc(res.entry.ref) + ' (demo reference — not a ' + esc(res.entry.accountType) + ' transaction ID).<br>Scanned in ' + ScanTimers.w.elapsedText() + '.</div>';
                 toast('Demo money added');
                 Snd.chime();
               });
@@ -6392,7 +6613,8 @@
             sendDraft.receiverId = out.person.id;
             sendDraft.receiverName = out.person.name;
             sendDraft.amount = null;
-            Sync.noteScan({ kind: 'identify', profileName: out.person.name, biomId: out.person.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
+                        scanTimerStop('w'); // v74 (Seat 1 fix): freeze first, so the record stamps the shown total
+Sync.noteScan({ kind: 'identify', profileName: out.person.name, biomId: out.person.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
             hideWalletScan();
             $('walletSend').classList.remove('hidden');
             /* v63 step 2: the receiver is known — now the
@@ -6401,6 +6623,7 @@
               '<div class="recvcard"><div class="rc-head"><span class="avatarbtn" style="background:var(--blue);border:none;cursor:default">' + esc(initialsOf(out.person.name)) + '</span>' +
               '<div><div class="rc-name">' + esc(out.person.name) + '</div><div class="rc-id">' + esc(out.person.id) + '</div></div>' +
               '<span class="badge ok" style="margin-left:auto">Palm verified</span></div></div>';
+            $('wSendReceiverLine').innerHTML += '<div class="sub" style="margin-top:6px">Receiver palm scanned in ' + ScanTimers.w.elapsedText() + '.</div>'; // v74: the identification scan's measured time, stated where its result lands
             $('wSendAmountBlock').classList.remove('hidden');
             setSendProgress(2);
             $('wSendConfirm').classList.add('hidden');
@@ -6461,13 +6684,14 @@
                    this line. */
                 Inbox.add(res.sender.id, Inbox.event('send', { amount: res.senderEntry.amount, balanceAfter: res.senderEntry.balanceAfter, ref: res.senderEntry.ref, counterpartyName: res.receiver.name, detail: 'To ' + res.receiver.name + ' (' + res.receiver.id + ') · Demo money' }));
                 Inbox.add(res.receiver.id, Inbox.event('receive', { amount: res.receiverEntry.amount, balanceAfter: res.receiverEntry.balanceAfter, ref: res.receiverEntry.ref, counterpartyName: freshSender.name, detail: 'From ' + freshSender.name + ' (' + freshSender.id + ') · Demo money' }));
-                Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: freshSender.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
+                                scanTimerStop('w'); // v74 (Seat 1 fix): freeze first, so the record stamps the shown total
+Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: freshSender.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
                 var sentAmount = sendSnap.amount, sentTo = sendSnap.receiverName, sentToId = sendSnap.receiverId, sentRef = res.senderEntry.ref, newBal = res.senderEntry.balanceAfter;
                 sendDraft = { amount: null, receiverId: null, receiverName: null };
                 balanceFlashPending = true;
                 hideWalletScan();
                 return renderWallet().then(function () {
-                  $('wHomeMsg').innerHTML = '<div class="success">Sent ' + fmtBDT(sentAmount) + ' of demo money to ' + esc(sentTo) + ' (' + esc(sentToId) + '). New demo balance: ' + fmtBDT(newBal) + '.<br>Reference: ' + esc(sentRef) + ' (demo reference — not a real payment).</div>';
+                  $('wHomeMsg').innerHTML = '<div class="success">Sent ' + fmtBDT(sentAmount) + ' of demo money to ' + esc(sentTo) + ' (' + esc(sentToId) + '). New demo balance: ' + fmtBDT(newBal) + '.<br>Reference: ' + esc(sentRef) + ' (demo reference — not a real payment).<br>Scanned in ' + ScanTimers.w.elapsedText() + '.</div>';
                   toast('Demo money sent');
                   Snd.chime();
                 });
@@ -6569,6 +6793,7 @@
           return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, null, function () {}, walletControl, { strictMoney: true }).then(function (out) {
             var auth = authFromVerify(out, fresh.id);
             if (!auth.verified) { walletScanFailed(out); return; }
+            scanTimerStop('w'); // v74 (Seat 1 fix): freeze first, so the record stamps the shown total
             Sync.noteScan({ kind: 'money-auth', profileName: fresh.name, biomId: fresh.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
             if (!fresh.walletProvider) {
               $('wScanMsg').innerHTML = '<div class="error">Biom Pay not created: your profile has no linked bKash / Nagad wallet.</div>';
@@ -6605,7 +6830,7 @@
                     return renderWallet().then(function () {
                       $('wHomeMsg').innerHTML = '<div class="success">Biom Pay complete — ' + fmtBDT(amount) + ' of demo money at ' + esc(store) + '.' +
                         (payPts > 0 ? ' Palm Loyalty: +' + payPts + ' points awarded — balance ' + Number(fresh.loyaltyPoints || 0) + ' points.' : '') +
-                        '<br>Record ID: ' + esc(tx.id) + ' (TSG Biom record — not a ' + esc(tx.provider) + ' TrxID)<br>Status: ' + esc(tx.status) + '</div>';
+                        '<br>Scanned in ' + ScanTimers.w.elapsedText() + '.<br>Record ID: ' + esc(tx.id) + ' (TSG Biom record — not a ' + esc(tx.provider) + ' TrxID)<br>Status: ' + esc(tx.status) + '</div>';
                       toast('Biom Pay complete: ' + tx.id);
                       Snd.chime();
                     });
@@ -7072,10 +7297,18 @@
           return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, null, function () {}, walletControl).then(function (out) {
             var auth = authFromVerify(out, fresh.id);
             if (!auth.verified) { walletScanFailed(out); return; }
+            scanTimerStop('w'); // v74 (Seat 1 fix): freeze first, so the record stamps the shown total
             Sync.noteScan({ kind: 'verify', profileName: fresh.name, biomId: fresh.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
             hideWalletScan();
             return renderWallet().then(function () {
-              $('wHomeMsg').innerHTML = '<div class="success">Palm verified — this wallet belongs to ' + esc(fresh.name) + ' (' + esc(fresh.id) + ').<br><span style="color:var(--muted)">' + esc(out.measured) + '</span></div>';
+              /* v74 (Seat 1 fix): the muted line is the scan's
+                 diagnostic sentence; its engine-latency clause
+                 is left off THIS rendering so the message states
+                 exactly one scan total — the timer's. The log
+                 record keeps the full measured string verbatim
+                 (the v45 pin); nothing is invented, a clause is
+                 omitted from one display only. */
+              $('wHomeMsg').innerHTML = '<div class="success">Palm verified — this wallet belongs to ' + esc(fresh.name) + ' (' + esc(fresh.id) + ').<br><span style="color:var(--muted)">' + esc(out.measured.replace(/ Scan latency: \d+ ms\./, '')) + '</span><br>Scanned in ' + ScanTimers.w.elapsedText() + '.</div>';
               Snd.chime();
             });
           });
@@ -7320,10 +7553,20 @@
     topupSession.enter();
     topupInds.reset();
     setSurfacePill('u', 'Scanning');
+    scanTimerStart('u', 'Captured in '); // v74: the guided capture — and its timer — start on the tap
     // v67: no swap callback — the chosen camera only (auto-swap
     // deleted, Chairman's order).
     streamEnrolPalm($('topVideo'), $('topStatus'), null, null, control).then(function (res) {
       topupBusy = false; palmScanBusy = false;
+      scanTimerStop('u'); // v74: the capture outcome is known — freeze the capture time (the guard + merge continue below)
+      /* v74 (Seat 3 fix): snapshot THIS capture's frozen duration
+         now. The guard/merge below awaits (DB reads, PalmNet
+         embedding) with the capture button live again — a second
+         capture could restart the timer before this flow's
+         records are written, and those records must carry THIS
+         capture's duration, so they pass it explicitly (a
+         caller's own durationMs wins over the engine's stamp). */
+      var captureMs = Math.round(ScanTimers.u.elapsedMs());
       setSurfacePill('u', 'Ready');
       $('topCapture').disabled = false;
       if (res.stopped) { $('topStatus').textContent = 'Capture stopped.'; return; }
@@ -7377,7 +7620,7 @@
           var guard = B.bankingGuardCheck(person.palmProfile, { edccProbes: candProbes, neuralEmbeddings: good, hand: captureHand });
           if (guard.status === 'fail') {
             DB.put('logs', { ts: Date.now(), personId: person.id, personName: person.name, store: '', method: 'palm', measured: 'Banking refused by the v49 same-person guard: the captured palm did not verify against this profile (EDCC ' + (guard.edccChecked ? guard.edccScore.toFixed(3) : 'not checkable') + ', PalmNet ' + (guard.neuralChecked ? guard.neuralScore.toFixed(3) : 'not checkable') + '). Nothing was banked.' + (guard.handGate ? ' Hand gate: the captured palm is the ' + guard.probeHand + ' hand; this profile recorded the ' + guard.profileHand + ' hand — the other hand is a different identity.' : ''), result: 'Banking Refused — Palm Mismatch' });
-            Sync.noteScan({ kind: 'topup', profileName: person.name, biomId: person.id, hand: guard.probeHand || null, edccScore: guard.edccChecked ? guard.edccScore : null, palmnetScore: guard.neuralChecked ? guard.neuralScore : null, result: 'Banking Refused — Palm Mismatch' });
+            Sync.noteScan({ kind: 'topup', durationMs: captureMs, profileName: person.name, biomId: person.id, hand: guard.probeHand || null, edccScore: guard.edccChecked ? guard.edccScore : null, palmnetScore: guard.neuralChecked ? guard.neuralScore : null, result: 'Banking Refused — Palm Mismatch' });
             // v55 (AUDIT-v54.md, Defect 1): the refusal wording
             // must not claim a checked mismatch when the neural
             // leg never ran. When the profile's stored neural
@@ -7450,7 +7693,7 @@
             var nUpdated = Object.assign({}, person, { palmProfile: nProfile });
             return DB.put('people', nUpdated).then(function () {
               Sync.noteProfile(nUpdated);
-              Sync.noteScan({ kind: 'topup', profileName: person.name, biomId: person.id, hand: B.palmProfileHand(nUpdated.palmProfile), result: 'Banked' });
+              Sync.noteScan({ kind: 'topup', durationMs: captureMs, profileName: person.name, biomId: person.id, hand: B.palmProfileHand(nUpdated.palmProfile), result: 'Banked' });
               $('topMsg').innerHTML = '<div class="success">Neural embeddings banked for ' + esc(person.name) + ': ' + nMerge.added + ' new embedding(s), ' + nMerge.total + ' in the bank. This palm now matches through EDCC and PalmNet. EDCC templates, Biom ID, wallet, balance, statement, linked accounts and points are untouched.' + esc(stampNote) + '</div>';
               Snd.chime();
               Snd.speak('Neural scan banked');
@@ -7487,7 +7730,7 @@
             var reUpdated = Object.assign({}, person, { palmProfile: reProfile });
             return DB.put('people', reUpdated).then(function () {
               Sync.noteProfile(reUpdated);
-              Sync.noteScan({ kind: 'topup', profileName: person.name, biomId: person.id, hand: B.palmProfileHand(reUpdated.palmProfile), result: 'Banked' });
+              Sync.noteScan({ kind: 'topup', durationMs: captureMs, profileName: person.name, biomId: person.id, hand: B.palmProfileHand(reUpdated.palmProfile), result: 'Banked' });
               $('topMsg').innerHTML = '<div class="success">Palm re-banked for ' + esc(person.name) + ': ' + merged.codes.length + ' packed templates banked in the current format. The previous codes stay archived in this record. Biom ID, wallet, balance, statement, linked accounts and points are untouched.' + esc(neuralNote) + (captureHand ? ' This capture recorded the profile\'s hand: ' + captureHand + ' — the other hand will not match this profile.' : '') + '</div>';
               Snd.chime();
               Snd.speak('Palm re-banked');
@@ -7504,7 +7747,7 @@
               var stampOnlyUpdated = Object.assign({}, person, { palmProfile: stampOnlyProfile });
               return DB.put('people', stampOnlyUpdated).then(function () {
                 Sync.noteProfile(stampOnlyUpdated);
-                Sync.noteScan({ kind: 'topup', profileName: person.name, biomId: person.id, hand: B.palmProfileHand(stampOnlyUpdated.palmProfile), result: 'Banked' });
+                Sync.noteScan({ kind: 'topup', durationMs: captureMs, profileName: person.name, biomId: person.id, hand: B.palmProfileHand(stampOnlyUpdated.palmProfile), result: 'Banked' });
                 $('topMsg').innerHTML = '<div class="notice">No new templates were added: ' + merged.skipped + ' candidate template(s) were skipped as duplicates or poses already covered, and no banked template was redundant enough to replace. The stored templates are unchanged.' + esc(neuralNote) + esc(stampNote) + '</div>';
               });
             }
@@ -7517,7 +7760,7 @@
             var keepUpdated = Object.assign({}, person, { palmProfile: keepProfile });
             return DB.put('people', keepUpdated).then(function () {
               Sync.noteProfile(keepUpdated);
-              Sync.noteScan({ kind: 'topup', profileName: person.name, biomId: person.id, hand: B.palmProfileHand(keepUpdated.palmProfile), result: 'Banked' });
+              Sync.noteScan({ kind: 'topup', durationMs: captureMs, profileName: person.name, biomId: person.id, hand: B.palmProfileHand(keepUpdated.palmProfile), result: 'Banked' });
               $('topMsg').innerHTML = '<div class="success">Neural embeddings added for ' + esc(person.name) + ': ' + nMerge.added + ' new embedding(s), ' + nMerge.total + ' in the bank. The EDCC templates were already covered by this burst, so they are unchanged. Biom ID, wallet, balance, statement, linked accounts and points are untouched.' + esc(stampNote) + '</div>';
               Snd.chime();
               Snd.speak('Neural embeddings added');
@@ -7534,7 +7777,7 @@
           var updated = Object.assign({}, person, { palmProfile: profile });
           return DB.put('people', updated).then(function () {
             Sync.noteProfile(updated);
-            Sync.noteScan({ kind: 'topup', profileName: person.name, biomId: person.id, hand: B.palmProfileHand(updated.palmProfile), result: 'Banked' });
+            Sync.noteScan({ kind: 'topup', durationMs: captureMs, profileName: person.name, biomId: person.id, hand: B.palmProfileHand(updated.palmProfile), result: 'Banked' });
             $('topMsg').innerHTML = '<div class="success">Templates added for ' + esc(person.name) + ': ' + merged.added + ' new template(s) appended' + (merged.replaced ? ', ' + merged.replaced + ' redundant template(s) replaced at the cap' : '') + (merged.skipped ? ', ' + merged.skipped + ' skipped (duplicate or already covered)' : '') + '. The profile now holds ' + merged.codes.length + ' templates. Biom ID, wallet, balance, statement, linked accounts and points are untouched.' + esc(neuralNote) + esc(stampNote) + '</div>';
             Snd.chime();
             Snd.speak('Templates added');
@@ -7543,6 +7786,7 @@
       });
     }).catch(function (e) {
       topupBusy = false; palmScanBusy = false;
+      scanTimerStop('u'); // v74: a rejected capture still ends the timer
       $('topCapture').disabled = false;
       $('topMsg').innerHTML = '<div class="error">Add-angles capture failed: ' + esc(e && e.message ? e.message : e) + ' Nothing was changed.</div>';
     }).then(function () { settleCaptureReload(); }); // v71: topup flow fully settled (success or failure)
@@ -7589,6 +7833,8 @@
   }
   function reregFail(html) {
     topupBusy = false; palmScanBusy = false;
+    scanTimerStop('u');
+    setSurfacePill('u', 'Ready');
     $('topCapture').disabled = false;
     $('topMsg').innerHTML = html;
     Snd.buzz();
@@ -7597,6 +7843,13 @@
     if (!reregPerson || recoveryPersonId !== reregPerson.id) return;
     var personId = reregPerson.id;
     $('topRereg').classList.add('hidden');
+    /* v74 (Seat 1 fix): the timer starts at the confirm action
+       — the registry lookup is part of the span the user
+       experiences. Every exit passes through reregFail (which
+       stops it) or the success tail (which stops it before its
+       record stamps). */
+    setSurfacePill('u', 'Scanning');
+    scanTimerStart('u', 'Captured in ');
     DB.all('people').then(function (people) {
       var person = people.find(function (p) { return p.id === personId; });
       if (!person) { reregFail('<div class="error">That person is no longer in the registry — nothing was changed.</div>'); return; }
@@ -7613,6 +7866,7 @@
         if (res.detectorFailed) return DETECTOR_FAIL_MSG + ' Nothing was changed.';
         if (res.spoof && res.spoof.spoof) {
           DB.put('logs', { ts: Date.now(), personId: '', personName: '(re-registration attempt)', store: '', method: 'palm', measured: 'Spoof score ' + res.spoof.score.toFixed(2) + ' - ' + res.spoof.reasons.join('; '), result: 'Spoof / Screen Replay Detected' });
+          scanTimerStop('u'); // v74 (Seat 1 fix): freeze first, so the record stamps the shown total
           Sync.noteScan({ kind: 're-register', profileName: '', biomId: '', result: 'Spoof / Screen Replay Detected' });
           return 'Spoof / Screen Replay Detected — the ' + stepName + ' capture showed a screen or a recording, not a live hand (' + res.spoof.reasons.join('; ') + '). Nothing was changed.';
         }
@@ -7621,6 +7875,9 @@
         return null;
       }
       $('topMsg').innerHTML = '<div class="notice">Re-registration step 1 of 2 — hold your palm flat, facing the camera, at your natural distance. The capture runs by itself when a sharp open palm is seen.</div>';
+      /* v74: the timer already runs from the confirm action
+         (see runReRegistration) — both guided steps are the one
+         timed span, so it is NOT restarted here. */
       streamEnrolPalm($('topVideo'), $('topStatus'), null, swap, control).then(function (res1) {
         var e1 = burstError(res1, 'first');
         if (e1) { reregFail('<div class="error">' + esc(e1) + '</div>'); return; }
@@ -7678,6 +7935,10 @@
         // v56 Scan Sync: the replaced bank upserts and the
         // re-registration record queues, from the same values the
         // Logs event above carries.
+        /* v74 (Seat 1 fix): freeze BEFORE the records stamp, so
+           the re-registration record carries the shown total. */
+        scanTimerStop('u');
+        setSurfacePill('u', 'Ready');
         Sync.noteProfile(updated);
         Sync.noteScan({ kind: 're-register', profileName: person.name, biomId: person.id, hand: hand, result: 'Owner Re-registration' });
         recoveryPersonId = null;
@@ -8730,7 +8991,8 @@
               var neural = out.diag ? out.diag.neural : null;
               if (decision === 'refuse') {
                 DB.put('logs', { ts: Date.now(), personId: out.person.id, personName: out.person.name, store: '', method: 'palm', measured: out.measured || '', result: 'Owner Unlock Denied — Not Owner' }).catch(function () { return null; });
-                Sync.noteScan({ kind: 'owner-unlock', profileName: out.person.name, biomId: out.person.id, hand: hand, edccScore: edcc, palmnetScore: neural, result: 'Denied' });
+                                scanTimerStop('w'); // v74 (Seat 1 fix): freeze first, so the record stamps the shown total
+Sync.noteScan({ kind: 'owner-unlock', profileName: out.person.name, biomId: out.person.id, hand: hand, edccScore: edcc, palmnetScore: neural, result: 'Denied' });
                 $('wScanMsg').innerHTML = '<div class="error">That palm belongs to ' + esc(out.person.name) + ', who is not the owner of this device. Owner mode was not opened.</div>';
                 $('wScanRun').disabled = false;
                 Snd.buzz();
@@ -8738,10 +9000,11 @@
               }
               var person = out.person;
               var finish = function () {
-                Sync.noteScan({ kind: 'owner-unlock', profileName: person.name, biomId: person.id, hand: hand, edccScore: edcc, palmnetScore: neural, result: 'Verified' });
+                                scanTimerStop('w'); // v74 (Seat 1 fix): freeze first, so the record stamps the shown total
+Sync.noteScan({ kind: 'owner-unlock', profileName: person.name, biomId: person.id, hand: hand, edccScore: edcc, palmnetScore: neural, result: 'Verified' });
                 hideWalletScan();
                 enterOwnerMode();
-                toast(decision === 'claim' ? 'Owner access claimed. Owner mode is on.' : 'Owner mode is on.');
+                toast((decision === 'claim' ? 'Owner access claimed. Owner mode is on.' : 'Owner mode is on.') + ' Scanned in ' + ScanTimers.w.elapsedText() + '.');
                 go('dashboard');
               };
               if (decision === 'claim') {
