@@ -17,13 +17,17 @@
 <title>TSG Biom — Palmprint for Stores</title>
 <meta name="description" content="TSG Biom by TwoSide Group: hardware-free palmprint enrollment and verification through a phone or tablet camera, with bKash / Nagad Biom Pay for pharmacies, retail, supermarkets and malls.">
 <meta name="theme-color" content="#0b4ea2">
-<meta name="biom-build" content="v76">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="TSG Biom">
+<meta name="biom-build" content="v77">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-180.png">
-<link rel="stylesheet" href="styles.css?b=v76">
-<script src="vendor/mediapipe-hands-0.4.1675469240/hands.js?b=v76"></script>
-<script src="biometrics.js?b=v76"></script>
+<link rel="stylesheet" href="styles.css?b=v77">
+<script src="vendor/mediapipe-hands-0.4.1675469240/hands.js?b=v77"></script>
+<script src="biometrics.js?b=v77"></script>
 </head>
 <body class="mode-customer">
 <!-- v71 boot splash: a neutral branded state that paints before
@@ -159,7 +163,7 @@
       </aside>
     </div>
 
-    <div id="walletAdd" class="card hidden">
+    <div id="walletAdd" class="card hidden" role="dialog" aria-modal="true" aria-label="Add Money">
       <h2>Add Money (demo)</h2>
       <p class="sub">Demo money — not real funds. Nothing here contacts a real account or moves real money. The amount lands in your wallet only after <b>your own palm</b> verifies.</p>
       <p class="balanceline">Current balance: <b id="wAddBalance">BDT 0</b></p>
@@ -190,7 +194,7 @@
       </div>
     </div>
 
-    <div id="walletSend" class="card hidden">
+    <div id="walletSend" class="card hidden" role="dialog" aria-modal="true" aria-label="Send Money">
       <h2>Send Money (demo)</h2>
       <p class="sub">Demo money between wallets on this device, in three steps: <b>first</b> the receiver is found by <b>their palm</b> — if the scanned palm matches no registered Biom ID, no money can be sent — <b>then</b> you enter the amount, and <b>finally</b> your own palm authorises the send.</p>
       <p class="balanceline">Your balance: <b id="wSendBalance">BDT 0</b></p>
@@ -219,7 +223,7 @@
       <button class="btn" id="wSendBack" style="margin-top:12px">Back</button>
     </div>
 
-    <div id="walletPay" class="card hidden">
+    <div id="walletPay" class="card hidden" role="dialog" aria-modal="true" aria-label="Biom Pay">
       <h2>Biom Pay (demo)</h2>
       <p class="sub">Pay a partner store from your wallet: choose the store, enter the amount, then scan <b>your own palm</b> to authorise — the same strict money rule as every Biom Pay payment. Demo money — not real funds.</p>
       <p class="balanceline">Your balance: <b id="wPayBalance">BDT 0</b></p>
@@ -250,7 +254,7 @@
       </div>
     </div>
 
-    <div id="walletScanCard" class="card hidden">
+    <div id="walletScanCard" class="card hidden" role="dialog" aria-modal="true" aria-label="Palm scan">
       <h2 id="wScanTitle">Palm scan</h2>
       <p class="sub" id="wScanPrompt"></p>
       <div class="camtoggle" data-cam-toggle="walletAct" role="group" aria-label="Wallet scan camera choice">
@@ -434,7 +438,7 @@
         </div>
       </div>
     </div>
-    <div class="versionline" id="versionLine">TSG Biom · App v76 · TwoSide Group</div>
+    <div class="versionline" id="versionLine">TSG Biom · App v77 · TwoSide Group</div>
   </section>
 
   <!-- DESK (HOME) -->
@@ -901,6 +905,6 @@
 
 <div id="toast" class="hidden" role="status"></div>
 
-<script src="app.js?b=v76"></script>
+<script src="app.js?b=v77"></script>
 </body>
 </html>

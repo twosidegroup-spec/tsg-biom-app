@@ -223,7 +223,7 @@ section.page.active{animation:pagein var(--dur-page) var(--ease-std) backwards}
    fall back to the base value (none) once the entrance ends; the
    slide itself is unchanged during the animation. */
 @keyframes pagein{from{opacity:0;transform:translateY(8px)}to{opacity:1}}
-.btn,.qa-tile,.chip,.profilecard,.setrow{transition:border-color var(--dur-state) var(--ease-std),background var(--dur-state) var(--ease-std),box-shadow var(--dur-state) var(--ease-std),transform var(--dur-state) var(--ease-std)}
+.btn,.qa-tile,.chip,.profilecard,.setrow{transition:border-color var(--dur-state) var(--ease-std),background var(--dur-state) var(--ease-std),transform var(--dur-state) var(--ease-std)}/* v77: box-shadow no longer transitions — animating a paint property on the most-tapped controls cost a repaint per frame of every press state; the shadows themselves are unchanged, they simply arrive with the state instead of animating to it */
 .balcard{background:var(--blue);color:#fff;border-radius:26px;padding:22px 22px 20px;
   box-shadow:0 16px 34px rgba(8,58,124,.30),0 3px 8px rgba(8,58,124,.18)}
 .balcard-top{display:flex;align-items:center;justify-content:space-between}
@@ -372,7 +372,7 @@ body.mode-customer .cust-hide{display:none!important}
 .balpoints svg{width:17px;height:17px;stroke:#ffd98a;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .balpoints .balpoints-lbl{font-weight:700;color:rgba(255,255,255,.8);font-size:12px;letter-spacing:.3px}
 .qa-tile:active{transform:scale(.97)}
-.balcard{transition:box-shadow .25s ease}
+.balcard{transition:none}/* v77: was transition:box-shadow .25s — a paint-property animation on the home hero, repainted on every balance flash; the shadow itself is unchanged */
 
 /* ---- v64 design polish (Seat 1) ----------------------------------
    Token hygiene (T-1): the rules above move the customer-reached
@@ -492,16 +492,17 @@ body[data-density="compact"]{--density-pad:14px;--density-row:44px;--density-sec
   #wHomeStatement .actrow{display:grid;grid-template-columns:42px 1fr auto;align-items:center}
 
   /* Money flows as centred desktop sheets over the dimmed wallet.
-     The backdrop is shown by :has() while a flow (or its scan
-     step) is un-hidden at desktop width; on mobile the flows stay
-     full-screen and no backdrop exists. Steps, order, bars and
-     copy are identical in both forms. */
+     The backdrop is shown (body.sheet-open, v77) while a flow
+     (or its scan step) is un-hidden at desktop width; on mobile
+     the flows stay full-screen and no backdrop exists. Steps,
+     order, bars and copy are identical in both forms. */
   .sheet-backdrop{position:fixed;inset:0;background:rgba(7,28,63,.45);z-index:80;
     transition:opacity var(--dur-state) var(--ease-std)}
-  body:has(#page-wallet.active #walletAdd:not(.hidden)) .sheet-backdrop,
-  body:has(#page-wallet.active #walletSend:not(.hidden)) .sheet-backdrop,
-  body:has(#page-wallet.active #walletPay:not(.hidden)) .sheet-backdrop,
-  body:has(#page-wallet.active #walletScanCard:not(.hidden)) .sheet-backdrop{display:block}
+  /* v77: the backdrop state is the body.sheet-open class,
+     maintained in app.js from the sheets' own class changes.
+     The v76 body:has(...) form forced the style engine to
+     re-test the whole subtree on every DOM mutation. */
+  body.sheet-open .sheet-backdrop{display:block}
   #walletAdd:not(.hidden),#walletSend:not(.hidden),#walletPay:not(.hidden){
     position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);
     width:min(480px,94vw);max-height:92vh;overflow:auto;z-index:90;
@@ -553,13 +554,15 @@ body[data-density="compact"]{--density-pad:14px;--density-row:44px;--density-sec
   #page-dashboard>.desklinks{grid-column:1/-1}
 
   /* Registry list–detail: table left, detail panel right when a
-     row is selected. Mobile keeps the table + cards behaviour. */
-  #page-registry.active:has(#registryDetail:not(.hidden)){display:grid;grid-template-columns:7fr 5fr;gap:16px;align-items:start}
-  #page-registry.active:has(#registryDetail:not(.hidden))>h1,
-  #page-registry.active:has(#registryDetail:not(.hidden))>.sub,
-  #page-registry.active:has(#registryDetail:not(.hidden))>input{grid-column:1/-1}
-  #page-registry.active:has(#registryDetail:not(.hidden))>.card{grid-column:1;margin-top:0}
-  #page-registry.active:has(#registryDetail:not(.hidden))>#registryDetail{grid-column:2;margin-top:0}
+     row is selected. Mobile keeps the table + cards behaviour.
+     v77: keyed off the .detail-open class app.js maintains on
+     the section (was: :has() re-tested on every mutation). */
+  #page-registry.active.detail-open{display:grid;grid-template-columns:7fr 5fr;gap:16px;align-items:start}
+  #page-registry.active.detail-open>h1,
+  #page-registry.active.detail-open>.sub,
+  #page-registry.active.detail-open>input{grid-column:1/-1}
+  #page-registry.active.detail-open>.card{grid-column:1;margin-top:0}
+  #page-registry.active.detail-open>#registryDetail{grid-column:2;margin-top:0}
 
   /* Skeletons per form: row-shaped on desktop. */
   .skelcard{height:56px;border-radius:var(--radius-row)}

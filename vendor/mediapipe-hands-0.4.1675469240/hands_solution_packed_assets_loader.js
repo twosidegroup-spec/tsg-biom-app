@@ -55,7 +55,18 @@ var REMOTE_PACKAGE_SIZE = metadata['remote_package_size'];
                 total: size
               };
             } else {
-              Module.dataFileDownloads[url].loaded = event.loaded;
+              /* TSG local patch (v77, 2026-11-27): the else branch
+                 assumed Module.dataFileDownloads[url] still exists.
+                 When the WASM glue initialises its own Module after
+                 this loader's first progress event (the blob: URL
+                 load order the v68 assembly produces), the registry
+                 is a different object and this line threw
+                 "Cannot read properties of undefined (reading
+                 'blob:...')" on every load — 49 page-errors across
+                 the v76 device-matrix run. The download itself was
+                 never affected (the throw is inside the progress
+                 reporter); guard the report, change nothing else. */
+              if (Module.dataFileDownloads && Module.dataFileDownloads[url]) Module.dataFileDownloads[url].loaded = event.loaded;
             }
             var total = 0;
             var loaded = 0;
