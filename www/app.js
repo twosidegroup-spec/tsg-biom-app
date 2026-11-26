@@ -312,8 +312,41 @@
      media-src, and the M-7 API endpoint pin is unchanged.
      No bar, model pin, guard, strict-money site,
      encryption, signing, sync or copy truth changes. The
-     migration step is the identity (see biometrics.js). */
-  var APP_DATA_VERSION = 'v68';
+     migration step is the identity (see biometrics.js).
+
+     v69 (2026-11-26) carries two Chairman orders from his
+     first live v68 scan session. (1) DELETE MY DATA in the
+     customer Settings: one customer deletes THEIR OWN profile
+     — palm bank and wallet — from this device, through the
+     existing v62 tombstone machinery (tombstones queued and
+     flushed BEFORE any local erase, exactly the Delete All
+     Data order of operations, scoped to one person), behind
+     the same typed-DELETE confirmation strength as the
+     owner's wipe; other profiles on the device are untouched.
+     (2) SCAN-VERDICT FRICTION fixes in the wallet money
+     authorisation, from his report of one session cycling
+     "unauthorised" → "antispoof" → "no hand" → recognised:
+     the anti-spoof tracker is now fed ONLY by frames where a
+     hand was actually read (a handless frame's whole-frame
+     bezel/glare evidence could previously convict a scan —
+     two such frames outranked everything else); detector
+     failure is judged FIRST in the verify loop, before the
+     spoof and liveness exits, so a detector that cannot run
+     can no longer be overwritten by a later, less accurate
+     state; detector-failed frames no longer burn the scan's
+     frame cap; the static-liveness exit counts hand poses,
+     not analysed frames; every wallet scan failure now names
+     its cause's own next step (SCAN-GUIDANCE below); and a
+     thin bank (B.palmBankThin — enrolled once, never
+     strengthened) is offered the existing Strengthen flow
+     from the failure sheet and once after enrolment. No bar,
+     model pin, guard, strict-money rule, encryption,
+     signing, sync or copy truth changes — the frozen rules
+     are untouched; only the evidence the verdicts are
+     allowed to rest on, and the order they are judged in,
+     changed. The migration step is the identity (see
+     biometrics.js). */
+  var APP_DATA_VERSION = 'v69';
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -3316,7 +3349,21 @@
       // per-frame verdict alongside the frame — the v39 fast win
       // reads the two matched frames' own samples, not just the
       // aggregate. Aggregation behaviour is unchanged.
-      add: function (frame, lm) { var s = spoofSample(frame, lm); if (s) checks.push(s); return s || null; },
+      // v69: a frame is only ever sampled when a hand was
+      // actually READ on it (landmarks present). Before v69
+      // every analysed frame was sampled, hand or not: with no
+      // landmarks the palm-grid evidence is correctly absent,
+      // but the detector's whole-frame bezel and glare terms
+      // still run — a television across the room, a window
+      // frame, a bright wall in a handless positioning frame
+      // could flag, and two flagged handless frames met the
+      // aggregation bar and convicted the whole scan as a
+      // spoof before any hand was judged (the middle verdict
+      // of the Chairman's 2026-11-26 friction report). A
+      // handless frame now carries no spoof evidence either
+      // way — it returns null and is never recorded, exactly
+      // like a frame the sampler could not run on.
+      add: function (frame, lm) { if (!lm) return null; var s = spoofSample(frame, lm); if (s) checks.push(s); return s || null; },
       state: function () {
         var flagged = checks.filter(function (c) { return c.spoof; });
         var meanB = checks.length ? checks.reduce(function (s, c) { return s + c.meanBrightness; }, 0) / checks.length : null;
@@ -3630,6 +3677,13 @@
     var matchState = { streak: 0, best: null };
     var win = null;
     var analysed = 0, locked = false, detFails = 0; // v67: no swapped state — the camera never swaps; detFails = this stream's own consecutive detector failures
+    // v69: detTotal counts this scan's detector-failed frames
+    // across the whole run (they are excluded from the frame
+    // cap — a frame the detector never judged is not evidence
+    // the scan spent); handFrames counts frames that carried a
+    // pose (a hand was read), which is what the static-liveness
+    // exit is allowed to rest on.
+    var detTotal = 0, handFrames = 0;
     var lastHint = null, coded = 0;
     // v43: the latest frame's quality signals, feeding the live
     // guidance pill (B.palmGuidance) and the caller's scan session.
@@ -3996,11 +4050,15 @@
         lastGrabT = video.currentTime;
         return analysePalmFrame(frame).then(function (r) {
           analysed++;
-          if (r.detFailed) detFails++; else detFails = 0;
+          if (r.detFailed) { detFails++; detTotal++; } else detFails = 0;
+          if (r.pose) handFrames++;
           stLm += r.lmMs || 0; stEnc += r.encMs || 0;
           // Every analysed frame feeds the spoof tracker, carrying
           // its landmarks so the v36 grid gate reads the palm region
           // only — same evidence, same aggregation as the bursts.
+          // v69: the tracker itself now refuses handless frames
+          // (see makeSpoofTracker) — a frame with no hand read
+          // carries no spoof evidence.
           // v39: the frame's own sample verdict is also recorded
           // against its frame index for the fast-win pair check.
           var sample = tracker.add(frame, r.lm);
@@ -4079,6 +4137,20 @@
       // re-arm, wallet close) — end silently with no verdict, no
       // log, no field record.
       if (control && control.cancelled) return finish({ stopped: true, fail: 'Scan stopped.' });
+      // v69: detector failure is judged FIRST — before the spoof
+      // and liveness exits below. Before v69 this check sat at
+      // the bottom of the loop, after both: a detector that
+      // could not run produced handless frames, those frames'
+      // whole-frame evidence (and the plain passage of the
+      // frame cap) could end the scan as a spoof, a liveness
+      // failure or a no-usable-palm verdict, and the accurate
+      // state — the detector never ran — was overwritten by
+      // whichever later check fired first. Three consecutive
+      // detector failures are the v67 rule; what changed is
+      // only that no other verdict may outrank it.
+      if (detFails >= 3) {
+        return finish({ fail: DETECTOR_FAIL_MSG + ' Nothing was verified.', detectorFailed: true, diag: { edcc: null, neural: null, probeHand: null, profileHand: profileHand, handGate: false } });
+      }
       var sp = tracker.state();
       if (sp.spoof) return spoofOut(sp);
       var lv = B.passiveLivenessCheck(poses);
@@ -4101,9 +4173,19 @@
       if (strictMoney && win && lv.pass && sp.framesChecked >= 3 && statusEl) setStatus('Palm matched — money authorisation needs the match confirmed on a second frame. Keep the palm there…');
       // v37: the burst-era "two bursts" static guard is the same
       // evidence in continuous terms — six analysed frames.
-      if (lv.verdict === 'static' && analysed >= 6) return livenessFailOut(lv);
+      // v69: the six frames must be frames a hand was READ on
+      // (handFrames — poses exist only on hand frames). Before
+      // v69 the counter was analysed frames, handless ones
+      // included, so positioning frames burned the guard's
+      // budget while contributing no pose evidence at all.
+      if (lv.verdict === 'static' && handFrames >= 6) return livenessFailOut(lv);
       if (lv.verdict === 'erratic') return livenessFailOut(lv);
-      if (analysed >= MAXF || Date.now() > deadline) {
+      // v69: the frame cap counts frames the detector actually
+      // judged (analysed minus detector-failed) — a detector
+      // warm-up stretch at the top of a scan no longer spends
+      // the matching budget. The wall-clock deadline is
+      // unchanged and still bounds every scan.
+      if (analysed - detTotal >= MAXF || Date.now() > deadline) {
         // A match from the last analysed frame may still be in the
         // worker: its score belongs to the record (the best-score
         // diagnostics, the finalOut set), so drain it before any
@@ -4136,10 +4218,9 @@
       // stays until the user taps the manual switch. A handless
       // stretch simply keeps the guidance coming on this
       // camera. A detector that cannot run ends the scan with
-      // the honest detector message, never a "no hand" verdict.
-      if (detFails >= 3) {
-        return finish({ fail: DETECTOR_FAIL_MSG + ' Nothing was verified.', detectorFailed: true, diag: { edcc: null, neural: null, probeHand: null, profileHand: profileHand, handGate: false } });
-      }
+      // the honest detector message, never a "no hand" verdict
+      // (v69: that judgement now sits at the TOP of this loop,
+      // before the spoof and liveness exits — see there).
       if (statusEl) {
         var seenHandNow = frames.some(function (x) { return typeof x.openness === 'number'; });
         // v43: the live guidance pill — one concise line mapped
@@ -4737,6 +4818,29 @@
           '<b>Palm Loyalty:</b> Active — 0 points<br>' +
           '<b>Demo wallet:</b> Created — this Biom ID is the wallet account, balance BDT 0. Open My Wallet to use it; your palm is asked for only when money moves. Demo money inside the app, not real funds.';
         enroll = { details: null, palm: null, types: { palm: true } };
+        /* v69: a fresh enrolment is a thin bank by definition
+           (B.palmBankThin — one burst, never strengthened).
+           Offer the Strengthen path ONCE, here on the Done
+           screen: the offer is shown at most once per profile
+           (a meta flag records that it was shown), and both
+           buttons retire it — Strengthen routes to the same
+           Add Angles flow My Account uses; Not now simply
+           hides it. It never reappears for this profile. */
+        var offerEl = $('enrollStrengthenOffer');
+        if (offerEl) {
+          offerEl.classList.add('hidden');
+          if (B.palmBankThin(person.palmProfile)) {
+            DB.getMeta('strengthenOffered:' + person.id, false).then(function (shown) {
+              if (shown) return;
+              return DB.setMeta('strengthenOffered:' + person.id, true).then(function () {
+                offerEl.classList.remove('hidden');
+                var goBtn = $('enrollStrengthenBtn'), noBtn = $('enrollStrengthenDismiss');
+                if (goBtn) goBtn.addEventListener('click', function () { offerEl.classList.add('hidden'); openTopup(person.id); });
+                if (noBtn) noBtn.addEventListener('click', function () { offerEl.classList.add('hidden'); });
+              });
+            }).catch(function () {});
+          }
+        }
         toast('Enrolled: ' + person.id);
         // Voice verdict (v23, his order): spoken ONLY here, after the
         // record is actually saved - never on a step, never early.
@@ -5656,6 +5760,66 @@
     walletScanCtx = null;
     Cam.stop();
   }
+  /* SCAN-GUIDANCE-BEGIN — v69: per-cause guidance for a failed
+     wallet scan. The Chairman's 2026-11-26 friction report was
+     one session cycling "unauthorised" → "antispoof" → "no
+     hand" → recognised: three different alarming labels, none
+     of which told him what to DO next. The verdict text itself
+     is unchanged (honesty of verdicts is not negotiable — a
+     genuine non-match still reads as a non-match); what this
+     factory adds is the cause's own calm next step, derived
+     from the same outcome object the verdict was built from,
+     so the guidance can never contradict the verdict. Pure:
+     the suite drives it over fabricated outcomes. */
+  function createScanGuidance() {
+    var LINES = {
+      'detector': 'Wait a few seconds, then tap Scan again — the detector loads once and then stays ready.',
+      'spoof': 'Use the real hand itself, live in front of the camera — not a photo, a screen or a recording of it.',
+      'liveness-static': 'Hold your real hand live in front of the camera and let it settle naturally — a tiny natural movement is expected.',
+      'liveness-erratic': 'Hold one open palm steady in the frame and keep it there while the scan runs.',
+      'strict-margin': 'Your palm matched, but not clearly enough above every other palm on this device. Scan again in brighter light, palm flat and fully in frame.',
+      'strict-frames': 'Keep the palm in view a moment longer — a money scan needs the match confirmed on a second frame.',
+      'hand-gate': 'This profile is registered to your other hand — present that hand, or switch to its profile.',
+      'unreadable': 'Fit the whole palm in the frame, fingers spread, in brighter light, and hold it steady.',
+      'nomatch': 'That palm did not match this profile. Use the registered hand, flat and fully in frame, in good light.',
+      'generic': 'Position the open palm fully in the frame, in good light, hold it steady, and tap Scan again.'
+    };
+    function causeOf(out) {
+      if (!out || typeof out !== 'object') return 'generic';
+      if (out.detectorFailed) return 'detector';
+      var fail = typeof out.fail === 'string' ? out.fail : '';
+      if (fail.indexOf('Spoof / Screen Replay') === 0) return 'spoof';
+      if (fail.indexOf('Liveness check failed') === 0) {
+        return (fail.indexOf('did not move') !== -1 || fail.indexOf('still photo') !== -1) ? 'liveness-static' : 'liveness-erratic';
+      }
+      if (fail.indexOf('Liveness could not be confirmed') === 0) return 'liveness-static';
+      if (out.r && typeof out.r.reason === 'string' && out.r.reason.indexOf('liveness could not be confirmed') !== -1) return 'liveness-static';
+      if (out.strictMoney && out.strictMoney.block === 'margin') return 'strict-margin';
+      if (out.strictMoney && out.strictMoney.block === 'frames') return 'strict-frames';
+      if (out.diag && out.diag.strictBlock === 'margin') return 'strict-margin';
+      if (out.diag && out.diag.strictBlock === 'frames') return 'strict-frames';
+      if (out.diag && out.diag.handGate) return 'hand-gate';
+      if (fail.indexOf('No usable open palm') === 0) return 'unreadable';
+      if (fail.indexOf('Matched, but not clearly enough') === 0) return 'strict-margin';
+      if (out.diag && (typeof out.diag.edcc === 'number' || typeof out.diag.neural === 'number')) return 'nomatch';
+      return 'generic';
+    }
+    function lineFor(out) {
+      var c = causeOf(out);
+      return { cause: c, line: LINES[c] };
+    }
+    /* The causes for which a thin bank is the plausible root
+       and the Strengthen offer belongs on the failure sheet:
+       scored-but-refused outcomes. A detector failure, a spoof
+       conviction or a wrong-hand scan is not a thin-bank
+       problem and never carries the offer. */
+    var STRENGTHEN_CAUSES = { 'nomatch': true, 'strict-margin': true, 'strict-frames': true, 'unreadable': true };
+    function strengthenApplies(out) { return STRENGTHEN_CAUSES[causeOf(out)] === true; }
+    return { causeOf: causeOf, lineFor: lineFor, strengthenApplies: strengthenApplies, LINES: LINES };
+  }
+  /* SCAN-GUIDANCE-END */
+  var ScanGuidance = createScanGuidance();
+
   /* v53: the measured diagnosis panel rendered under a failed
      scan's message — on the wallet card and at the terminal.
      The lines come from B.scanDiagnosisLines over the outcome's
@@ -5691,7 +5855,26 @@
     if (ctx && ctx.syncKind && out && out.diag) {
       Sync.noteScan({ kind: ctx.syncKind, profileName: '', biomId: '', hand: out.diag.probeHand || null, edccScore: typeof out.diag.edcc === 'number' ? out.diag.edcc : null, palmnetScore: typeof out.diag.neural === 'number' ? out.diag.neural : null, result: 'Denied' });
     }
-    $('wScanDiag').innerHTML = diagHtml;
+    /* v69: under the verdict, the cause's own next step — and,
+       when this profile's bank is thin and the cause is a
+       scored-but-refused one, the Strengthen offer into the
+       existing Add Angles flow (the same door My Account's
+       "Strengthen my palm" opens). The verdict text above is
+       untouched; this panel only ever adds guidance. */
+    var guide = ScanGuidance.lineFor(out);
+    var extraHtml = '<div class="diagpanel"><div class="diagtitle">What to try next</div><div class="diagrow">' + esc(guide.line) + '</div></div>';
+    var meNow = walletSessionPerson();
+    if (meNow && personHasMethod(meNow) && B.palmBankThin(meNow.palmProfile) && ScanGuidance.strengthenApplies(out)) {
+      extraHtml += '<div style="margin-top:10px"><button class="btn primary" id="wScanStrengthen">Strengthen your palm</button>' +
+        '<div class="sub" style="margin-top:6px">This palm was enrolled once and never strengthened. Adding angles gives the scanner more of your palm to recognise, so scans like this one pass more reliably.</div></div>';
+    }
+    $('wScanDiag').innerHTML = diagHtml + extraHtml;
+    var strengthenBtn = $('wScanStrengthen');
+    if (strengthenBtn) strengthenBtn.addEventListener('click', function () {
+      var p = walletSessionPerson();
+      hideWalletScan();
+      if (p) openTopup(p.id);
+    });
     $('wScanRun').disabled = false;
     Snd.buzz();
   }
@@ -6996,6 +7179,161 @@
       return snap;
     });
   }
+  /* PROFILE-DELETE-BEGIN — v69: ONE customer deletes their
+     own profile (the customer Settings "Delete my data"). The
+     order of operations is the Delete All Data order, scoped
+     to one person: (1) if the profile carries a palm bank and
+     sync is active, its tombstone is queued and a flush is
+     attempted FIRST — the vault drops the bank's templates and
+     keeps only the deletion marker (v62 semantics, D7
+     retention unchanged); (2) only then is anything erased
+     locally: the person row (palm bank + wallet live in it),
+     the profile's Inbox meta, its strengthen-offer flag, and
+     the transactions that profile authored. A tombstone that
+     could not be delivered stays in the persisted outbox and
+     completes on the next successful sync — the outcome says
+     which of the three server states happened, exactly as the
+     wipe reports it. Other profiles are never read for
+     writing and never touched. Pure factory over deps: the
+     suite drives the exact shipped logic against fakes and
+     pins the tombstone-before-erase order. */
+  function createProfileDeletion(deps) {
+    function isBanked(person) {
+      return !!(person && person.palmProfile && (
+        (Array.isArray(person.palmProfile.codes) && person.palmProfile.codes.length) ||
+        (person.palmProfile.neural && Array.isArray(person.palmProfile.neural.embeddings) && person.palmProfile.neural.embeddings.length) ||
+        (Array.isArray(person.palmProfile.legacyCodes) && person.palmProfile.legacyCodes.length)));
+    }
+    function deleteProfile(personId) {
+      return deps.getPerson(personId).then(function (person) {
+        if (!person) return { deleted: false, reason: 'not-found' };
+        var banked = isBanked(person) ? [person] : [];
+        var syncActive = !!deps.syncActive();
+        var stage = Promise.resolve();
+        if (syncActive && banked.length) {
+          stage = deps.queueTombstones(banked).then(function () { return deps.flush(); });
+        }
+        return stage.then(function () {
+          var pending = (syncActive && banked.length) ? deps.pendingTombstones(personId) : [];
+          return deps.erase(personId).then(function (erased) {
+            return {
+              deleted: true, erased: erased,
+              server: !banked.length ? 'none' : !syncActive ? 'inactive' : pending.length ? 'pending' : 'tombstoned'
+            };
+          });
+        });
+      });
+    }
+    return { deleteProfile: deleteProfile, isBanked: isBanked };
+  }
+  /* PROFILE-DELETE-END */
+  var ProfileDeletion = createProfileDeletion({
+    getPerson: function (personId) {
+      return DB.all('people').then(function (people) {
+        return people.find(function (p) { return p.id === personId; }) || null;
+      });
+    },
+    syncActive: function () { var st = Sync.state(); return !!(st.on && st.configured); },
+    queueTombstones: function (people) { return Sync.queueTombstones(people); },
+    flush: function () { return Sync.flush(); },
+    pendingTombstones: function (personId) {
+      return Sync.pendingItems().filter(function (it) {
+        return it.type === 'tombstone' && it.record && it.record.biomId === personId;
+      });
+    },
+    erase: function (personId) {
+      return DB.remove('people', personId)
+        .then(function () { return DB.remove('meta', 'inbox:' + personId); })
+        .then(function () { return DB.remove('meta', 'strengthenOffered:' + personId); })
+        .then(function () { return DB.all('transactions'); })
+        .then(function (txs) {
+          var mine = (txs || []).filter(function (t) { return t && t.personId === personId; });
+          return mine.reduce(function (chain, t) {
+            return chain.then(function () { return DB.remove('transactions', t.id); });
+          }, Promise.resolve()).then(function () { return { transactions: mine.length }; });
+        });
+    }
+  });
+
+  /* v69: the Settings wiring for Delete my data — the same
+     confirmation strength as the owner's wipe: the row only
+     OPENS the panel; deletion runs only after the customer
+     types DELETE and taps the distinct confirm button. The
+     counts come from the live record, so what will be deleted
+     is stated, not implied. */
+  function wireProfileDelete() {
+    var row = $('setDeleteRow');
+    if (!row) return;
+    var panel = $('delConfirm'), input = $('delConfirmInput'),
+      confirmBtn = $('delConfirmBtn'), cancelBtn = $('delCancelBtn'), msg = $('delMsg');
+    var targetId = null;
+    function closePanel() {
+      panel.classList.add('hidden');
+      row.disabled = false;
+      input.value = '';
+      confirmBtn.disabled = true;
+      targetId = null;
+    }
+    row.addEventListener('click', function () {
+      msg.innerHTML = '';
+      loadWalletPeople().then(function (people) {
+        var entry = resolveWalletEntry(people);
+        if (entry) walletSessionId = entry.id;
+        var me = walletSessionPerson();
+        if (!me) { msg.innerHTML = '<div class="error">No account is open — open your wallet first.</div>'; return; }
+        targetId = me.id;
+        var w = B.walletEnsurePerson(me).wallet;
+        $('delCounts').textContent = 'This deletes ' + me.name + '\'s palm registration and wallet on this device' +
+          ' (balance ' + fmtBDT(w.balance) + ', with its statement and linked accounts), this account\'s Inbox history,' +
+          ' and marks the palm bank deleted in the TSG Biom vault by tombstone.';
+        panel.classList.remove('hidden');
+        row.disabled = true;
+        input.value = '';
+        confirmBtn.disabled = true;
+        input.focus();
+      });
+    });
+    input.addEventListener('input', function () {
+      confirmBtn.disabled = input.value.trim() !== 'DELETE';
+    });
+    cancelBtn.addEventListener('click', closePanel);
+    confirmBtn.addEventListener('click', function () {
+      if (input.value.trim() !== 'DELETE' || !targetId) return;
+      var personId = targetId;
+      confirmBtn.disabled = true;
+      cancelBtn.disabled = true;
+      ProfileDeletion.deleteProfile(personId).then(function (outcome) {
+        if (!outcome.deleted) throw new Error('not-found');
+        var serverLine = outcome.server === 'tombstoned'
+          ? 'The palm bank synced to your TSG Biom server has been marked deleted there too.'
+          : outcome.server === 'pending'
+            ? 'Removal from your TSG Biom server could not be confirmed just now — the deletion request is kept and completes on the next sync.'
+            : outcome.server === 'inactive'
+              ? 'Copies already synced to your TSG Biom server are not erased by this deletion — Scan Sync was off, so no server removal was sent.'
+              : 'This account had no palm bank, so there was nothing to remove from the server.';
+        closePanel();
+        cancelBtn.disabled = false;
+        /* The session ends with the account: clear the open
+           wallet, drop the cached people list, clear the role
+           and return to the role choice — from there, Customer
+           leads to a fresh registration, exactly the post-wipe
+           first-run shape scoped to one account. */
+        walletSessionId = null;
+        walletPeopleCache = [];
+        RoleMode.clear();
+        applyRoleChrome();
+        msg.innerHTML = '<div class="success">Your data is deleted — this account\'s palm registration, wallet and Inbox history are gone from this device. ' + serverLine + '</div>';
+        toast('Your data is deleted.');
+        setTimeout(function () { go('role'); }, 1200);
+      }).catch(function () {
+        msg.innerHTML = '<div class="error">Delete failed — nothing was erased. Your data is unchanged; please try again.</div>';
+        confirmBtn.disabled = false;
+        cancelBtn.disabled = false;
+      });
+    });
+  }
+  wireProfileDelete();
+
   function wireWipeData() {
     var btn = $('wipeDataBtn');
     if (!btn) return;

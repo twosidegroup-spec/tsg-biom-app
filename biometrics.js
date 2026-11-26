@@ -2228,6 +2228,23 @@
     return { codes: codes };
   }
   function palmprintProfileSane(stored) { return normalisePalmprintProfile(stored) !== null; }
+  /* v69: a THIN bank — the palm was enrolled once and never
+     strengthened. Enrolment banks exactly 3 packed templates
+     (the v45 burst selection); Add Angles appends beyond that.
+     A bank still at (or below) the enrolment count has a single
+     posture's worth of evidence, which is the population the
+     Chairman's friction report came from: genuine scans landing
+     just under the bars. The scan failure sheet and the
+     post-enrolment offer read thinness from HERE so the two can
+     never disagree about what "thin" means. Legacy profiles
+     (no current-format codes) are not thin — they need the
+     re-scan path, a different remedy. */
+  function palmBankThin(stored) {
+    if (!stored || typeof stored !== 'object') return false;
+    var codes = Array.isArray(stored.codes) ? stored.codes : null;
+    if (!codes || !codes.length) return false;
+    return codes.length <= 3;
+  }
   /* The fail reason for a profile this pipeline cannot judge:
      a legacy profile gets the honest re-scan reason, anything
      else the long-standing missing/invalid one. */
@@ -5800,7 +5817,7 @@ function createTsgPalmEngine() {
      therefore the identity, and a v62 store — sealed banks, hand
      stamps, wallet, points, and a queued sync outbox row
      included — opens under v63 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62', 'v63', 'v64', 'v65', 'v66', 'v67', 'v68'];
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62', 'v63', 'v64', 'v65', 'v66', 'v67', 'v68', 'v69'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -5855,6 +5872,13 @@ function createTsgPalmEngine() {
        state are untouched, so a v67 store opens byte-identical
        under v68. */
     'v68': function (snap) { return snap; },
+    /* v69: pure adoption — the customer Delete Data action and
+       the scan-verdict friction fixes change no stored shape:
+       deletion runs through the existing v62 tombstone path and
+       the per-profile stores that already exist, and the scan
+       changes are stream behaviour only, so a v68 store opens
+       byte-identical under v69. */
+    'v69': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
@@ -6042,6 +6066,7 @@ function createTsgPalmEngine() {
     palmprintProfileFormat: palmprintProfileFormat,
     palmprintProfileFailReason: palmprintProfileFailReason,
     palmprintProfileSane: palmprintProfileSane,
+    palmBankThin: palmBankThin,
     verifyPalmprintProfile: verifyPalmprintProfile,
     palmprintProbePacked: palmprintProbePacked,
     shiftGrayClamped: shiftGrayClamped,

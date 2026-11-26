@@ -4,7 +4,7 @@
    the network on every load so the bytes the app verifies are always
    the bytes currently served (the model is additionally SHA-256
    verified against the hash pinned in app code). */
-const CACHE = 'tsg-biom-shell-v68';
+const CACHE = 'tsg-biom-shell-v69';
 const SHELL = [
   './',
   './index.html',

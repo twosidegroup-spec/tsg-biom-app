@@ -313,6 +313,23 @@
         </div>
         <p class="sub" style="margin:10px 0 0">Logging out closes your wallet on this screen and returns to the role choice. Your registration and wallet stay safely on this device.</p>
       </div>
+      <div class="card seccard">
+        <h2>Danger zone</h2>
+        <div class="setlist">
+          <button class="setrow danger" id="setDeleteRow"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m3 0-1 13a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1L6 7"/></svg></span><span class="setlbl">Delete my data</span><span class="setval">This account only</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></span></button>
+        </div>
+        <div id="delConfirm" class="hidden" style="margin-top:12px">
+          <div class="error"><b>This permanently deletes your account on this device.</b><br><span id="delCounts"></span><br>It cannot be undone — to use Biom again you would register again from the start.</div>
+          <label for="delConfirmInput" style="margin-top:12px">Type DELETE to confirm</label>
+          <input id="delConfirmInput" placeholder="DELETE" autocomplete="off" autocapitalize="characters">
+          <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
+            <div><button class="btn danger solid" id="delConfirmBtn" disabled>Delete my data</button></div>
+            <div><button class="btn" id="delCancelBtn">Cancel</button></div>
+          </div>
+        </div>
+        <div id="delMsg" style="margin-top:10px"></div>
+        <p class="sub" style="margin:10px 0 0">Only this account is deleted. Other accounts on this device are not touched.</p>
+      </div>
     </div>
   </section>
 
@@ -372,7 +389,7 @@
         </div>
       </div>
     </div>
-    <div class="versionline" id="versionLine">TSG Biom · App v68 · TwoSide Group</div>
+    <div class="versionline" id="versionLine">TSG Biom · App v69 · TwoSide Group</div>
   </section>
 
   <!-- DESK (HOME) -->
@@ -615,6 +632,12 @@
     <div id="enroll-done" class="card hidden">
       <h2>Enrollment complete</h2>
       <div id="enrollDoneBody" class="kv"></div>
+      <div id="enrollStrengthenOffer" class="hidden" style="margin-top:12px">
+        <div class="diagpanel"><div class="diagtitle">Make this palm easier to recognise</div>
+          <div class="diagrow">Your palm is banked from one enrolment. Adding angles now — a minute, while it is fresh — makes everyday scans pass more reliably.</div>
+          <div style="margin-top:10px"><button class="btn primary" id="enrollStrengthenBtn">Strengthen your palm</button> <button class="btn" id="enrollStrengthenDismiss">Not now</button></div>
+        </div>
+      </div>
       <button class="btn owner-only" id="enrollDoneRegistry">Open People Registry</button>
       <button class="btn primary" id="enrollDoneWallet">Open My Wallet</button>
       <button class="btn owner-only" id="enrollDoneTerminal">Verify This Person</button>
