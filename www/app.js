@@ -377,43 +377,119 @@
      registration record (the profile record now also carries
      the person's phone, additively) plus their scan history
      with durations. A scan with no timer reading rides
-     unmeasured — never estimated. */
-  var APP_DATA_VERSION = 'v74';
-  /* ---------------- v71 boot coherence + splash ------------------
-     index.html stamps its build in <meta name="biom-build">.
-     If the document that painted and the app.js that is running
-     disagree about the build, the shell is incoherent — two
-     versions mixed in one paint, the failure behind the
-     Chairman's old-design report. The app then does not run:
-     the neutral boot splash (already painted by the document
-     itself) stays up and ONE cache-bypassing reload is forced,
-     guarded per stamp-pair so it can never loop; if the shell
-     is still incoherent after that reload, the app runs rather
-     than brick the device. On a coherent boot the splash is
-     removed here, as app.js's first DOM action — nothing has
-     rendered yet, so no design of any version is ever painted
-     over or under it. */
+     unmeasured — never estimated.
+
+     v75 (2026-11-26) is the FLASH-FIX release (Chairman's
+     reports the same evening: the old design still flashes
+     under v74, repeatedly, and the boot splash itself can
+     stick). The boot splash is now HELD until the boot chain
+     has rendered the first coherent screen — v71 dropped it
+     at app.js parse, so the un-routed static document (the
+     wallet-locked page and skeleton cards) painted for the
+     whole boot on every load, and update reloads repeated
+     the paint. A 6 s watchdog guarantees the splash can
+     never stick; the service worker times its shell fetch
+     (3.5 s) and falls back to its cache, so app.js always
+     arrives; the shell assets are version-stamped in
+     index.html (?b=v75) so a document can never pull another
+     build's assets out of the HTTP cache; the coherence
+     reload and the service-worker update delivery now spend
+     ONE shared boot-reload guard; and SW registration uses
+     updateViaCache 'none'. No bar, model pin, guard,
+     strict-money rule, encryption, signing, sync or copy
+     truth changes. The migration step is a pure adoption
+     (see biometrics.js). */
+  var APP_DATA_VERSION = 'v76';
+  /* ---------------- boot splash lifecycle (v71, rebuilt v75) ------
+     index.html stamps its build in <meta name="biom-build"> and
+     paints a neutral boot splash before any app code runs.
+
+     v75 rebuild, from the Chairman's two reports of 2026-11-26
+     (the old design still flashing under v74, and the splash
+     itself sometimes sticking): the v71 lifecycle removed the
+     splash HERE, at app.js parse — but nothing of the app has
+     rendered at parse time. The static document underneath
+     (top bar, full nav, the wallet-locked page with skeleton
+     cards) then painted for the WHOLE boot chain — IndexedDB,
+     vault, migration, first renders and the network sync that
+     precede face/role routing — on every load, and the update
+     reloads repeated that paint two or three times on upgrade
+     loads. That un-routed shell is the "old design" flash.
+
+     The v75 lifecycle:
+     (1) The splash is HELD until the boot chain completes —
+         dropBootSplash is called at the end of the boot chain
+         (and on its error path), when the first coherent screen
+         has actually rendered. Every reload in between repaints
+         the splash, never a design.
+     (2) A watchdog armed below, before anything that can stall,
+         force-drops the splash after SPLASH_MAX_MS no matter
+         what: if app.js is running at all, the splash can never
+         stick. The delivery layer has its own bound (the
+         service worker times its shell fetch and falls back to
+         cache), so app.js itself always arrives.
+     (3) Coherence: if the document that painted and the app.js
+         that is running disagree about the build, the app does
+         not run: the splash stays up and ONE cache-bypassing
+         reload is forced through the boot-reload guard shared
+         with the service-worker update delivery (bootReloadSpent,
+         keyed by the newest build involved), so the two
+         mechanisms can never stack into a second reload for the
+         same upgrade; if the guard is already spent, the app
+         runs rather than brick the device.
+     SPLASH_MAX_MS = 6000: the rig measures boot-to-routed at
+     ~2 s on a fast local network; a mid-range phone doing real
+     API sync is allowed three times that. Beyond it the user
+     gains nothing by waiting — the app underneath is already
+     usable — while a splash that outlives it reads as a dead
+     app. */
+  var SPLASH_MAX_MS = 6000;
   var bootSplashEl = document.getElementById('bootSplash');
   function dropBootSplash() {
     if (bootSplashEl && bootSplashEl.parentNode) bootSplashEl.parentNode.removeChild(bootSplashEl);
     bootSplashEl = null;
   }
+  setTimeout(function () { dropBootSplash(); }, SPLASH_MAX_MS);
+  function newestBuild(a, b) {
+    if (!a) return b;
+    if (!b) return a;
+    return parseInt(a.slice(1), 10) >= parseInt(b.slice(1), 10) ? a : b;
+  }
+  function bootReloadSpent(targetBuild) {
+    /* The ONE boot-reload guard (v75). Returns true when a boot
+       reload for this target build has already been spent this
+       session (or storage is unavailable — never reload blind).
+       Shared by the coherence reload below and the service-
+       worker update delivery, so an upgrade costs at most one
+       boot reload per session. EVERY caller passes the CANONICAL
+       key — the newest build involved in the upgrade
+       (bootReloadKey, extended by the incoming SW build in the
+       update delivery) — never a raw single stamp: keying one
+       path by the old document stamp and another by the new
+       build would spend two different keys for one upgrade and
+       stack two reloads (Seat 1, v75 review). */
+    var key = 'biomBootReload:' + targetBuild;
+    try {
+      if (sessionStorage.getItem(key)) return true;
+      sessionStorage.setItem(key, '1');
+      return false;
+    } catch (e) { return true; }
+  }
   var buildMetaEl = document.querySelector('meta[name="biom-build"]');
   var buildStamp = buildMetaEl ? buildMetaEl.getAttribute('content') : null;
+  /* The canonical boot-reload key for this page: the newest
+     build involved — the document's stamp or the running app,
+     whichever is newer. Both reload mechanisms spend THIS key
+     (the update delivery may extend it with the incoming SW
+     build), so one upgrade can never spend twice. */
+  var bootReloadKey = newestBuild(buildStamp, APP_DATA_VERSION);
   if (buildStamp && buildStamp !== APP_DATA_VERSION) {
-    var cohKey = 'biomCohReload:' + buildStamp + '>' + APP_DATA_VERSION;
-    var cohDone = true;
-    try {
-      cohDone = !!sessionStorage.getItem(cohKey);
-      if (!cohDone) sessionStorage.setItem(cohKey, '1');
-    } catch (e) { cohDone = true; }
-    if (!cohDone) {
+    if (!bootReloadSpent(bootReloadKey)) {
       var cohSearch = location.search ? '&' + location.search.replace(/^\?/, '') : '';
       location.replace(location.pathname + '?_coh=' + Date.now() + cohSearch + location.hash);
       return;
     }
   }
-  dropBootSplash();
   var DV_KEY = 'tsgbiom_data_version';
   var dataMigratedFrom = null;
   try {
@@ -9104,22 +9180,35 @@ Sync.noteScan({ kind: 'owner-unlock', profileName: person.name, biomId: person.i
         var m = /tsg-biom-shell-(v[0-9]+)/.exec(t || '');
         var incoming = m ? m[1] : 'unknown';
         if (swReloadDoneFor[incoming]) return;
-        var done = false;
-        try { done = !!sessionStorage.getItem('biomSwReloaded:' + incoming); } catch (e) { done = false; }
-        if (done) { swReloadDoneFor[incoming] = true; return; }
-        try { sessionStorage.setItem('biomSwReloaded:' + incoming, '1'); } catch (e) {}
+        /* v75: the update delivery spends the SAME boot-reload
+           guard as the coherence reload, under the CANONICAL key:
+           the newest build involved — the incoming SW build
+           extended over this page's bootReloadKey (document stamp
+           vs running app). Keying by the incoming build alone
+           would not collide with a coherence spend keyed by an
+           older document stamp, and the two mechanisms could
+           stack into two reloads for one upgrade (Seat 1). An
+           unparseable sw.js spends the page key, never a
+           throwaway 'unknown' key. */
+        var spendKey = m ? newestBuild(incoming, bootReloadKey) : bootReloadKey;
+        if (bootReloadSpent(spendKey)) { swReloadDoneFor[incoming] = true; return; }
         swReloadDoneFor[incoming] = true;
         swReloadPending = true;
         checkPendingSwReload();
       }).catch(function () {
         if (swReloadDoneFor.session) return;
         swReloadDoneFor.session = true;
+        if (bootReloadSpent(bootReloadKey)) return;
         swReloadPending = true;
         checkPendingSwReload();
       });
     });
     window.addEventListener('load', function () {
-      navigator.serviceWorker.register('sw.js').catch(function (e) { console.warn('SW registration failed', e); });
+      /* v75: updateViaCache 'none' — the browser must never
+         answer an update check for sw.js from the HTTP cache
+         (GitHub Pages serves it max-age=600), or a fresh shell
+         can wait undiscovered behind a stale worker script. */
+      navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(function (e) { console.warn('SW registration failed', e); });
     });
   }
 
@@ -9153,5 +9242,6 @@ Sync.noteScan({ kind: 'owner-unlock', profileName: person.name, biomId: person.i
     .then(function () { applyInitialFace(); }) // v63: the customer face is the default — owner surfaces detach last, once every boot render has run against the intact DOM
     .then(function () { applyRoleBoot(); }) // v67: then the role layer routes — role choice, the customer wallet, or the merchant scanner
     .then(function () { return handleBkashReturn(); }) // v71: a return from bKash's sandbox page is settled here, from the API's own execute/query answers — never from the URL parameters
-    .catch(function () {});
+    .then(function () { dropBootSplash(); }) // v75: the first coherent screen has rendered — the boot splash comes down only now, never at parse time
+    .catch(function () { dropBootSplash(); }); // v75: fail-open — a boot error must never leave the splash up (the 6 s watchdog above is the second backstop)
 })();

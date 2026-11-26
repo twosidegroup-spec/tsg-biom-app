@@ -5,6 +5,15 @@
    v64 (Seat 1 A-5): --muted is FROZEN as the lightest text
    grey permitted on tinted backgrounds — it sits at ~4.6:1 on --bg;
    any lighter grey on a tint breaks WCAG AA for normal text. */
+
+/* v75: the boot splash's pure-CSS fail-open. The splash element
+   (inline-styled in index.html) carries
+   animation:bootSplashFailOpen .45s ease 6s forwards — if no
+   script ever removes it, it fades itself out 6 s after it is
+   painted, independent of any JavaScript (CSP forbids inline
+   scripts; keyframes must live in this sheet). app.js normally
+   removes the element at boot completion, long before 6 s. */
+@keyframes bootSplashFailOpen{to{opacity:0;visibility:hidden}}
 :root{
   /* v66 House System v2 — the SINGLE token source for the app.
      Blue ramp seeded from the dashboard (tsg-biom-control):
@@ -445,10 +454,29 @@ body[data-density="compact"]{--density-pad:14px;--density-row:44px;--density-sec
   .nav button.active{color:#fff;background:rgba(255,255,255,.14)}
   .nav button.active svg{stroke:#fff}
   body.mode-owner .nav button[data-page="dashboard"]{margin-top:auto}
-  .topbar{margin-left:248px;border-radius:0}
-  .ownerbar{margin-left:248px}
-  main{margin-left:248px;margin-right:0}
-  .footer{margin-left:248px}
+  /* v76 shell offset: the 248px sidebar offset applies ONLY
+     while the sidebar is actually on screen. applyRoleChrome
+     hides #mainNav on the pre-profile role screen (customer
+     face, no role chosen — body.mode-customer.role-none); the
+     v66 rules offset the shell unconditionally, so that screen
+     rendered with a 248px dead strip on the left, the header
+     starting mid-screen and the column pushed off centre (the
+     Chairman's screenshot, 2026-11-26). Owner mode always
+     shows the nav, so mode-owner keeps the offset outright.
+     While offset, main and the footer share one centred
+     column: past sidebar + column width (248 + 1180 = 1428px)
+     the left margin grows by half the slack, so the column
+     sits in the middle of the post-sidebar space instead of
+     hugging the sidebar with dead space on the right. The
+     first margin-left declaration is the plain offset (and
+     the form the v66 shell pin reads); the max() declaration
+     overrides it wherever calc/max are supported. */
+  body:not(.role-none) .topbar, body.mode-owner .topbar{margin-left:248px;border-radius:0}
+  body:not(.role-none) .ownerbar, body.mode-owner .ownerbar{margin-left:248px}
+  body:not(.role-none) main, body.mode-owner main{margin-left:248px;margin-right:0;
+    margin-left:max(248px,calc(50vw - 466px))}
+  body:not(.role-none) .footer, body.mode-owner .footer{margin-left:248px;margin-right:0;max-width:1180px;
+    margin-left:max(248px,calc(50vw - 466px))}
 
   /* Wallet home: two-pane composition. DOM order and ids are
      unchanged; grid placement does the composition. */
@@ -482,6 +510,17 @@ body[data-density="compact"]{--density-pad:14px;--density-row:44px;--density-sec
     position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);
     width:min(560px,94vw);max-height:92vh;overflow:auto;z-index:91;
     box-shadow:var(--shadow-l2);margin:0}
+  /* v76: while the sidebar is shown, the sheets centre in the
+     post-sidebar space (viewport centre + half the sidebar
+     width), not on the raw viewport — centred on the viewport
+     they sat 124px left of the content column's centre and
+     crowded the sidebar. Same shell-state scoping as the
+     offset rules above. */
+  body:not(.role-none) #walletAdd:not(.hidden), body.mode-owner #walletAdd:not(.hidden),
+  body:not(.role-none) #walletSend:not(.hidden), body.mode-owner #walletSend:not(.hidden),
+  body:not(.role-none) #walletPay:not(.hidden), body.mode-owner #walletPay:not(.hidden),
+  body:not(.role-none) #walletScanCard:not(.hidden), body.mode-owner #walletScanCard:not(.hidden){
+    left:calc(50% + 124px)}
 
   /* Enrolment split screen: brand + how-it-works panel left, the
      existing form and camera stage right. Mobile keeps the
