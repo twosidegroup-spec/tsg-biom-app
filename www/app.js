@@ -346,7 +346,7 @@
      allowed to rest on, and the order they are judged in,
      changed. The migration step is the identity (see
      biometrics.js). */
-  var APP_DATA_VERSION = 'v72';
+  var APP_DATA_VERSION = 'v73';
   /* ---------------- v71 boot coherence + splash ------------------
      index.html stamps its build in <meta name="biom-build">.
      If the document that painted and the app.js that is running
@@ -394,13 +394,20 @@
         if (!Array.isArray(lsSnap[s])) lsSnap[s] = [];
       });
       var lsMig = B.migrateBiomData(lsSnap, storedDv, APP_DATA_VERSION);
+      /* v73 (Seat 1 F3): the version stamp advances ONLY when
+         every changed store's write-back actually landed —
+         mirroring the IDB path (migrateDbStores stamps only
+         after its writes resolve). Before v73 a swallowed
+         setItem failure (e.g. quota) still stamped, so that
+         store's conversion was silently skipped forever. */
+      var lsWriteOk = true;
       lsMig.changedStores.forEach(function (s) {
         // 'logs' rows are plain array entries in the localStorage
         // form, so a changed logs array writes back like any store.
-        try { localStorage.setItem('tsgbiom_' + s, JSON.stringify(lsMig.snapshot[s])); } catch (e) {}
+        try { localStorage.setItem('tsgbiom_' + s, JSON.stringify(lsMig.snapshot[s])); } catch (e) { lsWriteOk = false; }
       });
       dataMigratedFrom = storedDv;
-      try { localStorage.setItem(DV_KEY, APP_DATA_VERSION); } catch (e) {}
+      if (lsWriteOk) { try { localStorage.setItem(DV_KEY, APP_DATA_VERSION); } catch (e) {} }
     }
   } catch (e) { dataMigratedFrom = null; }
 
@@ -1056,6 +1063,24 @@
         return n;
       });
     }
+    /* v73 (Seat 1 F2): drop every queued NON-SCAN item for one
+       Biom ID (profile upserts and tombstones alike) and persist.
+       Profile deletion calls this in EVERY branch: a queued
+       upsert left behind by a sync-off delete would otherwise
+       flush the deleted bank back to the server when sync
+       returns. Scan items carry no bank and are untouched,
+       mirroring the queueTombstones filter. Resolves the
+       number of items removed. */
+    function purgeProfile(biomId) {
+      if (!biomId) return Promise.resolve(0);
+      return ensureLoaded().then(function () {
+        var before = queue.length;
+        queue = queue.filter(function (it) { return !(it.type !== 'scan' && it.record && it.record.biomId === biomId); });
+        var removed = before - queue.length;
+        if (removed) persist();
+        return removed;
+      });
+    }
     function pendingItems() { return queue ? queue.slice() : []; }
 
     /* The settings card's Test connection: ask the server who
@@ -1143,7 +1168,7 @@
     }
     return {
       noteScan: noteScan, noteProfile: noteProfile, flush: flush, pull: pull,
-      queueTombstones: queueTombstones, pendingItems: pendingItems,
+      queueTombstones: queueTombstones, purgeProfile: purgeProfile, pendingItems: pendingItems,
       testConnection: testConnection,
       scheduleFlush: scheduleFlush, state: state, statusText: statusText,
       settingsChanged: settingsChanged, reset: reset, ensureLoaded: ensureLoaded
@@ -1433,6 +1458,23 @@
   /* The only bKash page the app will ever navigate to: the
      sandbox hosted checkout on bKash's own sandbox host, over
      https. Anything else in a create response is refused. */
+  /* v73 (Chairman's live phone failure, 2026-11-26): when the
+     payments API relays a bKash provider refusal, its body
+     carries the provider's own statusCode + statusMessage
+     (e.g. 2049 / 'Invalid Merchant Callback URL'). The error
+     lines must surface those two fields — sanitised: ONLY
+     those fields, trimmed and length-capped, never a raw
+     response dump — instead of a generic refusal that hides
+     the real cause. Returns '' when the response carries no
+     provider fields, so callers fall back to today's generic
+     wording exactly. */
+  function bkashProviderRefusal(res) {
+    if (!res || typeof res !== 'object') return '';
+    var code = (typeof res.statusCode === 'string' || typeof res.statusCode === 'number') ? String(res.statusCode).trim().slice(0, 16) : '';
+    var msg = typeof res.statusMessage === 'string' ? res.statusMessage.trim().slice(0, 120) : '';
+    if (!code && !msg) return '';
+    return code && msg ? code + ': ' + msg : (msg || code);
+  }
   function bkashSandboxUrlOk(u) {
     try {
       var url = new URL(u);
@@ -1656,8 +1698,18 @@
         .catch(function () { return row; });
     }));
   }
+  /* v73 (Seat 1 F1): the SYNC seal path fails CLOSED. When the
+     vault is not ready there is no key to seal with, so this
+     resolves null and the sync engine queues NOTHING (its
+     pushNow already returns early on a falsy core) — an
+     unsealed bank must never be queued or posted. This is
+     deliberately NOT the DB funnel's behaviour: vaultEncryptRow
+     above still resolves the row unchanged when the vault is
+     not ready, so LOCAL on-device saves keep working exactly
+     as before; only the off-device copy is refused. The sole
+     caller of this function is the sync engine wiring. */
   Vault.encryptProfileCore = function (core) {
-    if (!Vault.ready) return Promise.resolve(core);
+    if (!Vault.ready) return Promise.resolve(null);
     return B.bankEncryptProfileCore(core, vaultDerive, Vault.kid);
   };
   /* The v61 conversion sweep: seal every still-encoded bank in
@@ -4483,7 +4535,8 @@
     var strictMoney = !!(opts && opts.strictMoney);
     var moneyGate = B.createMoneyScanGate();
     var strictFail = null; // { block: 'margin' }
-    var analysed = 0, locked = false, detFails = 0; // v67: no swapped state — the camera never swaps; detFails = this stream's own consecutive detector failures
+    var analysed = 0, locked = false, detFails = 0;
+    var handFrames = 0; // v73 (Seat 3 F4): frames a hand was READ on (poses exist only on hand frames) — the static-liveness counter, mirroring the verify stream // v67: no swapped state — the camera never swaps; detFails = this stream's own consecutive detector failures
     var lastHint = null, coded = 0;
     // v43: the latest frame's quality signals, feeding the live
     // guidance pill (B.palmGuidance) and the caller's scan session.
@@ -4750,7 +4803,7 @@
           if (control && control.onFrame) {
             try { control.onFrame({ hasHand: typeof r.openness === 'number', pose: r.pose || null, openness: lastOpen, framing: lastHint, sharpness: lastSharp, meanLuma: lastSampleB, glareFrac: lastGlare, frameComplete: r.frameComplete === true, frameIssue: r.frameIssue || null }); } catch (e) {}
           }
-          if (r.pose) { poses.push(r.pose); if (poses.length > 6) poses.shift(); }
+          if (r.pose) { handFrames++; poses.push(r.pose); if (poses.length > 6) poses.shift(); }
           var sane = !!(r.code && B.palmprintCodeSane(r.code));
           if (sane) coded++;
           if (sane && !locked) { locked = true; Snd.tick(); }
@@ -4797,6 +4850,16 @@
       // v43: the owning view went away (wallet closed, navigation)
       // — end silently with no identification and no log.
       if (control && control.cancelled) return { stopped: true, fail: 'Scan stopped.' };
+      // v73 (Seat 3 F4): detector failure is judged FIRST,
+      // mirroring the verify stream's v69 ordering. Before v73
+      // this check sat at the bottom of this loop, after the
+      // spoof/liveness/cap exits, so a dead detector ended an
+      // identification as a liveness failure or a no-usable-palm
+      // verdict instead of the honest detector message. Only
+      // the ORDER changed — no judgement value did.
+      if (detFails >= 3) {
+        return { fail: DETECTOR_FAIL_MSG + ' Nothing was identified.', detectorFailed: true };
+      }
       var sp = tracker.state();
       if (sp.spoof) return spoofOut(sp);
       // v49: a strict margin failure ends the money scan at once
@@ -4809,7 +4872,7 @@
       // v49: one candidate has a first verified frame but not yet
       // its confirming second — say so while the scan runs on.
       if (strictMoney && !win && lv.pass && statusEl && candidates.some(function (p) { return moneyGate.verifiedFrames(p.id) === 1; })) setStatus('Palm matched — money authorisation needs the match confirmed on a second frame. Keep the palm there…');
-      if (lv.verdict === 'static' && analysed >= 6) return livenessFailOut(lv);
+      if (lv.verdict === 'static' && handFrames >= 6) return livenessFailOut(lv); // v73 (Seat 3 F4): hand-frames only, as in the verify stream — handless frames carry no pose evidence
       if (lv.verdict === 'erratic') return livenessFailOut(lv);
       if (analysed >= MAXF || Date.now() > deadline) {
         if (prevMatch) {
@@ -4825,10 +4888,9 @@
       // v67 (Chairman's order, 2026-11-26): the auto camera
       // swap is DELETED here too — same law as the verify
       // stream: the camera never changes on its own, and a
-      // detector that cannot run is reported honestly.
-      if (detFails >= 3) {
-        return { fail: DETECTOR_FAIL_MSG + ' Nothing was identified.', detectorFailed: true };
-      }
+      // detector that cannot run is reported honestly (the
+      // detector-failure exit itself sits at the TOP of this
+      // loop since v73 — Seat 3 F4).
       if (statusEl) {
         var seenHandNow = frames.some(function (x) { return typeof x.openness === 'number'; });
         // v43: the live guidance pill — one concise line mapped
@@ -6367,10 +6429,18 @@
   function authoriseSend() {
     var me = walletSessionPerson();
     if (!me || !sendDraft.receiverId) return;
+    /* v73 (Seat 3 F2): snapshot the draft NOW, at authorise
+       entry. The Send card stays live during the scan and its
+       Continue handler overwrites sendDraft, so reading the
+       draft at apply time (as before v73) could move a
+       different amount than the one the prompt below names.
+       The snapshot — and only the snapshot — is used through
+       the prompt and the apply. */
+    var sendSnap = { receiverId: sendDraft.receiverId, receiverName: sendDraft.receiverName, amount: sendDraft.amount };
     showWalletScan({
       title: 'Send money — authorise with your own palm',
       syncKind: 'money-auth', // v56 Scan Sync kind for this context
-      prompt: 'Scan YOUR OWN palm to send ' + fmtBDT(sendDraft.amount) + ' of demo money to ' + sendDraft.receiverName + ' (' + sendDraft.receiverId + '). Only your palm can authorise a send from your wallet.',
+      prompt: 'Scan YOUR OWN palm to send ' + fmtBDT(sendSnap.amount) + ' of demo money to ' + sendSnap.receiverName + ' (' + sendSnap.receiverId + '). Only your palm can authorise a send from your wallet.',
       run: function () {
         return DB.all('people').then(function (people) {
           var freshSender = people.find(function (p) { return p.id === me.id; }) || me;
@@ -6378,7 +6448,7 @@
             var auth = authFromVerify(out, freshSender.id);
             if (!auth.verified) { walletScanFailed(out); return; }
             return DB.nextSeq('demoSeq', 1).then(function (seq) {
-              var res = B.walletApplySend(people, freshSender.id, sendDraft.receiverId, sendDraft.amount, auth, Date.now(), B.walletDemoRef(seq));
+              var res = B.walletApplySend(people, freshSender.id, sendSnap.receiverId, sendSnap.amount, auth, Date.now(), B.walletDemoRef(seq));
               if (!res.ok) { $('wScanMsg').innerHTML = '<div class="error">' + esc(res.error) + '</div>'; $('wScanRun').disabled = false; return; }
               // The transfer was computed atomically from the one
               // snapshot above; persist both updated records.
@@ -6392,7 +6462,7 @@
                 Inbox.add(res.sender.id, Inbox.event('send', { amount: res.senderEntry.amount, balanceAfter: res.senderEntry.balanceAfter, ref: res.senderEntry.ref, counterpartyName: res.receiver.name, detail: 'To ' + res.receiver.name + ' (' + res.receiver.id + ') · Demo money' }));
                 Inbox.add(res.receiver.id, Inbox.event('receive', { amount: res.receiverEntry.amount, balanceAfter: res.receiverEntry.balanceAfter, ref: res.receiverEntry.ref, counterpartyName: freshSender.name, detail: 'From ' + freshSender.name + ' (' + freshSender.id + ') · Demo money' }));
                 Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: freshSender.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
-                var sentAmount = sendDraft.amount, sentTo = sendDraft.receiverName, sentToId = sendDraft.receiverId, sentRef = res.senderEntry.ref, newBal = res.senderEntry.balanceAfter;
+                var sentAmount = sendSnap.amount, sentTo = sendSnap.receiverName, sentToId = sendSnap.receiverId, sentRef = res.senderEntry.ref, newBal = res.senderEntry.balanceAfter;
                 sendDraft = { amount: null, receiverId: null, receiverName: null };
                 balanceFlashPending = true;
                 hideWalletScan();
@@ -6600,6 +6670,12 @@
      bKash's own sandbox page — the ceremony (wallet, OTP, PIN)
      is bKash's; this app never sees it. */
   function startSandboxPay(fresh, store, amount) {
+    /* v73 (Seat 3 F1): bind the authorised amount + store NOW,
+       and lock the fields behind the interstitial (defence in
+       depth — the binding is the real fix). */
+    sandboxAttempt = { amount: amount, store: store, personId: fresh.id };
+    $('wPayAmount').disabled = true;
+    $('wPayStore').disabled = true;
     hideWalletScan();
     $('walletHome').classList.add('hidden');
     $('walletPay').classList.remove('hidden');
@@ -6613,6 +6689,9 @@
   }
   function closeSandboxInterstitial(note) {
     sandboxInterstitialOpen = false;
+    sandboxAttempt = null;
+    $('wPayAmount').disabled = false;
+    $('wPayStore').disabled = false;
     $('wPaySandbox').classList.add('hidden');
     if (note) $('wPayMsg').innerHTML = '<div class="notice">' + esc(note) + '</div>';
     checkPendingSwReload();
@@ -6622,18 +6701,27 @@
   });
   $('wPaySandboxGo').addEventListener('click', function () {
     var fresh = walletSessionPerson();
-    var store = $('wPayStore').value;
-    var amt = B.walletValidateAmount($('wPayAmount').value);
-    if (!fresh || fresh.walletProvider !== 'bKash' || !store || !amt.ok) {
+    /* v73 (Seat 3 F1): use ONLY the values bound at palm
+       authorisation time. Before v73 this handler re-read the
+       still-editable amount/store fields, so editing them
+       while the interstitial was up created — and recorded in
+       bkashPending — a different payment than the one the palm
+       authorised, defeating the per-Tx limit that was checked
+       against the authorised amount. The DOM fields are never
+       read here any more. */
+    var bound = sandboxAttempt;
+    if (!fresh || fresh.walletProvider !== 'bKash' || !bound || bound.personId !== fresh.id || !bound.store || !(Number(bound.amount) > 0)) {
       closeSandboxInterstitial('The payment details changed — nothing was created. Reopen Biom Pay to start again.');
       return;
     }
-    var amount = amt.amount;
+    var store = bound.store;
+    var amount = bound.amount;
     $('wPaySandboxGo').disabled = true;
     $('wPaySandboxCancel').disabled = true;
     BkashRail.create({ biomId: fresh.id, amount: amount, payerReference: fresh.walletNumber }).then(function (res) {
       if (!res || res.mode !== 'sandbox' || res.ok !== true || !res.paymentID || !bkashSandboxUrlOk(res.bkashURL)) {
-        throw new Error(res && res.error ? res.error : 'the sandbox refused to create the payment');
+        var refusal = bkashProviderRefusal(res);
+        throw new Error(refusal || (res && res.error ? res.error : 'the sandbox refused to create the payment'));
       }
       /* The pending record is persisted BEFORE the redirect:
          the return is matched against it, and it is cleared
@@ -6692,7 +6780,24 @@
         return BkashRail.query(paymentID).then(function (q) { return { ex: ex, q: q }; });
       }).then(function (both) {
         var ex = both.ex, q = both.q;
-        if (!ex || ex.mode !== 'sandbox' || !q || q.mode !== 'sandbox') throw new Error('the rail answered an unexpected mode');
+        /* v73 micro-fix (combined re-review, provider-refusal
+           residual): a GRANT failure on execute/query comes back
+           in the API's bkashFail shape — {error, statusCode,
+           statusMessage} with NO mode field — so the mode check
+           below stopped it before the refusal further down was
+           ever read, and the payer saw only the generic wording.
+           The provider refusal is therefore extracted FIRST:
+           when the mode check fails AND a refusal is present,
+           the refusal (provider code + message) is what the
+           failure reports. With no refusal fields the mode check
+           behaves exactly as before. Display ordering only —
+           the mode predicate itself and every Completed leg
+           below are untouched. */
+        var refusal0 = bkashProviderRefusal(q) || bkashProviderRefusal(ex);
+        if (!ex || ex.mode !== 'sandbox' || !q || q.mode !== 'sandbox') {
+          if (refusal0) throw new Error('the payment provider refused the request — bKash answered: ' + refusal0);
+          throw new Error('the rail answered an unexpected mode');
+        }
         /* v71 Seat 2 re-review change 6 + Seat 3 re-review
            change 4: "Completed" is a checked predicate, not
            one trusted field. Both relays must report success,
@@ -6703,7 +6808,7 @@
         if ((ex.paymentID && ex.paymentID !== paymentID) || (q.paymentID && q.paymentID !== paymentID)) {
           throw new Error('the rail answered for a different payment than the one started on this device');
         }
-        var relayedInvoice = q.merchantInvoice || ex.merchantInvoice || '';
+        var relayedInvoice = q.merchantInvoiceNumber || ex.merchantInvoiceNumber || q.merchantInvoice || ex.merchantInvoice || ''; // v73 (Seat 3 F3): bKash's real field name first — the leg was dead against the real response shape
         if (relayedInvoice && pending.invoice && relayedInvoice !== pending.invoice) {
           throw new Error('the rail answered for a different invoice than the one created on this device');
         }
@@ -6717,12 +6822,26 @@
         }
         var finalStatus = q.transactionStatus || ex.transactionStatus || '';
         if (ex.ok !== true || q.ok !== true || finalStatus !== 'Completed' || q.verificationStatus !== 'Complete') {
+          var refusal2 = bkashProviderRefusal(q) || bkashProviderRefusal(ex);
           return DB.setMeta('bkashPending', null).then(function () {
-            bkashReturnMessage('<div class="error">bKash Sandbox payment did not complete (status: ' + esc(finalStatus || 'unknown') + '). No money moved, nothing was recorded and no points were awarded.</div>');
+            bkashReturnMessage('<div class="error">bKash Sandbox payment did not complete (status: ' + esc(finalStatus || 'unknown') + ')' + (refusal2 ? ' — bKash answered: ' + esc(refusal2) : '') + '. No money moved, nothing was recorded and no points were awarded.</div>');
             return null;
           });
         }
         var executedAmount = exAmt !== null ? exAmt : qAmt;
+        /* v73 hardening (Seat 1 residual): the executed amount
+           must equal the amount this device authorised and
+           stored in the pending record — compared DIRECTLY,
+           not only indirectly via paymentID + invoice. A
+           mismatch is refused here, before any record: nothing
+           is recorded as Completed and no points are awarded;
+           the payer is told the two amounts plainly. */
+        if (executedAmount === null || executedAmount !== Number(pending.amount)) {
+          return DB.setMeta('bkashPending', null).then(function () {
+            bkashReturnMessage('<div class="error">bKash Sandbox executed ' + fmtBDT(Number(executedAmount || 0)) + ' but this device authorised ' + fmtBDT(Number(pending.amount)) + ' — the amounts do not match, so the payment is NOT recorded as completed here and no points were awarded. Check the bKash sandbox result before paying again.</div>');
+            return null;
+          });
+        }
         var trxID = ex.trxID || q.trxID || '';
         return Promise.all([DB.all('people'), DB.all('transactions')]).then(function (rr) {
           var person = rr[0].find(function (p) { return p.id === pending.personId; }) || null;
@@ -6759,11 +6878,11 @@
           return DB.put('transactions', rec).then(function () {
             /* Points follow the v59 D6 rule — credited only
                now, from the EXECUTED amount the API returned.
-               If bKash executed a different amount than the
-               one authorised here, nothing is credited and
-               the discrepancy is stated, not hidden. */
-            var discrepancy = executedAmount !== Number(pending.amount);
-            var pts = discrepancy ? 0 : Math.floor(executedAmount / 10);
+               The v73 direct comparison above has already
+               refused any executed amount that differs from
+               the authorised one, so this amount IS the
+               authorised amount. */
+            var pts = Math.floor(executedAmount / 10);
             if (pts > 0) person.loyaltyPoints = (person.loyaltyPoints || 0) + pts;
             return DB.put('people', person).then(function () {
               Inbox.add(person.id, Inbox.event('bkash', {
@@ -6780,7 +6899,6 @@
                   bkashReturnMessage('<div class="success">bKash Sandbox — TEST MODE — no real money moved.<br>Payment of ' + fmtBDT(executedAmount) + ' at ' + esc(pending.store) + ' completed in the bKash sandbox.' +
                     (trxID ? '<br>bKash Sandbox TrxID: ' + esc(trxID) : '<br>bKash did not return a TrxID for this payment — the completion is recorded from its Execute and Query answers.') +
                     (pts > 0 ? '<br>Palm Loyalty: +' + pts + ' points awarded — balance ' + Number(person.loyaltyPoints || 0) + ' points.' : '') +
-                    (discrepancy ? '<br><b>Note:</b> bKash executed ' + fmtBDT(executedAmount) + ' but this device authorised ' + fmtBDT(Number(pending.amount)) + ' — no points were awarded for this payment.' : '') +
                     '</div>');
                   Snd.chime();
                 });
@@ -7703,9 +7821,18 @@
         if (!person) return { deleted: false, reason: 'not-found' };
         var banked = isBanked(person) ? [person] : [];
         var syncActive = !!deps.syncActive();
-        var stage = Promise.resolve();
+        /* v73 (Seat 1 F2): FIRST purge any queued non-scan
+           outbox items for this Biom ID, in EVERY branch. A
+           profile upsert queued while sync was on (e.g. the
+           server unreachable) must not survive a sync-off
+           delete: when sync later returned, the flush would
+           POST the deleted bank back to the server and no
+           tombstone would ever correct it. The purge runs
+           BEFORE the tombstone branch below, so the tombstone
+           queued there is never purged by it. */
+        var stage = deps.purgeProfile ? deps.purgeProfile(personId) : Promise.resolve();
         if (syncActive && banked.length) {
-          stage = deps.queueTombstones(banked).then(function () { return deps.flush(); });
+          stage = stage.then(function () { return deps.queueTombstones(banked); }).then(function () { return deps.flush(); });
         }
         return stage.then(function () {
           var pending = (syncActive && banked.length) ? deps.pendingTombstones(personId) : [];
@@ -7729,6 +7856,7 @@
     },
     syncActive: function () { var st = Sync.state(); return !!(st.on && st.configured); },
     queueTombstones: function (people) { return Sync.queueTombstones(people); },
+    purgeProfile: function (personId) { return Sync.purgeProfile(personId); },
     flush: function () { return Sync.flush(); },
     pendingTombstones: function (personId) {
       return Sync.pendingItems().filter(function (it) {
@@ -8693,6 +8821,11 @@
      an authorised payment is waiting on the user's tap, and a
      reload there would silently discard the authorisation. */
   var sandboxInterstitialOpen = false;
+  /* v73 (Seat 3 F1): the palm-authorised sandbox attempt —
+     amount + store bound by startSandboxPay at authorisation
+     time. The Continue handler uses ONLY this binding, never
+     the still-editable DOM fields behind the interstitial. */
+  var sandboxAttempt = null;
   function swFlowBusy() { return palmScanBusy || moneyCommitBusy || sandboxInterstitialOpen; }
   function checkPendingSwReload() {
     if (swReloadPending && !swFlowBusy()) {
