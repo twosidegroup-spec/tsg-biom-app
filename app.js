@@ -398,8 +398,34 @@
      updateViaCache 'none'. No bar, model pin, guard,
      strict-money rule, encryption, signing, sync or copy
      truth changes. The migration step is a pure adoption
-     (see biometrics.js). */
-  var APP_DATA_VERSION = 'v79';
+     (see biometrics.js).
+
+     v81 (2026-11-27) is the SIMULATION / RESEARCH MODE release
+     (the Chairman's own design, given the same day: instead of
+     a staged capture chore, collect real scan photos from real
+     use — "when they register and scan their palm, take the
+     data from there"). The app gains an opt-in research mode:
+     a bilingual consent notice (Bangla + English) shown before
+     the first scan surface while the choice is undecided, OFF
+     by default, decided in one tap and changeable in Settings.
+     Only for users who explicitly agree does the scan pipeline
+     keep a bounded copy (at most 3, downscaled) of the frames
+     it itself consumed, tagged with the scan kind, the result
+     and a device class, linked ONLY to an anonymous research
+     ID generated on this device — never a name, phone number
+     or Biom ID. Bundles ride the sync outbox as their own item
+     type to the API's research endpoint, which refuses any
+     bundle without the consent flag; they land in a research
+     store kept separate from banks and scan records. Withdrawal
+     in Settings stops collection at once and deletes queued
+     bundles on device; frames already sent are deletable by
+     research ID through the API's admin route. A user who
+     declines gets exactly the v80 app: with consent off, not
+     even a canvas copy is made. No bar, model pin, guard,
+     strict-money rule, encryption, signing or copy truth
+     changes. The migration step is a pure adoption (see
+     biometrics.js). */
+  var APP_DATA_VERSION = 'v81';
   /* ---------------- boot splash lifecycle (v71, rebuilt v75) ------
      index.html stamps its build in <meta name="biom-build"> and
      paints a neutral boot splash before any app code runs.
@@ -1035,6 +1061,70 @@
       return true;
     }
 
+    /* ---------- v81: research frame bundles ---------- */
+    /* Queue one research frame bundle (the simulation/research
+       mode). The bundle arrives fully shaped by the Research
+       module — consent proven on device, frames already encoded
+       — and the engine stamps the same envelope a scan record
+       carries and queues it as its OWN item type, so it rides
+       the same signed flush to its own endpoint
+       (/api/research/frames) and can never be mistaken for a
+       scan or a bank. Bounds: at most RESEARCH_QUEUE_MAX bundles
+       wait in the outbox; beyond that the OLDEST research bundle
+       is dropped — research data is plentiful by design, and a
+       stale backlog must never crowd out scans or banks, nor
+       grow the persisted outbox without limit. A bundle whose
+       consent flag is not exactly true is refused here too
+       (defence in depth behind the module and the server). */
+    var RESEARCH_QUEUE_MAX = 24;
+    function noteResearch(bundle) {
+      if (!active()) return false;
+      if (!bundle || bundle.consent !== true) return false;
+      if (typeof bundle.researchId !== 'string' || !bundle.researchId) return false;
+      if (!Array.isArray(bundle.frames) || !bundle.frames.length || bundle.frames.length > 3) return false;
+      var rec = fillRecord({
+        researchId: bundle.researchId,
+        consent: true,
+        kind: typeof bundle.kind === 'string' ? bundle.kind : '',
+        result: typeof bundle.result === 'string' ? bundle.result : '',
+        fieldTest: bundle.fieldTest === true,
+        deviceClass: typeof bundle.deviceClass === 'string' ? bundle.deviceClass : '',
+        frames: bundle.frames
+      }, typeof bundle.ts === 'number' ? bundle.ts : deps.now());
+      /* v81 (seat-fix): fillRecord stamps the device's
+         human-given label on sync records; a label can carry a
+         name or a phone number, so it never rides a research
+         bundle (the server shape drops the field as well —
+         defence in depth on both sides). */
+      delete rec.deviceLabel;
+      ensureLoaded().then(function () {
+        var held = queue.filter(function (it) { return it.type === 'research'; });
+        while (held.length >= RESEARCH_QUEUE_MAX) {
+          var oldest = held.shift();
+          var ix = queue.indexOf(oldest);
+          if (ix !== -1) queue.splice(ix, 1);
+        }
+        queue.push({ type: 'research', record: rec });
+        persist();
+        scheduleFlush();
+      });
+      return true;
+    }
+    /* v81: withdrawal — drop every queued research bundle and
+       persist, resolving the number removed. Frames already
+       sent are deleted server-side by researchId (the API's
+       admin research-delete route); this clears what has not
+       left the device. */
+    function dropResearch() {
+      return ensureLoaded().then(function () {
+        var before = queue.length;
+        queue = queue.filter(function (it) { return it.type !== 'research'; });
+        var removed = before - queue.length;
+        if (removed) persist();
+        return removed;
+      });
+    }
+
     /* ---------- v62: versions, bootstrap, signing ---------- */
     function ensureVersions() {
       if (!deps.loadVersions) return Promise.resolve(null);
@@ -1100,7 +1190,7 @@
         var headers = { 'Content-Type': 'application/json', 'x-device-id': p.deviceId, 'x-device-key': p.deviceSecret };
         if (!sign || !deps.signRequest) return Promise.resolve({ headers: headers, seq: null });
         var seq = (deps.getSeq ? deps.getSeq() : 0) + 1;
-        var path = item.type === 'scan' ? '/api/scans' : '/api/profiles';
+        var path = item.type === 'scan' ? '/api/scans' : item.type === 'research' ? '/api/research/frames' : '/api/profiles';
         return Promise.resolve()
           .then(function () { return deps.signRequest(p.deviceSecret, p.deviceId, seq, 'POST', path, bodyObj); })
           .then(function (sig) {
@@ -1158,8 +1248,19 @@
         var deferredTombstones = [];
         while (queue.length) {
           var item = queue[0];
+          if (item.type === 'research' && deps.researchConsentOn && !deps.researchConsentOn()) {
+            /* v81 (seat-fix): consent re-checked at SEND time.
+               A withdrawal that landed while this bundle sat in
+               the outbox (or while an earlier item was in
+               flight) drops it here — deleted, never sent — so
+               the withdrawal promise holds regardless of the
+               dropResearch race. */
+            queue.shift();
+            await persist();
+            continue;
+          }
           var isProfile = item.type === 'profile' || item.type === 'tombstone';
-          var url = base + (isProfile ? '/api/profiles' : '/api/scans');
+          var url = base + (item.type === 'research' ? '/api/research/frames' : isProfile ? '/api/profiles' : '/api/scans');
           var bodyObj = item.record;
           if (isProfile && deps.loadVersions) {
             bodyObj = Object.assign({}, item.record, { baseVersion: knownVersion(item.record.biomId) });
@@ -1209,6 +1310,19 @@
             if (errBody && errBody.deleted) tombstonedIds[item.record.biomId] = true;
             lastError = 'Bank changed on another device — re-checking before update';
             if (deps.onProfileConflict) { try { deps.onProfileConflict(item.record.biomId, errBody); } catch (e) {} }
+            await persist();
+            continue;
+          }
+          if (item.type === 'research' && res && (res.status === 400 || res.status === 409 || res.status === 413)) {
+            /* v81: the server refused this bundle on its merits
+               (no consent flag, malformed, conflicting id,
+               oversized) — it can never succeed, so it is dropped
+               rather than wedging the queue behind it forever.
+               The sequence WAS consumed (auth passed; the refusal
+               is past auth, exactly like the 409 path above). */
+            commitSeq(auth.seq);
+            queue.shift();
+            lastError = 'research upload refused by the server — bundle dropped';
             await persist();
             continue;
           }
@@ -1523,6 +1637,7 @@
     }
     return {
       noteScan: noteScan, noteProfile: noteProfile, flush: flush, pull: pull,
+      noteResearch: noteResearch, dropResearch: dropResearch,
       queueTombstones: queueTombstones, purgeProfile: purgeProfile, pendingItems: pendingItems,
       testConnection: testConnection,
       scheduleFlush: scheduleFlush, state: state, statusText: statusText,
@@ -1533,6 +1648,116 @@
   }
 
   /* SYNC-ENGINE-END */
+
+  /* RESEARCH-ENGINE-BEGIN — createBiomResearch is a pure factory
+     over its deps, like the sync engine: the consent-gated frame
+     buffer behind the v81 simulation/research mode. Its rules
+     are the release's privacy spine, and they are all here:
+
+     - NOTHING is captured unless deps.getConsent() reports the
+       user's affirmative opt-in at the moment of the tap. With
+       consent off, tapFrame is a strict no-op — not even a
+       canvas copy is made, so a non-consented user's scan path
+       is exactly the pre-v81 path.
+     - The buffer holds at most MAX_FRAMES downscaled copies of
+       frames the scan pipeline itself consumed (tapped by the
+       enrolment burst and the verify/identify stream steps at
+       the moment of analysis), spaced at least MIN_GAP_MS
+       apart, and expires after BUFFER_TTL_MS so one scan's
+       frames can never ride a later scan's record.
+     - attach() runs when a scan record is noted: it packages
+       the buffered frames against THAT scan's kind and result,
+       clears the buffer either way, and queues the bundle via
+       deps.queueBundle — unless the account is blocked (a
+       blocked user's frames are not collected) or the record
+       itself is a blocked verdict.
+     - Encoding (JPEG, MAX_DIM cap) happens in attach — after
+       the scan's verdict, on the fire-and-forget noteScan
+       path — never inside the scan loop. The only in-loop
+       cost is the bounded canvas copy itself, at most
+       MAX_FRAMES times per scan. */
+  function createBiomResearch(deps) {
+    var MAX_FRAMES = 3;
+    var MIN_GAP_MS = 250;
+    var BUFFER_TTL_MS = 45000;
+    var MAX_DIM = 480;
+    var JPEG_QUALITY = 0.72;
+    var buffer = [];
+    var lastTapTs = 0;
+    var bufferStartTs = 0;
+
+    function consentOn() {
+      try { return deps.getConsent() === 'on'; } catch (e) { return false; }
+    }
+    function clearBuffer() { buffer = []; lastTapTs = 0; bufferStartTs = 0; }
+
+    function tapFrame(src) {
+      if (!consentOn()) return false;
+      if (!src || !src.width || !src.height) return false;
+      var now = deps.now();
+      if (buffer.length && now - bufferStartTs > BUFFER_TTL_MS) clearBuffer();
+      if (buffer.length >= MAX_FRAMES) return false;
+      if (buffer.length && now - lastTapTs < MIN_GAP_MS) return false;
+      var scale = Math.min(1, MAX_DIM / Math.max(src.width, src.height));
+      var c = null;
+      try {
+        c = deps.makeCanvas(Math.max(1, Math.round(src.width * scale)), Math.max(1, Math.round(src.height * scale)));
+        if (!c) return false;
+        c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+      } catch (e) { return false; }
+      if (!buffer.length) bufferStartTs = now;
+      buffer.push(c);
+      lastTapTs = now;
+      return true;
+    }
+
+    function attach(fields) {
+      var frames = buffer;
+      var stale = buffer.length > 0 && (deps.now() - bufferStartTs > BUFFER_TTL_MS);
+      clearBuffer();
+      if (stale) return false;
+      if (!consentOn()) return false;
+      if (!frames.length) return false;
+      if (!fields || typeof fields.kind !== 'string' || !fields.kind) return false;
+      try { if (deps.isBlocked && deps.isBlocked()) return false; } catch (e) { return false; }
+      if (typeof fields.result === 'string' && /blocked/i.test(fields.result)) return false;
+      /* v81 (seat-fix): the SUBJECT rule — consent is the
+         device user's own, so only the device user's OWN palm
+         is ever collected. deps.subjectAllowed decides per
+         scan (own-session scans and self-registration pass;
+         a customer scanned at a terminal, an identified third
+         party, a field-test volunteer do not). Absent the dep
+         the module fails CLOSED. */
+      try { if (!deps.subjectAllowed || !deps.subjectAllowed(fields)) return false; } catch (e) { return false; }
+      var encoded = [];
+      for (var i = 0; i < frames.length; i++) {
+        try {
+          var url = frames[i].toDataURL('image/jpeg', JPEG_QUALITY);
+          if (typeof url === 'string' && url.indexOf('data:image/jpeg;base64,') === 0) {
+            encoded.push({ data: url, w: frames[i].width, h: frames[i].height });
+          }
+        } catch (e) {}
+      }
+      if (!encoded.length) return false;
+      return deps.queueBundle({
+        researchId: deps.getResearchId(),
+        consent: true,
+        kind: fields.kind,
+        result: typeof fields.result === 'string' ? fields.result : '',
+        fieldTest: fields.fieldTest === true,
+        deviceClass: deps.deviceClass(),
+        ts: deps.now(),
+        frames: encoded
+      });
+    }
+
+    function pendingFrames() { return buffer.length; }
+    return {
+      tapFrame: tapFrame, attach: attach, clearBuffer: clearBuffer,
+      pendingFrames: pendingFrames, consentOn: consentOn
+    };
+  }
+  /* RESEARCH-ENGINE-END */
 
   /* SYNC-SIGNER-BEGIN — the app-side request signer (v62, B4).
      Must produce byte-identical signatures to the server's
@@ -1620,6 +1845,12 @@
        A merchant terminal pulling summaries for every customer
        must never latch a stranger's block as its own. */
     ownBiomId: function () { var me = walletSessionPerson(); return me ? me.id : null; },
+    /* v81 (seat-fix): the sync engine re-checks research
+       consent at SEND time through this dep — a withdrawal
+       that lands while a bundle is queued or in flight drops
+       it in the flush loop, so nothing leaves the device after
+       the user was told collection stopped. */
+    researchConsentOn: function () { return researchConsentState() === 'on'; },
     getPrefs: function () {
       return {
         on: syncPrefGet('biomSyncOn') !== '0',
@@ -1671,6 +1902,121 @@
     onStatus: function () { renderSyncStatus(); },
     encryptProfileCore: function (core) { return Vault.encryptProfileCore(core); }
   });
+
+  /* ---------------- v81: simulation / research mode ----------------
+     The Chairman's design (2026-11-27): real scan photos from
+     real use, collected only with the user's explicit opt-in,
+     so the TSG own detector can be judged on real data. The
+     consent state is a device pref in the sync-pref discipline:
+     biomResearchConsent holds '1' (opted in) or '0' (declined /
+     withdrawn); absent means undecided, and undecided is OFF.
+     The anonymous research ID is generated once, on first
+     opt-in, and is the only link a frame bundle ever carries. */
+  function researchConsentState() {
+    var v = syncPrefGet('biomResearchConsent');
+    return v === '1' ? 'on' : v === '0' ? 'off' : 'unset';
+  }
+  function researchDeviceClass() {
+    /* v81 (seat-fix): platform + form factor ONLY — never the
+       handset model. The value is a closed enum the server
+       validates; anything more specific is a device identifier
+       the research dataset does not need. */
+    var ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+    var cls = /iPad|Tablet/i.test(ua) || (/Android/i.test(ua) && !/Mobile/i.test(ua)) ? 'tablet'
+      : /Mobi|iPhone|Android/i.test(ua) ? 'phone' : 'desktop';
+    var os = /Android/i.test(ua) ? 'android' : /iPhone|iPad|iOS/i.test(ua) ? 'ios'
+      : /Windows/i.test(ua) ? 'windows' : /Mac/i.test(ua) ? 'mac' : 'other';
+    return os + '-' + cls;
+  }
+  var Research = createBiomResearch({
+    getConsent: function () { return researchConsentState(); },
+    getResearchId: function () { return syncPrefGet('biomResearchId'); },
+    queueBundle: function (b) { return Sync.noteResearch(b); },
+    isBlocked: function () { var s = Sync.state(); return !!(s && s.blocked); },
+    subjectAllowed: function (fields) {
+      /* v81 (seat-fix): whose palm is this scan of?
+         - enrolment: the registrant's. Collected only in the
+           customer face (self-registration on the user's own
+           device); in the owner/merchant face an enrolment is
+           staff registering someone else — never collected.
+         - every other kind: collected only when the scan's
+           subject is the person signed in on this device, so a
+           customer at a merchant terminal, an identified third
+           party or a field-test volunteer is never collected
+           under the operator's consent. */
+      if (fields.kind === 'enrol') {
+        return !FaceMode.isOwner() && typeof fields.biomId === 'string' && !!fields.biomId;
+      }
+      var me = walletSessionPerson();
+      return !!me && typeof fields.biomId === 'string' && fields.biomId === me.id;
+    },
+    deviceClass: researchDeviceClass,
+    makeCanvas: function (w, h) {
+      var c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      return c;
+    },
+    now: function () { return Date.now(); }
+  });
+  /* Every scan record the app notes also closes the research
+     buffer for that scan: the wrapper runs the original
+     noteScan first (the record's behaviour is unchanged in
+     every state) and then lets the Research module package any
+     tapped frames against it. With consent off the module is a
+     strict no-op. */
+  var noteScanUnwrapped = Sync.noteScan;
+  Sync.noteScan = function (fields) {
+    var r = noteScanUnwrapped(fields);
+    try { Research.attach(fields); } catch (e) {}
+    return r;
+  };
+  function researchSetConsent(on) {
+    if (on) {
+      /* v81 (seat-fix): re-opting in after a withdrawal mints a
+         FRESH research id — the withdrawn id's frames are
+         deleted on request, and new frames must never re-link
+         to it. A first decision mints one if none exists. */
+      if (researchConsentState() === 'off' || !syncPrefGet('biomResearchId')) {
+        syncPrefSet('biomResearchId', 'res-' + syncUuid().replace(/[^A-Za-z0-9]/g, '').slice(0, 24));
+      }
+      syncPrefSet('biomResearchConsent', '1');
+    } else {
+      syncPrefSet('biomResearchConsent', '0');
+      Research.clearBuffer();
+      Sync.dropResearch();
+    }
+    hideResearchConsent();
+    renderResearchCards();
+  }
+  function renderResearchCards() {
+    var state = researchConsentState();
+    var queued = 0;
+    try {
+      queued = Sync.pendingItems().filter(function (it) { return it.type === 'research'; }).length;
+    } catch (e) {}
+    var status = state === 'on'
+      ? 'On — scan photos are being collected for detector research.' + (queued ? ' ' + queued + ' bundle' + (queued === 1 ? '' : 's') + ' waiting to upload on this device.' : '')
+      : state === 'off' ? 'Off — no scan photos are collected.'
+      : 'Not decided — no scan photos are collected until you agree.';
+    var rid = syncPrefGet('biomResearchId');
+    [['researchConsentToggle', 'researchStatus', 'researchIdLine'],
+     ['researchConsentToggle2', 'researchStatus2', 'researchIdLine2']].forEach(function (ids) {
+      var t = $(ids[0]);
+      if (t) t.checked = state === 'on';
+      var s = $(ids[1]);
+      if (s) s.textContent = status;
+      var r = $(ids[2]);
+      if (r) r.textContent = rid || 'Created when you switch research mode on';
+    });
+  }
+  function showResearchConsent() {
+    var el = $('researchConsent');
+    if (el) el.classList.remove('hidden');
+  }
+  function hideResearchConsent() {
+    var el = $('researchConsent');
+    if (el) el.classList.add('hidden');
+  }
   /* v78: the money-moment profile emit. Add Money, Send Money
      and Biom Pay change the WALLET, not the palm bank, so the
      ordinary bank emits never fire for them — and until v78 the
@@ -1894,6 +2240,7 @@
     if ($('syncLabel')) $('syncLabel').value = syncPrefGet('biomSyncLabel');
     if ($('syncOn')) $('syncOn').checked = syncPrefGet('biomSyncOn') !== '0';
     renderSyncStatus();
+    renderResearchCards();
   }
   function wireSyncSettings() {
     var save = $('syncSaveBtn'), nowBtn = $('syncNowBtn'), testBtn = $('syncTestBtn');
@@ -4299,7 +4646,7 @@
         var finish = function () { if (doneFlag) return; doneFlag = true; clearInterval(iv); setRing(null); resolve(frames); };
         var iv = setInterval(function () {
           var f = grabVideoFrame(video);
-          if (f) frames.push(f);
+          if (f) { frames.push(f); Research.tapFrame(f); }
           setRing((Date.now() - started) / B.PALMPRINT_BURST_MS);
           if (frames.length >= B.PALMPRINT_BURST_MAX_FRAMES) finish();
         }, 55);
@@ -4597,6 +4944,44 @@
     }
 
     function finish(out) { return out; }
+    /* v80 (Gap 1): the argmax companions of the two impostor-max
+       functions below — same candidate filters, same scoring,
+       same cost; they answer WHO the best other-identity match
+       was, not only how high it scored. The denied path uses
+       them so the scan's sync record can carry the cross-match
+       evidence (biometrics.js applies the reporting band); the
+       win path keeps using the scalar maxima exactly as before. */
+    function impostorTopFor(rois, probeHand) {
+      var others = (people || []).filter(function (p) {
+        return p.id !== person.id && B.palmprintProfileSane(p.palmProfile);
+      });
+      if (!others.length) return Promise.resolve(null);
+      return Match.verifyRoisMulti(others.map(function (p) { return p.palmProfile; }), rois, { probeHand: probeHand || null }).then(function (results) {
+        var top = null;
+        (results || []).forEach(function (ro, i) {
+          var s = ro && typeof ro.similarity === 'number' ? ro.similarity : null;
+          if (s !== null && (top === null || s > top.score)) top = { id: others[i].id, score: s };
+        });
+        return top;
+      }).catch(function () { return null; });
+    }
+    function neuralImpostorTopFor(rois, probeHand) {
+      var others = (people || []).filter(function (p) {
+        return p.id !== person.id && B.palmnetProfileSane(p.palmProfile) && !B.handGateBlocks(probeHand, B.palmProfileHand(p.palmProfile));
+      });
+      if (!others.length || !rois || !rois.length) return Promise.resolve(null);
+      return Promise.all(rois.map(function (roi) { return PalmNet.embedPair(roi); })).then(function (pairs) {
+        var probes = [];
+        pairs.forEach(function (pr) { if (pr) pr.forEach(function (e) { if (e) probes.push(e); }); });
+        if (!probes.length) return null;
+        var top = null;
+        others.forEach(function (p) {
+          var s = B.palmnetScoreProfile(p.palmProfile, probes);
+          if (s !== null && (top === null || s > top.score)) top = { id: p.id, score: s };
+        });
+        return top;
+      }).catch(function () { return null; });
+    }
     function impostorMaxFor(rois, probeHand) {
       // v35: one multi-profile call — the probe codes are encoded
       // once and scored against every other enrolled profile,
@@ -4692,8 +5077,19 @@
         // path has no evidence, which leaves res untouched).
         return (gated ? Promise.resolve(null) : neuralScoreForRois(liveRois)).then(function (nScore) {
           var fused = B.fusePalmVerifyResults(res, nScore);
-          return impostorMaxFor(liveRois, probeHand).then(function (impMax) {
-            return neuralImpostorMaxFor(liveRois, probeHand).then(function (nImpMax) {
+          /* v80 Seat 1 fix: the impostor tops are computed only
+             on the paths that consume them — every denied
+             outcome, including the strict-money frames block
+             below. A clean verified outcome pays no impostor
+             cost here; verifiedOut computes its own scalar
+             maxima, exactly as in v79. */
+          var topsNeeded = !(fused.verified && lv.pass) || strictMoney;
+          var impTopP = topsNeeded ? impostorTopFor(liveRois, probeHand) : Promise.resolve(null);
+          return impTopP.then(function (impTop) {
+            var impMax = impTop ? impTop.score : null;
+            var nImpTopP = topsNeeded ? neuralImpostorTopFor(liveRois, probeHand) : Promise.resolve(null);
+            return nImpTopP.then(function (nImpTop) {
+              var nImpMax = nImpTop ? nImpTop.score : null;
               if (fused.verified && lv.pass) {
                 if (strictMoney) {
                   // v49: the collected-set judgement matched (the
@@ -4730,6 +5126,19 @@
               // fused similarity, this set's PalmNet score, the
               // same hand evidence), so card and log agree.
               var rejDiag = { edcc: fused.similarity, neural: nScore, probeHand: probeHand, profileHand: profileHand, handGate: gated === true };
+              /* v80 (Gap 1): when the fused verdict against the
+                 CLAIMED identity failed, the top other-identity
+                 matches ride the diagnosis — the sync record
+                 built from it carries them as cross-match
+                 evidence when they cross the reporting band
+                 (biometrics.js decides). A palm that DID match
+                 the claimant (the liveness-denied case above)
+                 carries none: matching your own profile is not
+                 impersonation evidence, whatever else scored. */
+              if (!fused.verified) {
+                if (impTop) { rejDiag.crossEdccId = impTop.id; rejDiag.crossEdccScore = impTop.score; }
+                if (nImpTop) { rejDiag.crossNeuralId = nImpTop.id; rejDiag.crossNeuralScore = nImpTop.score; }
+              }
               var measured = 'Palmprint similarity ' + (typeof fused.similarity === 'number' ? fused.similarity.toFixed(3) : 'n/a') + ' (threshold ' + B.PALMPRINT_THRESHOLD + ', 1-snap packed match: ' + liveRois.length + ' live frames\' bit-packed templates scored by the 5-shift popcount matcher against ' + person.palmProfile.codes.length + ' enrolled packed templates), passive liveness ' + lv.verdict + ', Show & Pay streaming scan.' + neuralMeasuredStr(fused) + handEvidenceStr(probeHand) + ' Scan latency: ' + (Date.now() - t0) + ' ms.' + shiftLogStr(fused) + ' Diagnostics: ' + analysed + ' frames scanned, ' + coded + ' with a readable code, best single-frame score ' + (matchState.best !== null ? matchState.best.toFixed(3) : 'n/a') + (bestNeural !== null ? ', best PalmNet cosine ' + bestNeural.toFixed(3) : '') + '.' + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr();
               return finish({ r: out, measured: measured, latencyMs: Date.now() - t0, diag: rejDiag });
             });
@@ -4808,7 +5217,7 @@
         return analysePalmFrame(frame).then(function (r) {
           analysed++;
           if (r.detFailed) { detFails++; detTotal++; } else detFails = 0;
-          if (r.pose) handFrames++;
+          if (r.pose) { handFrames++; Research.tapFrame(frame); }
           stLm += r.lmMs || 0; stEnc += r.encMs || 0;
           // Every analysed frame feeds the spoof tracker, carrying
           // its landmarks so the v36 grid gate reads the palm region
@@ -5227,10 +5636,20 @@
           // the same best score the sentence above reports, the
           // best PalmNet cosine across candidates, and the same
           // hand evidence, so the panel and this record agree.
-          var bestNeuralAny = null;
-          fusedList.forEach(function (ro) { if (ro && typeof ro.neuralScore === 'number' && (bestNeuralAny === null || ro.neuralScore > bestNeuralAny)) bestNeuralAny = ro.neuralScore; });
+          var bestNeuralAny = null, bestNeuralPerson = null;
+          fusedList.forEach(function (ro, i) { if (ro && typeof ro.neuralScore === 'number' && (bestNeuralAny === null || ro.neuralScore > bestNeuralAny)) { bestNeuralAny = ro.neuralScore; bestNeuralPerson = candidates[i]; } });
           return { fail: 'This palm did not match any registered palm on this device, so nothing was opened and no one was identified. (' + analysed + ' frames scanned, ' + coded + ' with a readable code, best score ' + (best && typeof best.similarity === 'number' ? best.similarity.toFixed(3) : 'n/a') + ' against any enrolled palm.' + neuralMeasuredStrId(best) + handNote + (timedOut ? ' No match was found within the ' + Math.round(B.SCAN_TIME_BUDGET_MS / 1000) + '-second scan limit.' : '') + ' ' + diagStr() + ')',
-            diag: { edcc: best && typeof best.similarity === 'number' ? best.similarity : null, neural: bestNeuralAny, probeHand: probeHand, profileHand: null, handGate: excludedCount > 0, excludedCount: excludedCount } };
+            /* v80 (Gap 1): the per-system argmax rides the
+               diagnosis as cross-match evidence — in a 1:N scan
+               every candidate is an "other" identity, so the
+               best-scoring candidate of a DENIED identification
+               is exactly the cross-match the server counts. The
+               sync record's builder applies the reporting band;
+               hand-gated candidates carry null scores here and
+               so can never be named. */
+            diag: { edcc: best && typeof best.similarity === 'number' ? best.similarity : null, neural: bestNeuralAny, probeHand: probeHand, profileHand: null, handGate: excludedCount > 0, excludedCount: excludedCount,
+              crossEdccId: bestPerson ? bestPerson.id : null, crossEdccScore: best && typeof best.similarity === 'number' ? best.similarity : null,
+              crossNeuralId: bestNeuralPerson ? bestNeuralPerson.id : null, crossNeuralScore: bestNeuralAny } };
         });
       });
     }
@@ -5304,7 +5723,7 @@
           if (control && control.onFrame) {
             try { control.onFrame({ hasHand: typeof r.openness === 'number', pose: r.pose || null, openness: lastOpen, framing: lastHint, sharpness: lastSharp, meanLuma: lastSampleB, glareFrac: lastGlare, frameComplete: r.frameComplete === true, frameIssue: r.frameIssue || null }); } catch (e) {}
           }
-          if (r.pose) { handFrames++; poses.push(r.pose); if (poses.length > 6) poses.shift(); }
+          if (r.pose) { handFrames++; poses.push(r.pose); if (poses.length > 6) poses.shift(); Research.tapFrame(frame); }
           var sane = !!(r.code && B.palmprintCodeSane(r.code));
           if (sane) coded++;
           if (sane && !locked) { locked = true; Snd.tick(); }
@@ -5415,6 +5834,12 @@
 
   /* ---------------- Navigation ------------------------------------------- */
   function go(page) {
+    /* v81 (seat-fix): navigation is a research-buffer boundary
+       too — frames tapped by a scan that ended without a record
+       (cancelled, abandoned) are dropped here, so they can
+       never ride the NEXT scan's record, possibly another
+       person's. */
+    Research.clearBuffer();
     /* v71: navigation is a flow boundary — a held service-worker
        update reload is delivered here if nothing is in flight. */
     checkPendingSwReload();
@@ -5447,6 +5872,11 @@
       if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
     });
     document.querySelectorAll('section.page').forEach(function (s) { s.classList.toggle('active', s.id === 'page-' + page); });
+    /* v81: while the research choice is undecided, the consent
+       notice is offered on arrival at any scan surface (and the
+       wallet, the app's front door). Once decided it never
+       reappears; Settings carries the standing control. */
+    if ((page === 'enroll' || page === 'terminal' || page === 'wallet' || page === 'topup') && researchConsentState() === 'unset') showResearchConsent();
     if (page !== 'enroll' && page !== 'terminal') { Cam.stop(); }
     // v43 hands-free lifecycle: leaving a scan view cancels its
     // running scan silently — no verdict can land on a view that is
@@ -5715,6 +6145,7 @@
   function runPalmCapture() {
     if (palmScanBusy) return;
     if (!enroll.details) return;
+    Research.clearBuffer(); // v81 (seat-fix): a fresh capture starts with an empty research buffer
     palmScanBusy = true;
     moneyCommitBusy = true; // v71: held until the capture's outcome is fully applied
     $('palmCapture').disabled = true;
@@ -5778,6 +6209,86 @@
       // then matches exactly as a pre-v51 profile until a later
       // Add Angles capture stamps it.
       var capHand = B.palmConsensusHand(res.results.map(function (r) { return r.hand; }));
+      /* v80 (Gap 2) — DUPLICATE-PALM ENROLMENT GUARD (the
+         Chairman's "fix this" order, 2026-11-27; the design
+         filed as F-v79-3). Before anything is banked, this
+         capture is judged against every OTHER profile already
+         on this device with the v49 banking guard — the same
+         check and the same standard bars (EDCC 0.32 /
+         PalmNet 0.5895, fused OR, hand gate first) that Add
+         Angles uses to prove a capture belongs to the profile
+         it tops up, applied to the exact templates this
+         enrolment would bank (see the Seat 1 note below). The comparison runs entirely on
+         this device against the locally held banks (unsealed
+         in memory by the vault at unlock — the server only
+         ever holds sealed envelopes and cannot compare palms;
+         that is why the guard lives here and why its refusal
+         record is the server's evidence).
+           guard 'pass' against another profile = this palm IS
+             that profile's palm -> REFUSE: nothing is banked,
+             no profile is created, enroll.palm stays empty, the
+             wizard does not advance; the refusal is logged
+             locally and synced as an identity-abuse event
+             naming the matched profile.
+           'fail' / 'uncheckable' = proceed exactly as before.
+             A legacy bank the current matchers cannot score is
+             uncheckable — the honest limit of the guard, stated
+             in the report: it cannot refuse what it cannot read.
+         Same-identity operations never reach this code:
+         Strengthen / Add Angle run through openTopup against
+         the SAME Biom ID, and re-registration replaces the
+         same identity's bank — neither is an enrolment. The
+         hand gate inside the guard keeps the two-hands-two-
+         identities setup working: the other hand fails the
+         gate and enrols as its own identity, as designed. */
+      /* v80 Seat 1 fix: the guard judges the exact material
+         that WOULD be banked — sel.codes (the burst's picked
+         EDCC templates) and the PalmNet embeddings of the
+         picked frames (sel.picks) — not a different frame set,
+         so a refusal is always about the templates that were
+         about to be stored. The embeddings are computed once
+         here and shared with bankCapturedPalm below. (The
+         topup guard deliberately differs: a topup banks the
+         session's candidate set itself, so it judges that
+         set.) */
+      var pickRois = (sel.picks || []).map(function (i) { return res.results[i] && res.results[i].roi; }).filter(function (r) { return !!r; });
+      var bankEmbedsPromise = PalmNet.embedRois(pickRois);
+      /* v80 Seat 1 fix: the chain is RETURNED and CAUGHT — a
+         storage failure here must never wedge enrolment with
+         the button disabled and the reload unsettled; the
+         catch fails visibly, stores nothing and settles,
+         exactly like every other outcome path. The refusal
+         decision itself is B.enrolmentDuplicateVerdict (the
+         Seat 3 refusal standard in biometrics.js), not the
+         topup guard's raw pass. */
+      DB.all('people').then(function (people) {
+        var others = (people || []).filter(function (p) { return p && p.palmProfile && B.palmprintProfileSane(p.palmProfile); });
+        if (!others.length) { bankCapturedPalm(); return; }
+        return bankEmbedsPromise.then(function (cembs) {
+          var cgood = (cembs || []).filter(function (e) { return !!e; });
+          var dup = null, dupGuard = null, dupBasis = null;
+          for (var oi = 0; oi < others.length; oi++) {
+            var v = B.enrolmentDuplicateVerdict(others[oi].palmProfile, { edccProbes: sel.codes, neuralEmbeddings: cgood, hand: capHand });
+            if (v.refuse) { dup = others[oi]; dupGuard = v.guard; dupBasis = v.basis; break; }
+          }
+          if (!dup) { bankCapturedPalm(); return; }
+          var dupMeasured = 'Enrolment refused: the captured palm verified against the existing profile for ' + dup.name + ' (' + dup.id + ')' +
+            (dupGuard.edccChecked && typeof dupGuard.edccScore === 'number' ? ' — EDCC ' + dupGuard.edccScore.toFixed(3) + ' (bar ' + B.PALMPRINT_THRESHOLD + ')' : '') +
+            (dupGuard.neuralChecked && typeof dupGuard.neuralScore === 'number' ? ' — PalmNet ' + dupGuard.neuralScore.toFixed(3) + ' (bar ' + B.PALMNET_THRESHOLD + ')' : '') +
+            ' — refusal basis ' + dupBasis + '. Nothing was stored.';
+          DB.put('logs', { ts: Date.now(), personId: dup.id, personName: dup.name, store: '', method: 'palm', measured: dupMeasured, result: 'Enrolment Refused — Duplicate Palm' });
+          Sync.noteScan({ kind: 'enrol', profileName: '', biomId: dup.id, hand: capHand, edccScore: dupGuard.edccChecked ? dupGuard.edccScore : null, palmnetScore: dupGuard.neuralChecked ? dupGuard.neuralScore : null, result: 'Enrolment Refused — Duplicate Palm' });
+          $('palmMsg').innerHTML = '<div class="error">This palm is already registered on this device — it matches the existing profile for ' + esc(dup.name) + ' (' + esc(dup.id) + '), and one palm can only be enrolled once. Nothing was stored and no new profile was created. If this is the same person, use their existing profile — strengthen it from My Account, Palm Identity, instead of enrolling again. If it is a different person, their other hand counts as a separate identity, or enrol them on a device that does not already hold this palm.</div>';
+          $('palmCapture').disabled = false;
+          Snd.buzz();
+          settleCaptureReload();
+        });
+      }).catch(function () {
+        $('palmMsg').innerHTML = '<div class="error">The duplicate-palm check could not be completed, so nothing was stored. Please try the capture again.</div>';
+        $('palmCapture').disabled = false;
+        settleCaptureReload();
+      });
+      function bankCapturedPalm() {
       enroll.palm = { v: 4, format: B.PALMPRINT_FORMAT, codes: sel.codes, hand: capHand };
       // v47: bank PalmNet neural embeddings from the SAME frames
       // the EDCC burst banked (sel.picks are their indices into
@@ -5786,8 +6297,9 @@
       // cannot produce embeddings, the enrolment still completes
       // EDCC-only and the Registry offers a Neural Scan for this
       // profile later — the message below states which happened.
-      var pickRois = (sel.picks || []).map(function (i) { return res.results[i] && res.results[i].roi; }).filter(function (r) { return !!r; });
-      PalmNet.embedRois(pickRois).then(function (embs) {
+      // v80: pickRois and the embeddings promise are computed
+      // once above (the enrolment guard shares them).
+      bankEmbedsPromise.then(function (embs) {
         var good = (embs || []).filter(function (e) { return !!e; });
         var bank = good.length ? B.palmnetBankFromEmbeddings(good) : null;
         var neuralNote;
@@ -5811,6 +6323,7 @@
         advanceFrom('palm');
         settleCaptureReload(); // v71: enrolment outcome fully applied
       });
+      }
     }).catch(function (e) {
       palmScanBusy = false;
       scanTimerStop('e'); // v74
@@ -6194,7 +6707,8 @@
         // terminal log below, from the same outcome values.
         // v79: fieldTest rides when Field Test Mode is on, so the
         // server never counts a test exercise as production abuse.
-        Sync.noteScan({ kind: amount > 0 ? 'money-auth' : 'verify', profileName: person.name, biomId: person.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: verified ? 'Verified' : 'Denied', fieldTest: fieldModeOn() });
+        Sync.noteScan({ kind: amount > 0 ? 'money-auth' : 'verify', profileName: person.name, biomId: person.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: verified ? 'Verified' : 'Denied', fieldTest: fieldModeOn(),
+          crossEdccId: out.diag ? out.diag.crossEdccId : null, crossEdccScore: out.diag ? out.diag.crossEdccScore : null, crossNeuralId: out.diag ? out.diag.crossNeuralId : null, crossNeuralScore: out.diag ? out.diag.crossNeuralScore : null });
         return logVerification(person, method, out.measured, verified ? 'Verified' : 'Denied').then(function () {
           var html;
           // v20 latency line: the exact end-to-end scan time, shown on
@@ -6930,7 +7444,8 @@
     }
     if (!spoofAttributed && ctx && ctx.syncKind && out && out.diag) {
       scanTimerStop('w'); // v74 (Seat 1 fix): freeze first, so the record stamps the shown total
-      Sync.noteScan({ kind: ctx.syncKind, profileName: '', biomId: '', hand: out.diag.probeHand || null, edccScore: typeof out.diag.edcc === 'number' ? out.diag.edcc : null, palmnetScore: typeof out.diag.neural === 'number' ? out.diag.neural : null, result: 'Denied' });
+      Sync.noteScan({ kind: ctx.syncKind, profileName: '', biomId: '', hand: out.diag.probeHand || null, edccScore: typeof out.diag.edcc === 'number' ? out.diag.edcc : null, palmnetScore: typeof out.diag.neural === 'number' ? out.diag.neural : null, result: 'Denied',
+        crossEdccId: out.diag.crossEdccId || null, crossEdccScore: typeof out.diag.crossEdccScore === 'number' ? out.diag.crossEdccScore : null, crossNeuralId: out.diag.crossNeuralId || null, crossNeuralScore: typeof out.diag.crossNeuralScore === 'number' ? out.diag.crossNeuralScore : null });
     }
     /* v69: under the verdict, the cause's own next step — and,
        when this profile's bank is thin and the cause is a
@@ -9142,6 +9657,27 @@ Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: fresh
   }
   wireWipeData();
   wireSyncSettings();
+  /* v81: research-mode controls — the consent overlay's two
+     answers and the standing Settings / More toggles all land
+     in researchSetConsent, the one place the choice changes. */
+  (function wireResearchControls() {
+    var agree = $('researchAgreeBtn'), decline = $('researchDeclineBtn');
+    if (agree) agree.addEventListener('click', function () {
+      researchSetConsent(true);
+      toast('Research mode on. Thank you — your scan photos will help improve the hand detector.');
+    });
+    if (decline) decline.addEventListener('click', function () {
+      researchSetConsent(false);
+      toast('Research mode off. No scan photos will be collected.');
+    });
+    ['researchConsentToggle', 'researchConsentToggle2'].forEach(function (id) {
+      var t = $(id);
+      if (t) t.addEventListener('change', function () {
+        researchSetConsent(t.checked);
+        toast(t.checked ? 'Research mode on.' : 'Research mode off. Collection stopped and queued photos on this device were deleted.');
+      });
+    });
+  })();
   wireVault();
 
   /* INBOX-BEGIN — the v67 customer Inbox core: a pure factory
@@ -9541,6 +10077,7 @@ Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: fresh
      entry, create is a new enrolment, log out closes the
      wallet session and clears the role back to the choice. */
   function renderSettings() {
+    renderResearchCards();
     resetPayWalletPanel();
     return loadWalletPeople().then(function (people) {
       var entry = resolveWalletEntry(people);
