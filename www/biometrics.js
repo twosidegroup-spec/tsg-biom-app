@@ -3820,6 +3820,44 @@ function createTsgPalmEngine() {
   var MONEY_MARGIN_EDCC = 0.10;
   var MONEY_MARGIN_NEURAL = 0.15;
 
+  /* ================= v80: cross-match reporting bands =========
+     Gap 1 (the Chairman's "fix this" order, 2026-11-27): a
+     denied scan's best OTHER-identity match (the impostor
+     argmax the matchers already compute) rides its sync record
+     as evidence — but only when the score crosses a REPORTING
+     band. The band gates REPORTING, never a verdict: the frozen
+     bars (EDCC 0.32 / PalmNet 0.5895) and the strict money rule
+     are untouched, and no scan outcome changes because of these
+     constants. What the band decides is whether the score is
+     evidence of an impersonation attempt (a palm that nearly
+     matched SOMEONE ELSE) or ordinary no-match noise.
+
+     BAND BASIS (measured, from the bench records):
+       PalmNet — CROSS_REPORT_NEURAL = PALMNET_THRESHOLD −
+       MONEY_MARGIN_NEURAL = 0.4395: a cross-match within one
+       money margin of the acceptance bar. The bench impostor
+       distribution (42,840 pairs, fused-measurement
+       2026-11-25) has median 0.0506 and p95 0.3056, so ~95% of
+       ordinary impostor scores never reach the band; the tail
+       that does (clean max 0.5909, cross-session max 0.6599) is
+       exactly the near-match evidence worth counting.
+       EDCC — CROSS_REPORT_EDCC = 0.28: the bench EDCC impostor
+       maximum is 0.1116 clean / 0.1133 cross-session (85,680
+       pairs), and the app's own fixture impostor maximum is
+       ~0.15 — the band sits at roughly double the largest
+       large-sample impostor score ever measured on this
+       engine, and 0.04 below the frozen 0.32 bar, inside the
+       zone where a score is genuine-grade for the WRONG palm.
+       (One higher figure exists in the notes — 0.261, from the
+       retired v27-era static calibration under a superseded
+       scoring rule; it is not the shipped pipeline's
+       distribution, and the band still clears it.)
+     The server counts attributed events toward an auto-block
+     of the ATTACKER only (never the matched victim); the band
+     being crossed is what makes an event countable at all. */
+  var CROSS_REPORT_EDCC = 0.28;
+  var CROSS_REPORT_NEURAL = PALMNET_THRESHOLD - MONEY_MARGIN_NEURAL;
+
   /* The two-frame half of the strict rule, as a tiny pure gate
      so the rule itself is unit-testable without a camera: the
      app streams call noteVerified(targetKey, frameIdx) whenever
@@ -3969,6 +4007,60 @@ function createTsgPalmEngine() {
     }
     if (out.status !== 'pass' && (out.edccChecked || out.neuralChecked)) out.status = 'fail';
     return out;
+  }
+
+  /* v80 (Gap 2, Seat 3 fix) — the ENROLMENT REFUSAL standard.
+     bankingGuardCheck's fused-OR-at-the-bars rule is calibrated
+     for topping up: there a false "pass" is the security hole
+     and a false "fail" costs a retry. Enrolment refusal has the
+     OPPOSITE cost function — a false refusal tells a legitimate
+     person their natural hand can never enrol on this device —
+     so a refusal must demand MORE than a verification accept:
+       both systems checkable -> refuse only when BOTH legs
+         pass at the standard bars (via 'both'). Every false
+         accept measured at the shipped bars came through one
+         leg alone (bench step zero: all PalmNet, EDCC zero),
+         so single-leg agreement is not refusal-grade evidence.
+       only EDCC checkable -> refuse at the bar + the EDCC
+         money margin (0.32 + 0.10 = 0.42): above every impostor
+         score ever observed on any pipeline (bench max 0.1133,
+         phone-era max 0.261), below a genuine same-palm
+         re-capture (fixture 0.453).
+       only PalmNet checkable -> refuse at the bar + the
+         neural money margin (0.5895 + 0.15 = 0.7395): the
+         neural leg produced every measured false accept, so a
+         neural-only refusal needs the widest margin; same-day
+         genuine duplicates (clean genuine median 0.8983) still
+         clear it, cross-session drift may not — a missed
+         duplicate is the pre-v80 status quo, a false refusal
+         is not.
+     The frozen bars themselves do not move; these are refusal
+     margins ABOVE them, enrolment-only. Returns
+     { refuse, basis, guard } where basis names the rule that
+     decided: 'both-agree' | 'edcc-margin' | 'neural-margin' |
+     'below-refusal-standard' | the guard's own status when it
+     did not pass ('fail' / 'uncheckable'). */
+  var ENROL_REFUSAL_MARGIN_EDCC = 0.10;
+  var ENROL_REFUSAL_MARGIN_NEURAL = 0.15;
+  function enrolmentDuplicateVerdict(profile, cand) {
+    var g = bankingGuardCheck(profile, cand);
+    if (g.status !== 'pass') return { refuse: false, basis: g.status, guard: g };
+    if (g.edccChecked && g.neuralChecked) {
+      return g.via === 'both'
+        ? { refuse: true, basis: 'both-agree', guard: g }
+        : { refuse: false, basis: 'below-refusal-standard', guard: g };
+    }
+    if (g.edccChecked && typeof g.edccScore === 'number') {
+      return g.edccScore >= PALMPRINT_THRESHOLD + ENROL_REFUSAL_MARGIN_EDCC
+        ? { refuse: true, basis: 'edcc-margin', guard: g }
+        : { refuse: false, basis: 'below-refusal-standard', guard: g };
+    }
+    if (g.neuralChecked && typeof g.neuralScore === 'number') {
+      return g.neuralScore >= PALMNET_THRESHOLD + ENROL_REFUSAL_MARGIN_NEURAL
+        ? { refuse: true, basis: 'neural-margin', guard: g }
+        : { refuse: false, basis: 'below-refusal-standard', guard: g };
+    }
+    return { refuse: false, basis: 'below-refusal-standard', guard: g };
   }
 
   /* A promise that cannot hang forever (v49 freeze-proofing):
@@ -5020,6 +5112,30 @@ function createTsgPalmEngine() {
        ladder, so a test exercise can never block the profile
        it exercises. Unflagged records stay byte-identical. */
     if (fields.fieldTest === true) rec.fieldTest = true;
+    /* Additive (v80, Gap 1): the cross-match pairs. A pair
+       rides only when ALL of these hold: the caller supplied
+       the top other-identity match (id + score), the id is a
+       non-empty string, the id is not this record's own biomId
+       (a self-match is the scan's own business, never a cross
+       event), and the score crosses the reporting band for
+       its system (CROSS_REPORT_EDCC / CROSS_REPORT_NEURAL).
+       Below-band matches are ordinary no-match noise and stay
+       off the record entirely, so a normal denied scan's
+       record stays byte-identical to every pre-v80 record. */
+    if (typeof fields.crossEdccId === 'string' && fields.crossEdccId &&
+        fields.crossEdccId !== rec.biomId &&
+        typeof fields.crossEdccScore === 'number' && isFinite(fields.crossEdccScore) &&
+        fields.crossEdccScore >= CROSS_REPORT_EDCC) {
+      rec.crossEdccId = fields.crossEdccId;
+      rec.crossEdccScore = fields.crossEdccScore;
+    }
+    if (typeof fields.crossNeuralId === 'string' && fields.crossNeuralId &&
+        fields.crossNeuralId !== rec.biomId &&
+        typeof fields.crossNeuralScore === 'number' && isFinite(fields.crossNeuralScore) &&
+        fields.crossNeuralScore >= CROSS_REPORT_NEURAL) {
+      rec.crossNeuralId = fields.crossNeuralId;
+      rec.crossNeuralScore = fields.crossNeuralScore;
+    }
     return rec;
   }
   /* v62 (Phase B step 2.2, shape only): the bKash wallet link
@@ -5973,7 +6089,7 @@ function createTsgPalmEngine() {
      therefore the identity, and a v62 store — sealed banks, hand
      stamps, wallet, points, and a queued sync outbox row
      included — opens under v63 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62', 'v63', 'v64', 'v65', 'v66', 'v67', 'v68', 'v69', 'v70', 'v71', 'v72', 'v73', 'v74', 'v75', 'v76', 'v77', 'v78', 'v79'];
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62', 'v63', 'v64', 'v65', 'v66', 'v67', 'v68', 'v69', 'v70', 'v71', 'v72', 'v73', 'v74', 'v75', 'v76', 'v77', 'v78', 'v79', 'v80', 'v81'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -6094,6 +6210,19 @@ function createTsgPalmEngine() {
        person snapshot), so a v78 store opens byte-identical
        under v79. */
     'v79': function (snap) { return snap; },
+    /* v80: pure adoption — the gap-fix release (cross-match
+       evidence on scan records, the enrolment duplicate-palm
+       guard) changes no stored PERSON shape: cross fields ride
+       scan records at write time and the guard reads existing
+       banks, so a v79 store opens byte-identical under v80. */
+    'v80': function (snap) { return snap; },
+    /* v81: pure adoption — the simulation/research mode changes
+       no stored PERSON shape: consent state and the anonymous
+       research ID are localStorage prefs (the sync-pref
+       discipline), and queued research bundles ride the sync
+       outbox meta row the engine owns — both outside the person
+       snapshot — so a v80 store opens byte-identical under v81. */
+    'v81': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
@@ -6357,11 +6486,16 @@ function createTsgPalmEngine() {
     palmConsensusHand: palmConsensusHand,
     HAND_CROSS_MIN_RATIO: HAND_CROSS_MIN_RATIO,
     MONEY_CONFIRM_FRAMES: MONEY_CONFIRM_FRAMES,
+    CROSS_REPORT_EDCC: CROSS_REPORT_EDCC,
+    CROSS_REPORT_NEURAL: CROSS_REPORT_NEURAL,
     MONEY_MARGIN_EDCC: MONEY_MARGIN_EDCC,
     MONEY_MARGIN_NEURAL: MONEY_MARGIN_NEURAL,
     createMoneyScanGate: createMoneyScanGate,
     moneyMarginCheck: moneyMarginCheck,
     bankingGuardCheck: bankingGuardCheck,
+    enrolmentDuplicateVerdict: enrolmentDuplicateVerdict,
+    ENROL_REFUSAL_MARGIN_EDCC: ENROL_REFUSAL_MARGIN_EDCC,
+    ENROL_REFUSAL_MARGIN_NEURAL: ENROL_REFUSAL_MARGIN_NEURAL,
     withTimeout: withTimeout,
     laplacianVariance: laplacianVariance,
     contrastStretch: contrastStretch,

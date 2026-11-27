@@ -21,13 +21,13 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="TSG Biom">
-<meta name="biom-build" content="v79">
+<meta name="biom-build" content="v81">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-180.png">
-<link rel="stylesheet" href="styles.css?b=v79">
-<script src="vendor/mediapipe-hands-0.4.1675469240/hands.js?b=v79"></script>
-<script src="biometrics.js?b=v79"></script>
+<link rel="stylesheet" href="styles.css?b=v81">
+<script src="vendor/mediapipe-hands-0.4.1675469240/hands.js?b=v81"></script>
+<script src="biometrics.js?b=v81"></script>
 </head>
 <body class="mode-customer">
 <!-- v71 boot splash: a neutral branded state that paints before
@@ -363,6 +363,15 @@
         <p class="sub" style="margin:10px 0 0">Logging out closes your wallet on this screen and returns to the role choice. Your registration and wallet stay safely on this device.</p>
       </div>
       <div class="card seccard">
+        <h2>Research mode — simulation period</h2>
+        <p class="sub" style="margin:0 0 10px">TSG Biom is in a research and simulation period. We are building our own hand detector, and real scan photos are the only honest way to test it. If this is on, a few photos from your palm scans (at most 3 per scan) are sent to TwoSide Group for research, tagged only with an anonymous code — never your name, phone number or Biom ID, and never linked to your wallet or palm bank. Your scans, wallet and registration work exactly the same either way. This is separate from Scan Sync.</p>
+        <p class="sub" lang="bn" style="margin:0 0 10px">TSG Biom এখন গবেষণা ও সিমুলেশন পর্যায়ে আছে। এটি চালু থাকলে আপনার palm scan-এর কয়েকটি ছবি (প্রতি scan-এ সর্বোচ্চ ৩টি) গবেষণার জন্য পাঠানো হবে — শুধু একটি বেনামি code-সহ; আপনার নাম, ফোন নম্বর বা Biom ID কখনোই যাবে না।</p>
+        <label class="check"><input type="checkbox" id="researchConsentToggle"> Include my scan photos in detector research</label>
+        <div class="kv" style="margin-top:10px"><b>Status:</b> <span id="researchStatus">Not decided — no scan photos are collected until you agree.</span></div>
+        <div class="kv" style="margin-top:6px"><b>Your research code:</b> <span id="researchIdLine">Created when you switch research mode on</span></div>
+        <p class="sub" style="margin:10px 0 0">Switching off stops collection at once and deletes photos still queued on this device. Photos already sent are deleted from the research store on request — write to twosidegroup@gmail.com quoting your research code.</p>
+      </div>
+      <div class="card seccard">
         <h2>Danger zone</h2>
         <div class="setlist">
           <button class="setrow danger" id="setDeleteRow"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m3 0-1 13a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1L6 7"/></svg></span><span class="setlbl">Delete my data</span><span class="setval">This account only</span><span class="setchev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></span></button>
@@ -438,7 +447,7 @@
         </div>
       </div>
     </div>
-    <div class="versionline" id="versionLine">TSG Biom · App v79 · TwoSide Group</div>
+    <div class="versionline" id="versionLine">TSG Biom · App v81 · TwoSide Group</div>
   </section>
 
   <!-- DESK (HOME) -->
@@ -536,6 +545,13 @@
         </div>
         <div class="sub" id="vaultImportMsg" style="margin-top:8px"></div>
       </div>
+    </div>
+    <div class="card owner-only" style="margin-top:16px"><h2>Research mode — simulation period</h2>
+      <p class="sub" style="margin:0 0 10px">The v81 research mode: with this device's user's explicit opt-in, a few photos from their palm scans (at most 3 per scan) are sent to the research store — tagged with the scan kind, the result and a device class, linked only to an anonymous research code generated on this device. Never a name, phone number or Biom ID; never linked to a wallet or palm bank; stored separately from scan records and banks. Off by default; a user who declines gets exactly the v80 app. Field Test Mode scans follow the same consent rule, and a blocked user's photos are never collected.</p>
+      <label class="check"><input type="checkbox" id="researchConsentToggle2"> Include this device's scan photos in detector research</label>
+      <div class="kv" style="margin-top:10px"><b>Status:</b> <span id="researchStatus2">Not decided — no scan photos are collected until you agree.</span></div>
+      <div class="kv" style="margin-top:6px"><b>Research code:</b> <span id="researchIdLine2">Created when you switch research mode on</span></div>
+      <p class="sub" style="margin:10px 0 0">Switching off stops collection at once and deletes photos still queued on this device. Photos already sent are deleted from the research store on request — write to twosidegroup@gmail.com quoting the research code.</p>
     </div>
     <div class="card owner-only" style="margin-top:16px"><h2>Scan Sync</h2>
       <p class="sub" style="margin:0 0 10px">Mirror every scan on this device to your own TSG Biom server, so real scans can be reviewed off-device. Each scan posts a small record (who, which hand, the scores, the result) and each palm-bank change posts the palm codes — <b>never a palm image</b>. From v61 the codes are sealed on this device under its Biom Vault key before they are stored or posted, once the vault is set up (More → Biom Vault); a bank the vault has not sealed yet posts in its encoded form, and the vault card above shows which banks are sealed. Matching always stays on this device; sync runs in the background and never delays a scan. <b>On by default from v63</b> — it can be switched off below, by the owner only.</p>
@@ -903,8 +919,21 @@
 
 <div id="sheetBackdrop" class="sheet-backdrop" aria-hidden="true"></div>
 
+<div id="researchConsent" class="research-consent hidden" role="dialog" aria-modal="true" aria-labelledby="researchConsentTitle">
+  <div class="rc-card">
+    <h2 id="researchConsentTitle">Help improve Biom — research mode</h2>
+    <p>TSG Biom is in a research and simulation period. We are building our own hand detector, and real scan photos are the only honest way to test it. If you agree, a few photos from your own palm scans (at most 3 per scan) will be sent to TwoSide Group for research, tagged only with an anonymous code — never your name, phone number or Biom ID, and never linked to your wallet or palm bank. Each bundle carries the scan kind, its result, the time and the type of device, nothing else. Only your own scans on this device are collected — never anyone else's.</p>
+    <p>Your scans, wallet and palm registration work exactly the same whether you agree or not. You can switch this off at any time in Settings: switching off stops collection at once, deletes photos still on this device, and photos already sent are deleted from the research store on request.</p>
+    <p lang="bn">TSG Biom এখন গবেষণা ও সিমুলেশন পর্যায়ে আছে। আমরা নিজেদের হাত-শনাক্তকারী (detector) বানাচ্ছি, আর সেটা পরীক্ষা করার একমাত্র সৎ উপায় হলো আসল scan-এর ছবি। আপনি রাজি থাকলে, আপনার palm scan-এর কয়েকটি ছবি (প্রতি scan-এ সর্বোচ্চ ৩টি) গবেষণার জন্য TwoSide Group-এর কাছে যাবে — শুধু একটি বেনামি code-সহ; আপনার নাম, ফোন নম্বর বা Biom ID কখনোই যাবে না, আর আপনার wallet বা palm bank-এর সঙ্গে এর কোনো যোগ থাকবে না। রাজি থাকুন বা না থাকুন — আপনার scan, wallet আর registration ঠিক একইভাবে কাজ করবে। Settings থেকে যেকোনো সময় এটি বন্ধ করতে পারবেন; বন্ধ করলেই সংগ্রহ সঙ্গে সঙ্গে থেমে যাবে, device-এ থাকা ছবি মুছে যাবে, আর পাঠানো ছবিও অনুরোধে মুছে দেওয়া হবে।</p>
+    <div class="row rc-actions">
+      <div><button class="btn primary" id="researchAgreeBtn">I agree — include my scan photos</button></div>
+      <div><button class="btn" id="researchDeclineBtn">No thanks</button></div>
+    </div>
+  </div>
+</div>
+
 <div id="toast" class="hidden" role="status"></div>
 
-<script src="app.js?b=v79"></script>
+<script src="app.js?b=v81"></script>
 </body>
 </html>
