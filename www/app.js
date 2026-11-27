@@ -399,7 +399,7 @@
      strict-money rule, encryption, signing, sync or copy
      truth changes. The migration step is a pure adoption
      (see biometrics.js). */
-  var APP_DATA_VERSION = 'v77';
+  var APP_DATA_VERSION = 'v79';
   /* ---------------- boot splash lifecycle (v71, rebuilt v75) ------
      index.html stamps its build in <meta name="biom-build"> and
      paints a neutral boot splash before any app code runs.
@@ -855,8 +855,14 @@
        Delete All Data is now true for the whole system — see
        wireWipeData for the exact flow and its honest fallbacks.
      - Server penalties, surfaced honestly: a 403 latches
-       "revoked" (the blacklist), a 429 backs off honouring
-       Retry-After and never latches, and the settings card's
+       "revoked" (the blacklist) — EXCEPT a 403 carrying
+       blocked:true (v78), which is an ACCOUNT block, not a
+       device revocation: the refused item is dropped, the
+       flush continues for everyone else, and a separate
+       "blocked" latch engages only for this device's own
+       Biom ID (the ownBiomId dep; the pull learns and clears
+       it from the person's own summary row too). A 429 backs
+       off honouring Retry-After and never latches, and the settings card's
        Test connection button reads /api/devices/me and says in
        plain words what the server answered. */
   /* SYNC-ENGINE-BEGIN — createBiomSync is a pure factory over its
@@ -869,6 +875,8 @@
     var flushing = false;
     var keyRejected = false;
     var revoked = false;     // v62: the server has revoked (blacklisted) this device
+    var blocked = false;     // v78: the server has blocked this device's OWN account (its Biom ID is blockedBiomId)
+    var blockedBiomId = '';
     var seqDesync = false;   // v62: signing sequence out of step and re-registration failed
     var lastSyncTs = 0;
     var lastError = '';
@@ -878,6 +886,51 @@
     var versionsPromise = null;
     var bootstrapping = null;
     var tombstonedIds = {};  // v62: biomIds this engine knows are tombstoned server-side
+    /* v79: biomId -> true for accounts this device knows are
+       blocked — OTHER people's, learned from pull summary rows
+       and from blocked flush refusals, persisted through the
+       optional loadBlockedIds/saveBlockedIds deps (in-memory
+       only when the wiring provides none, the v62 optional-dep
+       discipline). The v78 latch above is this device's OWN
+       account state; this set is what lets a merchant terminal
+       answer a blocked customer's scan with the blocked verdict
+       immediately, before any payment is attempted. Server
+       truth wins both ways: a pull row without the flag clears
+       the entry again (an unblock reaches terminals here). */
+    var blockedIds = null;
+    var blockedIdsPromise = null;
+    function ensureBlockedIds() {
+      if (blockedIds !== null) return Promise.resolve(blockedIds);
+      if (!deps.loadBlockedIds) { blockedIds = {}; return Promise.resolve(blockedIds); }
+      if (!blockedIdsPromise) {
+        blockedIdsPromise = Promise.resolve().then(function () { return deps.loadBlockedIds(); })
+          .then(function (m) { blockedIds = m && typeof m === 'object' && !Array.isArray(m) ? m : {}; return blockedIds; })
+          .catch(function () {
+            /* A failed load must not fail the set open for the
+               whole session (seat review): this call resolves
+               with whatever is held, blockedIds stays null and
+               the cached promise is dropped, so the next ensure
+               (every flush runs one) retries the persisted set. */
+            blockedIdsPromise = null;
+            return blockedIds || {};
+          });
+      }
+      return blockedIdsPromise;
+    }
+    function persistBlockedIds() {
+      if (!deps.saveBlockedIds || !blockedIds) return;
+      try { deps.saveBlockedIds(JSON.parse(JSON.stringify(blockedIds))); } catch (e) {}
+    }
+    function learnBlocked(biomId, isNowBlocked) {
+      if (!biomId) return;
+      ensureBlockedIds().then(function () {
+        if (isNowBlocked && blockedIds[biomId] !== true) { blockedIds[biomId] = true; persistBlockedIds(); }
+        else if (!isNowBlocked && blockedIds[biomId]) { delete blockedIds[biomId]; persistBlockedIds(); }
+      }).catch(function () {});
+    }
+    function isBlocked(biomId) {
+      return !!(blockedIds && biomId && blockedIds[biomId] === true);
+    }
 
     function prefs() { return deps.getPrefs(); }
     function hasCred(p) { return !!(p.deviceKey || (p.deviceId && p.deviceSecret)); }
@@ -1075,7 +1128,7 @@
     function flush() {
       if (flushing || keyRejected || revoked || seqDesync || !active()) return Promise.resolve(state());
       flushing = true;
-      return ensureLoaded().then(function () { return ensureVersions(); }).then(async function () {
+      return ensureLoaded().then(function () { return ensureVersions(); }).then(function () { return ensureBlockedIds(); }).then(async function () {
         var p = prefs();
         var base = String(p.endpoint || '').replace(/\/+$/, '');
         if (!credentialed(p) && p.deviceKey && deps.saveCredential) {
@@ -1099,6 +1152,10 @@
           return state();
         }
         var reissued = false;
+        /* v78 (Seat 2 F2): tombstones refused by a block are
+           deferred to here and re-queued at the end of the run —
+           see the blocked branch below. */
+        var deferredTombstones = [];
         while (queue.length) {
           var item = queue[0];
           var isProfile = item.type === 'profile' || item.type === 'tombstone';
@@ -1128,6 +1185,12 @@
               if (item.type === 'profile') delete tombstonedIds[item.record.biomId];
               persistVersions();
             }
+            /* v78: a profile write for the blocked ID just went
+               through — the block was lifted server-side (an
+               unblock never un-revokes devices, but a credential
+               that can write again is no longer refused), so the
+               latch clears on the server's own evidence. */
+            if (isProfile && blocked && item.record.biomId === blockedBiomId) { blocked = false; blockedBiomId = ''; }
             await persist();
             continue;
           }
@@ -1146,6 +1209,51 @@
             if (errBody && errBody.deleted) tombstonedIds[item.record.biomId] = true;
             lastError = 'Bank changed on another device — re-checking before update';
             if (deps.onProfileConflict) { try { deps.onProfileConflict(item.record.biomId, errBody); } catch (e) {} }
+            await persist();
+            continue;
+          }
+          if (res && res.status === 403 && errBody && errBody.blocked === true) {
+            /* v78: an account block is NOT a device revocation.
+               The server refuses this Biom ID's writes (the block
+               also revoked the person's owner device server-side,
+               but the account state is the truth the app must
+               show). The refused item can never succeed, so it is
+               dropped — the sequence WAS consumed (auth passed;
+               the refusal is past auth, exactly like the 409
+               path) — and the flush CONTINUES: other people's
+               queued items on a shared terminal are not this
+               account's hostage. The latch engages only when the
+               blocked ID is this device's own profile (the
+               ownBiomId dep); a terminal that scanned a blocked
+               customer drops that one item and carries on
+               unlatched. */
+            commitSeq(auth.seq);
+            var blockedId = errBody.biomId || (item.record && item.record.biomId) || '';
+            /* v79: EVERY blocked refusal teaches this device
+               the ID for its terminal set — a terminal that just
+               had a blocked customer's scan refused will answer
+               that customer's next scan with the blocked verdict
+               at once, without waiting for a pull. */
+            learnBlocked(blockedId, true);
+            if (item.type === 'tombstone') {
+              /* v78 (Seat 2 F2): a tombstone is a Delete All
+                 promise, not data — dropping it would silently
+                 un-complete the wipe (the local erase stands, the
+                 server bank survives the block). It is the ONE
+                 item retained: deferred and re-queued at the end
+                 of this run, so the deletion lands after an
+                 unblock instead of never. Scans and profile
+                 upserts keep the drop semantics above — they
+                 self-heal on the next local change. */
+              queue.shift();
+              deferredTombstones.push(item);
+            } else {
+              queue.shift();
+            }
+            var ownIdOnFlush = null;
+            try { ownIdOnFlush = deps.ownBiomId ? deps.ownBiomId() : null; } catch (e) {}
+            if (!deps.ownBiomId || ownIdOnFlush === blockedId) { blocked = true; blockedBiomId = blockedId; }
+            lastError = 'account blocked';
             await persist();
             continue;
           }
@@ -1172,6 +1280,10 @@
           lastError = 'server answered ' + (res ? res.status : 'no response') + ' — will retry';
           break;
         }
+        if (deferredTombstones.length) {
+          for (var dt = 0; dt < deferredTombstones.length; dt++) queue.push(deferredTombstones[dt]);
+          await persist();
+        }
         flushing = false;
         deps.onStatus();
         return state();
@@ -1187,7 +1299,7 @@
        when the wiring provides applyTombstone. */
     function pull() {
       if (!active() || !deps.applyTombstone) return Promise.resolve(state());
-      return ensureLoaded().then(function () { return ensureVersions(); }).then(async function () {
+      return ensureLoaded().then(function () { return ensureVersions(); }).then(function () { return ensureBlockedIds(); }).then(async function () {
         var p = prefs();
         var base = String(p.endpoint || '').replace(/\/+$/, '');
         if (!credentialed(p) && p.deviceKey && deps.saveCredential) {
@@ -1204,13 +1316,55 @@
         try {
           res = await deps.fetchFn(base + '/api/profiles?summary=1', { method: 'GET', headers: auth.headers });
         } catch (e) { return state(); }
-        if (res && res.status === 403) { revoked = true; deps.onStatus(); return state(); }
+        if (res && res.status === 403) {
+          /* v78 (Seat 1 fix): honour a blocked body on the read
+             path too — if the refusal names this device's own
+             account as blocked, the state shown is the blocked
+             state, not a device revocation. The shipped API
+             refuses a revoked device WITHOUT a blocked marker,
+             so a plain 403 keeps the v62 behaviour exactly. */
+          var pullErr = await readJsonSafe(res);
+          var pullOwn = null;
+          try { pullOwn = deps.ownBiomId ? deps.ownBiomId() : null; } catch (e) {}
+          if (pullErr && pullErr.blocked === true && (!deps.ownBiomId || pullOwn === (pullErr.biomId || ''))) {
+            blocked = true; blockedBiomId = pullErr.biomId || pullOwn || '';
+          } else { revoked = true; }
+          deps.onStatus(); return state();
+        }
         if (!res || res.status !== 200) return state();
         var j = await readJsonSafe(res);
         var rows = j && Array.isArray(j.profiles) ? j.profiles : [];
+        /* v78: this device's own Biom ID, resolved once per pull
+           (the wiring's wallet session). Only the own row may
+           move the blocked latch — a shared terminal pulls every
+           customer's summary and must never latch a stranger's
+           block as its own account state. */
+        var ownIdOnPull = null;
+        try { ownIdOnPull = deps.ownBiomId ? deps.ownBiomId() : null; } catch (e) {}
+        var blockedChanged = false;
+        var blockedIdsChanged = false;
         for (var i = 0; i < rows.length; i++) {
           var row = rows[i];
           if (!row || !row.biomId || typeof row.version !== 'number') continue;
+          /* v78: the lean summary carries the block flag both
+             ways, so the app learns a block — and an unblock —
+             from the pull, before any write is refused. Server
+             truth wins in both directions. */
+          if (ownIdOnPull && row.biomId === ownIdOnPull) {
+            if (row.blocked === true && !blocked) { blocked = true; blockedBiomId = row.biomId; blockedChanged = true; }
+            else if (row.blocked !== true && blocked && blockedBiomId === row.biomId) { blocked = false; blockedBiomId = ''; blockedChanged = true; }
+          }
+          /* v79: the SAME rows teach the terminal set — every
+             customer's flag, not only this device's own. A
+             blocked customer is answered with the blocked
+             verdict at the till; an unblocked one scans
+             normally again. The map mutates in place here (the
+             pull already awaited ensureBlockedIds) and persists
+             once, after the loop. */
+          if (blockedIds) {
+            if (row.blocked === true && blockedIds[row.biomId] !== true) { blockedIds[row.biomId] = true; blockedIdsChanged = true; }
+            else if (row.blocked !== true && blockedIds[row.biomId]) { delete blockedIds[row.biomId]; blockedIdsChanged = true; }
+          }
           if (row.deleted && row.version > knownVersion(row.biomId)) {
             tombstonedIds[row.biomId] = true;
             try { await deps.applyTombstone(row.biomId); } catch (e) {}
@@ -1219,6 +1373,8 @@
             tombstonedIds[row.biomId] = true;
           }
         }
+        if (blockedIdsChanged) persistBlockedIds();
+        if (blockedChanged) deps.onStatus();
         return state();
       }).catch(function () { return state(); });
     }
@@ -1295,6 +1451,17 @@
           return { ok: true, message: 'Connected — this device is registered' + (j && j.label ? ' as "' + j.label + '"' : '') + ' and is not revoked.' };
         }
         if (res && res.status === 403) {
+          /* v79 (F1): the /me denial now carries the block when
+             the revocation is a block's side effect — the words
+             here must name the ACCOUNT, not only the device. */
+          var j403 = await readJsonSafe(res);
+          var own403 = null;
+          try { own403 = deps.ownBiomId ? deps.ownBiomId() : null; } catch (e) {}
+          if (j403 && j403.blocked === true && (!deps.ownBiomId || own403 === (j403.biomId || ''))) {
+            blocked = true; blockedBiomId = j403.biomId || own403 || '';
+            deps.onStatus();
+            return { ok: false, message: 'This account has been blocked on the server. Scans, payments and sync for this account are stopped until an admin unblocks it.' };
+          }
           revoked = true;
           deps.onStatus();
           return { ok: false, message: 'This device has been revoked on the server. Sync is stopped until the server admin un-revokes it, or you register again with the shared key.' };
@@ -1309,6 +1476,7 @@
         on: !!prefs().on, configured: configured(),
         queued: queue ? queue.length : 0,
         keyRejected: keyRejected, revoked: revoked, seqDesync: seqDesync,
+        blocked: blocked, blockedBiomId: blockedBiomId,
         lastSyncTs: lastSyncTs, lastError: lastError
       };
     }
@@ -1316,6 +1484,7 @@
       var s = state();
       if (!s.on) return 'Off';
       if (!s.configured) return 'On — endpoint URL and device key needed';
+      if (s.blocked) return 'This account has been blocked — the server refuses its scans, profile updates and payments, and sync for this account is stopped, until an admin unblocks it';
       if (s.revoked) return 'This device has been revoked on the server — sync is stopped until the server admin un-revokes it or this device registers again';
       if (s.keyRejected) return 'Key rejected by the server — check the device key, then Save settings';
       if (s.seqDesync) return 'This device needs re-registering — its signing sequence is out of step. Save settings, then tap Sync now';
@@ -1326,7 +1495,9 @@
       keyRejected = false;
       revoked = false;
       seqDesync = false;
-      if (lastError === 'key rejected' || lastError === 'device revoked' || lastError === 'signing sequence out of step') lastError = '';
+      blocked = false;
+      blockedBiomId = '';
+      if (lastError === 'key rejected' || lastError === 'device revoked' || lastError === 'signing sequence out of step' || lastError === 'account blocked') lastError = '';
       deps.onStatus();
     }
     function reset() {
@@ -1334,6 +1505,11 @@
       keyRejected = false;
       revoked = false;
       seqDesync = false;
+      blocked = false;
+      blockedBiomId = '';
+      blockedIds = {};
+      blockedIdsPromise = null;
+      persistBlockedIds();
       versions = null;
       versionsPromise = null;
       tombstonedIds = {};
@@ -1350,7 +1526,9 @@
       queueTombstones: queueTombstones, purgeProfile: purgeProfile, pendingItems: pendingItems,
       testConnection: testConnection,
       scheduleFlush: scheduleFlush, state: state, statusText: statusText,
-      settingsChanged: settingsChanged, reset: reset, ensureLoaded: ensureLoaded
+      settingsChanged: settingsChanged, reset: reset, ensureLoaded: ensureLoaded,
+      isBlocked: isBlocked,
+      ensureBlockedIds: ensureBlockedIds
     };
   }
 
@@ -1420,6 +1598,13 @@
      value below must match the BOOTSTRAP_KEY env var on the
      API project; until that env var exists, registration fails
      closed and the sync queue holds (see the engine guard). */
+  /* v79: the blocked-state copy, in one place so every surface
+     says the same thing. The terminal line is the Chairman's
+     own sentence (2026-11-27): a blocked palm at a merchant
+     must be told plainly that its palm scanning is blocked —
+     never a vague failure. */
+  var BLOCKED_TERMINAL_LINE = 'Palm scanning failed — your palm scanning is blocked.';
+  var BLOCKED_ACCOUNT_LINE = 'This account has been blocked. Palm scans, payments, sending and adding money are stopped until an admin unblocks it.';
   var SYNC_DEFAULT_ENDPOINT = 'https://tsg-biom-api.vercel.app';
   var SYNC_BOOTSTRAP_KEY = '7d969f9a4e4a3a232477d952cbfe3c2a4271d41d83071aec';
   var Sync = createBiomSync({
@@ -1430,6 +1615,11 @@
        real duration its on-screen timer measured. */
     scanDurationMs: function (kind) { return scanDurationForKind(kind); },
     registrationOnlyKey: true,
+    /* v78: the sync engine latches its blocked state only for
+       THIS device's own profile — the signed-in wallet person.
+       A merchant terminal pulling summaries for every customer
+       must never latch a stranger's block as its own. */
+    ownBiomId: function () { var me = walletSessionPerson(); return me ? me.id : null; },
     getPrefs: function () {
       return {
         on: syncPrefGet('biomSyncOn') !== '0',
@@ -1446,6 +1636,11 @@
        by the server, one meta row beside the outbox. */
     loadVersions: function () { return DB.getMeta('syncVersions', {}); },
     saveVersions: function (v) { return DB.setMeta('syncVersions', v); },
+    /* v79: the terminal blocked set — Biom IDs this device
+       knows are blocked (learned from pulls and blocked flush
+       refusals), one meta row beside the versions. */
+    loadBlockedIds: function () { return DB.getMeta('syncBlockedIds', {}); },
+    saveBlockedIds: function (m) { return DB.setMeta('syncBlockedIds', m); },
     /* v62: the signing sequence is a device pref — it must
        survive restarts exactly, or every boot would desync. */
     getSeq: function () { var n = parseInt(syncPrefGet('biomSyncSeq'), 10); return isFinite(n) && n > 0 ? n : 0; },
@@ -1476,6 +1671,31 @@
     onStatus: function () { renderSyncStatus(); },
     encryptProfileCore: function (core) { return Vault.encryptProfileCore(core); }
   });
+  /* v78: the money-moment profile emit. Add Money, Send Money
+     and Biom Pay change the WALLET, not the palm bank, so the
+     ordinary bank emits never fire for them — and until v78 the
+     server (and therefore the dashboard dossier) never saw a
+     balance or a ledger at all. noteMoneyProfile attaches the
+     person's Biom Pay records (from the transactions store,
+     chronological tail) to a TRANSIENT copy of the person and
+     runs the normal profile emit: B.syncProfileRecord shapes
+     the wallet + pays mirrors onto the record, and the copy is
+     never stored, so payRecords never lands on the person row.
+     Fire-and-forget like noteScan: a failed read simply skips
+     this emit — the money itself has already landed locally,
+     and the next money moment re-mirrors everything. */
+  function noteMoneyProfile(person) {
+    if (!person || !person.id) return Promise.resolve(false);
+    return DB.all('transactions').then(function (txs) {
+      var mine = (Array.isArray(txs) ? txs : []).filter(function (t) { return t && t.personId === person.id; });
+      mine.sort(function (a, b) { return (a.ts || 0) - (b.ts || 0); });
+      var copy = {};
+      Object.keys(person).forEach(function (k) { copy[k] = person[k]; });
+      copy.payRecords = mine.slice(-50);
+      Sync.noteProfile(copy);
+      return true;
+    }).catch(function () { return false; });
+  }
   /* ---------------- v71 bKash sandbox rail ------------------------------
      The Phase E rail, sandbox scope (Chairman's order 2026-11-26
      13:05). The palm authorisation is unchanged and still gates
@@ -5829,13 +6049,34 @@
        behind. */
     setSurfacePill('t', 'Scanning');
     scanTimerStart('t', 'Scanned in ');
-    DB.all('people').then(function (people) {
+    /* v79 (seat review): the blocked-ID set loads asynchronously
+       at boot; await it before the pre-scan gate below so a cold
+       first scan cannot slip through the not-yet-loaded window.
+       The post-verdict re-check further down stands regardless. */
+    Promise.resolve().then(function () { return Sync.ensureBlockedIds(); }).catch(function () {}).then(function () { return DB.all('people'); }).then(function (people) {
       var person = people.find(function (p) { return p.id === personId; });
       if (!person) { releaseClaim(); scanTimerReset('t'); setSurfacePill('t', 'Ready'); $('termResult').innerHTML = '<div class="error">Select an enrolled person first. Enroll on this device if the registry is empty.</div>'; return null; }
       if (!personHasMethod(person)) {
         releaseClaim(); scanTimerReset('t'); setSurfacePill('t', 'Ready');
         $('termResult').innerHTML = '<div class="error">' + notEnrolledMessage(person) + ' No scan was run and nothing was verified.</div>';
         return null;
+      }
+      /* v79 (the Chairman's merchant message rule): a person
+         this device knows is blocked gets the blocked verdict
+         immediately — no scan is run, nothing can be verified
+         and no payment is attempted. The local terminal log
+         records the attempt as Blocked; no sync scan record is
+         queued (the server refuses scan writes naming a blocked
+         ID by design, and an unjudged attempt is not a scan). */
+      if (Sync.isBlocked(person.id)) {
+        releaseClaim(); scanTimerReset('t'); setSurfacePill('t', 'Ready');
+        termSession.verdict();
+        $('termNext').classList.remove('hidden');
+        $('termResult').innerHTML = '<div class="resultbig bad"><div class="verdict">PALM SCANNING BLOCKED</div><div class="who">' +
+          esc(person.name) + ' (' + esc(person.id) + ')</div><div class="meas">' + BLOCKED_TERMINAL_LINE +
+          ' No payment can be taken from a blocked account.</div></div>';
+        Snd.buzz();
+        return logVerification(person, method, 'Blocked — account blocked', 'Blocked');
       }
 
       if (palmScanBusy) { releaseClaim(); scanTimerReset('t'); setSurfacePill('t', 'Ready'); return null; }
@@ -5889,7 +6130,7 @@
         writeFieldRecord(rec);
         // v56 Scan Sync: the same measured values, in the same
         // closure, queue the wire record (no-op when sync is off).
-        Sync.noteScan({ kind: 'field-test', profileName: person.name, biomId: person.id, hand: neural && neural.probeHand ? neural.probeHand : null, edccScore: genuineScore, palmnetScore: neural && typeof neural.neuralScore === 'number' ? neural.neuralScore : null, result: result });
+        Sync.noteScan({ kind: 'field-test', profileName: person.name, biomId: person.id, hand: neural && neural.probeHand ? neural.probeHand : null, edccScore: genuineScore, palmnetScore: neural && typeof neural.neuralScore === 'number' ? neural.neuralScore : null, result: result, fieldTest: fieldModeOn() });
       };
       var control = { cancelled: false, onFrame: function (info) { var fr = termSession.frame({ hasHand: info.hasHand, pose: info.pose }); termInds.update(info, fr); } };
       termControl = control;
@@ -5920,12 +6161,40 @@
         scanTimerStop('t'); // v74: the verdict is determined — freeze the total in the pill
         setSurfacePill('t', 'Ready');
         $('termNext').classList.remove('hidden');
-        if (out.fail) { Snd.buzz(); $('termResult').innerHTML = '<div class="error">' + esc(out.fail) + '</div>' + scanDiagHTML(out.diag); return; }
+        if (out.fail) {
+          /* v79 (abuse category: spoofing): a spoof verdict
+             against a selected person is ATTRIBUTED — the sync
+             record names the target Biom ID and carries the
+             spoof result, so presentation attacks are countable
+             on the server (owner-device ones feed the auto-block
+             ladder; Field Test Mode ones are flagged fieldTest
+             and never count). Pre-v79 the terminal queued
+             nothing for a failed scan, so a spoof at the till
+             left no server trace at all. */
+          if (typeof out.fail === 'string' && out.fail.indexOf('Spoof / Screen Replay') === 0) {
+            Sync.noteScan({ kind: amount > 0 ? 'money-auth' : 'verify', profileName: person.name, biomId: person.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Spoof / Screen Replay Detected', fieldTest: fieldModeOn() });
+          }
+          Snd.buzz(); $('termResult').innerHTML = '<div class="error">' + esc(out.fail) + '</div>' + scanDiagHTML(out.diag); return;
+        }
         var r = out.r;
         var verified = r.ok === true && r.verified === true; // fail closed: only an explicit pass verifies
+        /* v79: the block may have been learned while the scan
+           ran (a pull landed, or a flush refusal arrived). A
+           blocked person is never verified at the till and never
+           reaches payment, whatever the palm scored — the same
+           blocked verdict as the pre-scan check. */
+        if (Sync.isBlocked(person.id)) {
+          $('termResult').innerHTML = '<div class="resultbig bad"><div class="verdict">PALM SCANNING BLOCKED</div><div class="who">' +
+            esc(person.name) + ' (' + esc(person.id) + ')</div><div class="meas">' + BLOCKED_TERMINAL_LINE +
+            ' No payment can be taken from a blocked account.</div></div>';
+          Snd.buzz();
+          return logVerification(person, method, 'Blocked — account blocked', 'Blocked');
+        }
         // v56 Scan Sync: queued in the same closure that writes the
         // terminal log below, from the same outcome values.
-        Sync.noteScan({ kind: amount > 0 ? 'money-auth' : 'verify', profileName: person.name, biomId: person.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: verified ? 'Verified' : 'Denied' });
+        // v79: fieldTest rides when Field Test Mode is on, so the
+        // server never counts a test exercise as production abuse.
+        Sync.noteScan({ kind: amount > 0 ? 'money-auth' : 'verify', profileName: person.name, biomId: person.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: verified ? 'Verified' : 'Denied', fieldTest: fieldModeOn() });
         return logVerification(person, method, out.measured, verified ? 'Verified' : 'Denied').then(function () {
           var html;
           // v20 latency line: the exact end-to-end scan time, shown on
@@ -5983,6 +6252,7 @@
                      wallet, over a biometric-only limit) never
                      reach this line and never notify. */
                   Inbox.add(person.id, Inbox.event('pay', { amount: tx.amount, ref: tx.id, detail: 'At ' + tx.store + ' · ' + tx.id + ' · Demo money' }));
+                  noteMoneyProfile(person); // v78: mirror the pay record + wallet to the dashboard dossier
                   // v59 (defect D6): the payment has resolved — only
                   // now are its Palm Loyalty points credited, from
                   // the created transaction's amount, never the
@@ -6372,9 +6642,40 @@
     $('walletScanCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
     syncCamToggle('walletAct');
     syncFlashToggle('walletAct');
+    /* v79: every flow on this shared card authorises as the
+       signed-in account (Add Money, Send Money, Biom Pay,
+       Verify). When that account is blocked, the card shows the
+       blocked state and the camera never starts — no scan is
+       run, nothing can be authorised, and the person is told
+       plainly why instead of meeting a vague failure after a
+       scan. The test (walletBlockedActive) consults the sync
+       engine's own-account latch AND the persisted blocked-ID
+       set: the latch alone is memory-only (a Settings save
+       clears it until the next pull), while the set survives
+       restarts and settings changes. */
+    if (walletBlockedActive()) {
+      $('wScanStatus').textContent = 'Account blocked';
+      $('wScanMsg').innerHTML = '<div class="error">' + BLOCKED_ACCOUNT_LINE + '</div>';
+      $('wScanStart').disabled = true;
+      return;
+    }
+    $('wScanStart').disabled = false;
     startWalletCamera();
   }
+  /* v79 (seat review): the single blocked test for every
+     wallet camera/scan entry point — the card, Start Camera,
+     the camera switch and Scan itself all run it, so a blocked
+     account cannot be re-armed through the camera buttons
+     after the card has shown the blocked state, and a block
+     learned while the card is open is honoured at Scan time. */
+  function walletBlockedActive() {
+    if (Sync.state().blocked) return true;
+    var me = null;
+    try { me = walletSessionPerson(); } catch (e) { me = null; }
+    return !!me && Sync.isBlocked(me.id);
+  }
   function startWalletCamera() {
+    if (walletBlockedActive()) { if (walletScanCtx) showWalletScan(walletScanCtx); return Promise.resolve(); }
     return Cam.start($('wScanVideo'), camFacing.walletAct, 'walletAct').then(function () {
       Pipeline.enterScanView();
       $('wScanRun').disabled = false;
@@ -6389,6 +6690,7 @@
   }
   function runWalletScan() {
     if (!walletScanCtx || palmScanBusy) return;
+    if (walletBlockedActive()) { showWalletScan(walletScanCtx); return; }
     palmScanBusy = true;
     moneyCommitBusy = true; // v71: held until the flow's writes settle, not just the scan
     $('wScanRun').disabled = true;
@@ -6608,7 +6910,25 @@
     // v56 Scan Sync: a judged scan that failed queues its record
     // too — the Chairman asked to see every scan, not only passes.
     // (No diag = no judged scan — a camera failure queues nothing.)
-    if (ctx && ctx.syncKind && out && out.diag) {
+    /* v79 (abuse category: spoofing): a SPOOF verdict on a
+       wallet authorisation is attributed to the signed-in
+       account — someone is presenting a photo or a screen to
+       this phone's money scan, and the server counts those
+       (owner-device, attributed) toward its spoof auto-block.
+       It replaces the anonymous Denied record below for this
+       scan: the attributed record is strictly more informative,
+       and one scan must not write two records. The ordinary
+       Denied record keeps its v53 shape untouched. */
+    var spoofAttributed = false;
+    if (ctx && ctx.syncKind && out && typeof out.fail === 'string' && out.fail.indexOf('Spoof / Screen Replay') === 0) {
+      var meSpoof = walletSessionPerson();
+      if (meSpoof) {
+        scanTimerStop('w');
+        Sync.noteScan({ kind: ctx.syncKind, profileName: meSpoof.name, biomId: meSpoof.id, hand: out.diag ? (out.diag.probeHand || null) : null, edccScore: out.diag && typeof out.diag.edcc === 'number' ? out.diag.edcc : null, palmnetScore: out.diag && typeof out.diag.neural === 'number' ? out.diag.neural : null, result: 'Spoof / Screen Replay Detected', fieldTest: fieldModeOn() });
+        spoofAttributed = true;
+      }
+    }
+    if (!spoofAttributed && ctx && ctx.syncKind && out && out.diag) {
       scanTimerStop('w'); // v74 (Seat 1 fix): freeze first, so the record stamps the shown total
       Sync.noteScan({ kind: ctx.syncKind, profileName: '', biomId: '', hand: out.diag.probeHand || null, edccScore: typeof out.diag.edcc === 'number' ? out.diag.edcc : null, palmnetScore: typeof out.diag.neural === 'number' ? out.diag.neural : null, result: 'Denied' });
     }
@@ -6660,6 +6980,8 @@
     // scan. (Mid-scan, the running stream simply continues on
     // the new camera, exactly as the v57 switch behaves; the
     // busy branch below leaves its status line alone.)
+    // v79: a blocked account is never re-armed by a camera switch.
+    if (walletBlockedActive()) { if (walletScanCtx) showWalletScan(walletScanCtx); return; }
     Cam.start($('wScanVideo'), camFacing.walletAct, 'walletAct').then(function () {
       if (!palmScanBusy && walletScanCtx) {
         $('wScanRun').disabled = false;
@@ -6791,6 +7113,7 @@
                 Inbox.add(res.person.id, Inbox.event('add', { amount: res.entry.amount, balanceAfter: res.entry.balanceAfter, ref: res.entry.ref, detail: 'From ' + res.entry.accountType + ' — ' + res.entry.accountLabel + ' · Demo money' }));
                 scanTimerStop('w'); // v74 (Seat 1 fix): freeze first, so the record stamps the shown total
                 Sync.noteScan({ kind: 'money-auth', profileName: fresh.name, biomId: fresh.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
+                noteMoneyProfile(res.person); // v78: mirror the new balance + ledger to the dashboard dossier
                 balanceFlashPending = true;
                 hideWalletScan();
                 return renderWallet();
@@ -6844,6 +7167,17 @@
             if (!out || out.fail || !out.person) { walletScanFailed(out); return; }
             if (out.person.id === me.id) {
               $('wScanMsg').innerHTML = '<div class="error">That is your own palm — you cannot send money to yourself. Scan the receiver\'s palm.</div>';
+              $('wScanRun').disabled = false;
+              Snd.buzz();
+              return;
+            }
+            /* v79 (seat review): a blocked account cannot
+               receive either — the block is total and its wallet
+               is seized, so a Send to it stops at identification,
+               with the reason stated plainly. Same treatment as
+               the merchant terminal gives a blocked palm. */
+            if (Sync.isBlocked(out.person.id)) {
+              $('wScanMsg').innerHTML = '<div class="error">' + BLOCKED_TERMINAL_LINE + ' Money cannot be sent to a blocked account.</div>';
               $('wScanRun').disabled = false;
               Snd.buzz();
               return;
@@ -6924,6 +7258,8 @@ Sync.noteScan({ kind: 'identify', profileName: out.person.name, biomId: out.pers
                 Inbox.add(res.receiver.id, Inbox.event('receive', { amount: res.receiverEntry.amount, balanceAfter: res.receiverEntry.balanceAfter, ref: res.receiverEntry.ref, counterpartyName: freshSender.name, detail: 'From ' + freshSender.name + ' (' + freshSender.id + ') · Demo money' }));
                                 scanTimerStop('w'); // v74 (Seat 1 fix): freeze first, so the record stamps the shown total
 Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: freshSender.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
+                noteMoneyProfile(res.sender); // v78: mirror both sides of the transfer to the dashboard dossier
+                noteMoneyProfile(res.receiver);
                 var sentAmount = sendSnap.amount, sentTo = sendSnap.receiverName, sentToId = sendSnap.receiverId, sentRef = res.senderEntry.ref, newBal = res.senderEntry.balanceAfter;
                 sendDraft = { amount: null, receiverId: null, receiverName: null };
                 balanceFlashPending = true;
@@ -7063,6 +7399,7 @@ Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: fresh
                        Every refusal above returns before this
                        line, so a refused payment never notifies. */
                     Inbox.add(fresh.id, Inbox.event('pay', { amount: tx.amount, ref: tx.id, detail: 'At ' + store + ' · ' + tx.id + ' · Demo money' }));
+                    noteMoneyProfile(fresh); // v78: mirror the pay record + wallet to the dashboard dossier
                     balanceFlashPending = true;
                     hideWalletScan();
                     return renderWallet().then(function () {
@@ -7352,6 +7689,7 @@ Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: fresh
                 amount: executedAmount, ref: rec.id,
                 detail: 'At ' + pending.store + ' · bKash Sandbox TrxID ' + trxID + ' · TEST MODE — no real money'
               }));
+              noteMoneyProfile(person); // v78: the recorded sandbox pay rides the same mirror
               /* The pending record is retired only now that
                  the payment is fully recorded — a crash
                  anywhere above leaves it in place, and the
@@ -7725,6 +8063,23 @@ Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: fresh
     DB.all('people').then(function (people) {
       var person = people.find(function (p) { return p.id === personId; }) || null;
       if (!person) return;
+      /* v79: Strengthen / Add Angle / Neural Scan are profile
+         writes — a blocked person's are refused by the server,
+         so the surface says so up front and the camera never
+         starts, instead of banking angles locally that can
+         never sync. Applies to any blocked ID this device knows
+         (its own account included), via the sync engine's set. */
+      if (Sync.isBlocked(personId) || (Sync.state().blocked && Sync.state().blockedBiomId === personId)) {
+        topupPersonId = null;
+        go('topup');
+        if ($('topTitle')) $('topTitle').textContent = mode === 'neural' ? 'Neural Scan — add PalmNet embeddings' : 'Add Angles — widen a palm profile';
+        if ($('topSub')) $('topSub').textContent = '';
+        if ($('topWho')) $('topWho').innerHTML = '<b>' + esc(person.name) + '</b> — ' + esc(person.id);
+        $('topMsg').innerHTML = '<div class="error">' + BLOCKED_ACCOUNT_LINE + (mode === 'neural' ? ' Neural Scan is stopped while the block stands.' : ' Strengthen and Add Angle are stopped while the block stands.') + '</div>';
+        $('topStatus').textContent = 'Account blocked';
+        if ($('topCapture')) $('topCapture').disabled = true;
+        return;
+      }
       var fmt = B.palmprintProfileFormat(person.palmProfile);
       if (fmt !== 'packed96' && fmt !== 'legacy') return;
       if (mode === 'neural' && fmt !== 'packed96') return; // a legacy palm needs the full re-scan first

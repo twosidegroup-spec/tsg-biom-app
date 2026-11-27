@@ -5014,6 +5014,12 @@ function createTsgPalmEngine() {
        real one was supplied. */
     var dur = syncDurationOrNull(fields.durationMs);
     if (dur !== null) rec.durationMs = dur;
+    /* Additive (v79): fieldTest rides only when the scan ran
+       under Field Test Mode — the server excludes flagged
+       records from its abuse counters and the auto-block
+       ladder, so a test exercise can never block the profile
+       it exercises. Unflagged records stay byte-identical. */
+    if (fields.fieldTest === true) rec.fieldTest = true;
     return rec;
   }
   /* v62 (Phase B step 2.2, shape only): the bKash wallet link
@@ -5034,6 +5040,79 @@ function createTsgPalmEngine() {
       linkedTs: typeof v.linkedTs === 'number' && isFinite(v.linkedTs) && v.linkedTs > 0 ? v.linkedTs : null,
       linkMethod: 'agreement'
     };
+  }
+
+  /* ================= v78: the wallet + pay mirrors ================
+     The dashboard dossier (v78) shows the person's wallet balance,
+     ledger and Biom Pay records — data that until now lived only
+     on the phone. The profile emit now carries them additively,
+     shaped field-by-field to EXACTLY the whitelist the API
+     applies (lib/records.js shapeWalletMirror / shapePays), so
+     what leaves the device is already the server's shape:
+       wallet: { balance, statement tail (<=100) } — entries
+         { ref, ts, kind, amount, balanceAfter } plus
+         accountType/accountLabel on 'add' and
+         counterpartyId/counterpartyName on 'send'/'receive';
+         the local 'note' field never leaves the device.
+       pays: [{ id, ts, amount, store, provider, status }] — the
+         tail (<=50) of the person's Biom Pay records, read from
+         the TRANSIENT person.payRecords the app wiring attaches
+         at money moments (never stored on the person row).
+     Absent inputs stay absent: a person with no wallet object
+     emits no wallet field, and a bank-only emit (no payRecords
+     attached) emits no pays field, so every pre-v78 emit stays
+     byte-identical and the server's mirror preservation holds.
+     An explicitly EMPTY payRecords array emits pays: [] — the
+     deliberate clear the API honours as a real value. A malformed
+     entry is dropped, never fatal: the bank still lands (the
+     API's own rule, mirrored). */
+  function syncMoneyOrNull(v) {
+    return typeof v === 'number' && isFinite(v) ? Math.round(v * 100) / 100 : null;
+  }
+  function syncTsOrNull(v) {
+    return typeof v === 'number' && isFinite(v) && v > 0 ? v : null;
+  }
+  function syncStrCapped(v, max) { return typeof v === 'string' ? v.slice(0, max) : ''; }
+  function syncWalletEntryShape(e) {
+    if (!e || typeof e !== 'object' || Array.isArray(e)) return null;
+    if (e.kind !== 'add' && e.kind !== 'send' && e.kind !== 'receive') return null;
+    var ts = syncTsOrNull(e.ts);
+    var amount = syncMoneyOrNull(e.amount);
+    if (ts === null || amount === null) return null;
+    var out = { ref: syncStrCapped(e.ref, 64), ts: ts, kind: e.kind, amount: amount, balanceAfter: syncMoneyOrNull(e.balanceAfter) };
+    if (e.kind === 'add') {
+      out.accountType = syncStrCapped(e.accountType, 64);
+      out.accountLabel = syncStrCapped(e.accountLabel, 128);
+    } else {
+      out.counterpartyId = syncStrCapped(e.counterpartyId, 64);
+      out.counterpartyName = syncStrCapped(e.counterpartyName, 128);
+    }
+    return out;
+  }
+  function syncWalletMirrorShape(w) {
+    if (!w || typeof w !== 'object' || Array.isArray(w)) return null;
+    var balance = syncMoneyOrNull(w.balance);
+    if (balance === null) return null;
+    var stmt = Array.isArray(w.statement) ? w.statement.map(syncWalletEntryShape).filter(Boolean).slice(-100) : [];
+    return { balance: balance, statement: stmt };
+  }
+  function syncPayRecordShape(p) {
+    if (!p || typeof p !== 'object' || Array.isArray(p)) return null;
+    var ts = syncTsOrNull(p.ts);
+    var amount = syncMoneyOrNull(p.amount);
+    if (ts === null || amount === null || typeof p.id !== 'string' || p.id === '') return null;
+    return {
+      id: syncStrCapped(p.id, 64), ts: ts, amount: amount,
+      store: syncStrCapped(p.store, 128), provider: syncStrCapped(p.provider, 32), status: syncStrCapped(p.status, 64)
+    };
+  }
+  /* The shaped pays array, [] for the deliberate clear, or null
+     when the emit must carry no pays field at all. */
+  function syncPaysShape(payRecords) {
+    if (!Array.isArray(payRecords)) return null;
+    var shaped = payRecords.map(syncPayRecordShape).filter(Boolean).slice(-50);
+    if (shaped.length) return shaped;
+    return payRecords.length === 0 ? [] : null;
   }
 
   function syncProfileRecord(person, updatedTs) {
@@ -5061,6 +5140,15 @@ function createTsgPalmEngine() {
     /* Additive (v74): the phone rides only when the person
        carries one, for the dashboard person detail. */
     if (typeof person.phone === 'string' && person.phone.trim() !== '') rec.phone = person.phone;
+    /* Additive (v78): the wallet + pay mirrors for the dashboard
+       dossier, shaped exactly as the API whitelists them (see
+       the v78 block above syncProfileRecord). They ride only
+       when present and valid, so pre-v78 emits stay
+       byte-identical. */
+    var mirror = syncWalletMirrorShape(person.wallet);
+    if (mirror) rec.wallet = mirror;
+    var pays = syncPaysShape(person.payRecords);
+    if (pays) rec.pays = pays;
     return rec;
   }
 
@@ -5885,7 +5973,7 @@ function createTsgPalmEngine() {
      therefore the identity, and a v62 store — sealed banks, hand
      stamps, wallet, points, and a queued sync outbox row
      included — opens under v63 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62', 'v63', 'v64', 'v65', 'v66', 'v67', 'v68', 'v69', 'v70', 'v71', 'v72', 'v73', 'v74', 'v75', 'v76', 'v77'];
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62', 'v63', 'v64', 'v65', 'v66', 'v67', 'v68', 'v69', 'v70', 'v71', 'v72', 'v73', 'v74', 'v75', 'v76', 'v77', 'v78', 'v79'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -5991,6 +6079,21 @@ function createTsgPalmEngine() {
        under v76. */
     'v76': function (snap) { return snap; },
     'v77': function (snap) { return snap; },
+    /* v78: pure adoption — the dashboard-control app leg (the
+       profile emit gains the additive wallet/pays mirrors; the
+       sync engine learns the blocked latch) changes no stored
+       shape: payRecords is transient, attached to an in-memory
+       copy at money moments and never written to a stored row,
+       so a v77 store opens byte-identical under v78. */
+    'v78': function (snap) { return snap; },
+    /* v79: pure adoption — the block-system release (terminal
+       blocked verdicts, the sync engine's persisted blocked-ID
+       set, fieldTest-flagged scan records) changes no stored
+       PERSON shape: the blocked set is a sync meta row the
+       engine owns (written through its own deps, outside the
+       person snapshot), so a v78 store opens byte-identical
+       under v79. */
+    'v79': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
