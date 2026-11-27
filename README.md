@@ -47,9 +47,29 @@ Static site, no build step:
 
 ## PWA
 
-`manifest.webmanifest` + `sw.js` (app-shell cache only; CDN models are not cached).
-Install via the **Install App** button, Chrome's *Install app / Add to Home screen*,
-or iPhone Safari *Share → Add to Home Screen*.
+`manifest.webmanifest` + `sw.js` (app-shell cache only; the model and the
+vendored runtimes under `models/` and `vendor/` are network-only and are
+never cached). Install via the **Install App** button, Chrome's *Install
+app / Add to Home screen*, or iPhone Safari *Share → Add to Home Screen*.
+
+## Security posture (v64, 2026-11-25)
+
+What the current build (palm-only: EDCC competitive coding fused with the
+PalmNet neural leg; the face/fingerprint sections above describe retired
+experiments) actually does — and, just as important, what it does not claim:
+
+| Property | Status in this build |
+|---|---|
+| Template protection at rest | Palm codes sealed per bank with AES-GCM-256 envelope encryption (v61), keys derived per Biom ID from an on-device vault key |
+| Matching location | On-device only; the server stores sealed codes + scan records, never palm images |
+| Model integrity | The PalmNet model's SHA-256 and byte length are pinned in app code and verified on every load, on both loader paths; a context without SubtleCrypto fails soft to EDCC-only rather than load unverified bytes |
+| Third-party code | None at runtime: MediaPipe Hands and ONNX Runtime Web are self-hosted under `vendor/`; the page's CSP (meta-delivered) allows scripts from `'self'` only and pins `connect-src` to the TSG Biom API |
+| Sync authentication | Per-device credentials, HMAC-signed writes with a strictly-next sequence, compare-and-swap bank versions, server-enforced rate limits, auth lockouts and revocation (API v62+) |
+| ISO/IEC 24745 template protection | **NOT claimed.** The envelope gives encryption at rest, not the standard's irreversibility, unlinkability or revocability properties |
+| Vein sensing | **NOT claimed** — physically impossible on a phone RGB camera; BIOM reads palm print + geometry only |
+| Platform header limits | GitHub Pages cannot send response headers: the CSP rides in a meta tag, so `frame-ancestors`, CSP reporting, HSTS and Permissions-Policy are absent on this host (the API sends the full set from code) |
+
+Run the full proof with `npm test` (all suites + the www/ drift check).
 
 ## Tests
 
