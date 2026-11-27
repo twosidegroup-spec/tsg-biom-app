@@ -18,7 +18,7 @@
    intermediary copy cannot recreate the old paint one layer
    down, and a non-OK network answer falls back to the cache
    instead of painting a host error page. */
-const CACHE = 'tsg-biom-shell-v81';
+const CACHE = 'tsg-biom-shell-v83';
 /* v75 (flash fix): the network leg of network-first is TIMED.
    v71–v74 raced nothing: on a stalled connection (a phone on a
    weak signal at the moment of opening) the fetch could hang

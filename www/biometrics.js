@@ -6089,7 +6089,7 @@ function createTsgPalmEngine() {
      therefore the identity, and a v62 store — sealed banks, hand
      stamps, wallet, points, and a queued sync outbox row
      included — opens under v63 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62', 'v63', 'v64', 'v65', 'v66', 'v67', 'v68', 'v69', 'v70', 'v71', 'v72', 'v73', 'v74', 'v75', 'v76', 'v77', 'v78', 'v79', 'v80', 'v81'];
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62', 'v63', 'v64', 'v65', 'v66', 'v67', 'v68', 'v69', 'v70', 'v71', 'v72', 'v73', 'v74', 'v75', 'v76', 'v77', 'v78', 'v79', 'v80', 'v81', 'v82', 'v83'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -6223,6 +6223,22 @@ function createTsgPalmEngine() {
        outbox meta row the engine owns — both outside the person
        snapshot — so a v80 store opens byte-identical under v81. */
     'v81': function (snap) { return snap; },
+    /* v82: pure adoption — the performance release (burst
+       analysis overlapped with burst recording, the people list
+       loaded concurrently with money scans, the win frame's
+       PalmNet pair reused in the verdict tail) changes no
+       stored shape at all: it is pipeline scheduling inside
+       app.js only, so a v81 store opens byte-identical
+       under v82. */
+    'v82': function (snap) { return snap; },
+    /* v83: pure adoption — the merchant-tail release (the
+       warm-completion signal on the pipeline, the terminal's
+       warm-aware armed state, and the warm gate at the
+       terminal and wallet money-scan starts) changes no
+       stored shape at all: it is scan-start scheduling inside
+       app.js only, so a v82 store opens byte-identical
+       under v83. */
+    'v83': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
