@@ -424,8 +424,48 @@
      even a canvas copy is made. No bar, model pin, guard,
      strict-money rule, encryption, signing or copy truth
      changes. The migration step is a pure adoption (see
-     biometrics.js). */
-  var APP_DATA_VERSION = 'v81';
+     biometrics.js).
+
+     v82 (2026-11-27) is the PERFORMANCE release — ordered by
+     the Chairman the same evening after his own phone timings
+     on live v81 (enrolment 7.25 s; his Add Money scans
+     1.67-1.77 s; a merchant-terminal scan 2,365 ms, all read
+     back from the server's own scan records). Targets: the
+     merchant scan under 2.0 s end to end, registration in
+     the 3-4 s range — reached for by pipeline scheduling
+     ONLY, never by weaker matching: no bar, model pin,
+     guard, strict-money rule, codec, block-system or
+     consent behaviour changes, and the palm bank is not
+     thinned (cross-session drift is the system's dominant
+     measured risk and bank quality is the defence). Three
+     scheduling changes: (1) enrolment's burst analysis now
+     runs CONCURRENTLY with the 900 ms burst recording — the
+     same frames, the same analyses, in the same order,
+     through the same chain with the same paint yields; only
+     the start time moves (the first grab is also taken at
+     once instead of one 55 ms interval late). (2) The
+     terminal and Add Money scans start streaming as soon as
+     the TARGET person is read (a new by-id DB.get through
+     the same vault funnel); the full people list — consumed
+     only by the verdict tail's impostor maxima — loads
+     concurrently and is awaited there (opts.peopleReady), so
+     the strict-money margin is still judged against every
+     enrolled profile, and a people load that fails fails
+     the scan closed exactly as the pre-stream load did.
+     (3) The verdict tail reuses the winning frame's PalmNet
+     embedding pair — computed during the stream for that
+     exact ROI — instead of embedding the same ROI a second
+     time for the neural impostor maximum; the scores are
+     the same computation on the same embeddings. Timer-span
+     note (corrected by the v83 board, 2026-11-28): for the
+     gated surfaces (terminal + wallet money-auth) the timer
+     starts when the warm gate settles; on an already-warm
+     pipeline that is effectively the tap and the span is the
+     v74 span unchanged; for a cold gated scan the warm wait
+     is excluded, so cold durationMs is not directly
+     comparable with pre-v83 cold records. The migration step
+     is a pure adoption (see biometrics.js). */
+  var APP_DATA_VERSION = 'v83';
   /* ---------------- boot splash lifecycle (v71, rebuilt v75) ------
      index.html stamps its build in <meta name="biom-build"> and
      paints a neutral boot splash before any app code runs.
@@ -671,6 +711,35 @@
       var self = this;
       if (store !== 'people') return self._allRaw(store);
       return self._allRaw(store).then(function (rows) { return vaultDecryptRows(rows); });
+    },
+    /* v82: ONE row by key, through the same vault funnel and
+       the same timeout discipline as all() — the money scans
+       read their target person this way and start streaming
+       at once, instead of unsealing every bank on the device
+       before the first frame (the full list still loads
+       concurrently for the verdict tail; see opts.peopleReady
+       in streamVerifyPalm). Resolves null when the row does
+       not exist; rejects exactly where all() would. */
+    get: function (store, id) {
+      var self = this;
+      if (store !== 'people') return self._getRaw(store, id);
+      return self._getRaw(store, id).then(function (row) {
+        if (!row) return null;
+        return vaultDecryptRows([row]).then(function (rows) { return rows && rows[0] ? rows[0] : null; });
+      });
+    },
+    _getRaw: function (store, id) {
+      var self = this;
+      if (this.useLS || !this.db) {
+        var rows = this.lsGet(store);
+        var found = rows.find(function (r) { return store === 'meta' ? r.key === id : r.id === id; });
+        return Promise.resolve(found || null);
+      }
+      return B.withTimeout(new Promise(function (resolve, reject) {
+        var req = self.db.transaction(store, 'readonly').objectStore(store).get(id);
+        req.onsuccess = function () { resolve(req.result || null); };
+        req.onerror = function () { reject(req.error); };
+      }), DB_OP_TIMEOUT_MS);
     },
     _putRaw: function (store, value) {
       var self = this;
@@ -3379,6 +3448,11 @@
        during the ~10 s cold load otherwise ended every first
        scan instantly with a false detector verdict). */
     lastCallFailed: function () { return this._frameFailed; },
+    /* v83: whether the detector has produced results at least
+       once in this page session — the warm gate's evidence that
+       a settled dummy chain means a genuinely warm detector,
+       not a silently dead one. */
+    everResulted: function () { return this._everResulted; },
     /* v51: MediaPipe's own handedness label from the most recent
        results event, exposed for the cross-check in
        analysePalmFrame (B.palmMpHandedness). Diagnostic only —
@@ -4310,6 +4384,25 @@
      Hands rebuild that exists anywhere is PalmProc's dropped-frame
      recovery (a wedged MediaPipe graph stays wedged; it is rebuilt
      after a 4 s frame timeout, never on a view switch). */
+  /* v83: the warm-up's completion is a SIGNAL, not a hope. The
+     v82 tail analysis found the first scan after a reopen paying
+     leftover warm-up INSIDE its timed span, because the pre-warm
+     was fire-and-forget and nothing could wait for it.
+     palmWarmPromise settles when every deep-pre-warm leg has
+     settled; palmWarmState then reads 'ready' only when the
+     detector leg genuinely ran (the dummy landmarks chain
+     completed and the detector had produced results — the same
+     everResulted evidence the v67 health counting trusts), and
+     'failed' when it did not. The PalmNet leg's own outcome
+     rides palmWarmDetail: the scan-start gates wait for that leg
+     to SETTLE (a still-loading model's first embed is not paid
+     inside a timed scan), but a PalmNet failure does not fail
+     the gate — the app's designed fail-soft for a dead neural
+     runtime is EDCC-only operation with the state surfaced in
+     the scan's own measured text (v47), unchanged. */
+  var palmWarmState = 'cold'; // 'cold' | 'warming' | 'ready' | 'failed'
+  var palmWarmPromise = null;
+  var palmWarmDetail = { detectorOk: false, palmnetOk: false };
   var Pipeline = {
     started: false,
     start: function () {
@@ -4317,7 +4410,29 @@
       this.started = true;
       prewarmPalmPipeline();
     },
-    enterScanView: function () { this.start(); }
+    enterScanView: function () { this.start(); },
+    /* v83: the readiness signal the scan-start gates wait on.
+       Starts the pre-warm if nothing has, and resolves with the
+       settled state ('ready' | 'failed'); never rejects. */
+    whenWarm: function () {
+      this.start();
+      if (!palmWarmPromise) prewarmPalmPipeline();
+      return palmWarmPromise || Promise.resolve(palmWarmState);
+    },
+    warmState: function () { return palmWarmState; },
+    warmDetail: function () { return palmWarmDetail; },
+    /* v83: a failed warm-up is retried, never cached — the
+       detector runtime does not cache its own failures either
+       (PalmProc.ensureHands), so a later attempt can succeed
+       where the first could not. No-op unless failed. */
+    retryWarm: function () {
+      if (palmWarmState !== 'failed') return;
+      palmPrewarmStarted = false;
+      palmWarmState = 'cold';
+      palmWarmPromise = null;
+      palmWarmDetail = { detectorOk: false, palmnetOk: false };
+      prewarmPalmPipeline();
+    }
   };
   function prewarmPalmPipeline() {
     try { PalmProc.init(); } catch (e) {}
@@ -4329,6 +4444,7 @@
     try { PalmNet.init(); } catch (e) {}
     if (palmPrewarmStarted) return;
     palmPrewarmStarted = true;
+    palmWarmState = 'warming';
     try {
       var c = document.createElement('canvas');
       c.width = 96; c.height = 96;
@@ -4346,20 +4462,41 @@
        only — nothing is recorded, matched, logged or stored,
        and every failure is silent: the scan path initialises
        everything itself, exactly as before. */
+    /* v83: the two legs below are CAPTURED, so the warm-up's
+       completion is observable (Pipeline.whenWarm). The calls
+       themselves are the v67 calls, unchanged — what changed
+       is that their settling now settles palmWarmPromise. The
+       detector leg's verdict is captured in the chain's own
+       continuation, where the most recently completed send is
+       this chain's second call: the detector is warm iff that
+       call ran (not failed) and the runtime has produced
+       results at least once. */
+    var detOk = false;
+    var detChain;
     try {
       var dc = document.createElement('canvas');
       dc.width = 96; dc.height = 96;
       var dctx = dc.getContext('2d');
       dctx.fillStyle = '#7a7a7a'; dctx.fillRect(0, 0, 96, 96);
-      PalmProc.landmarks(dc).then(function () { return PalmProc.landmarks(dc); }).then(function () {}, function () {});
-    } catch (e) {}
+      detChain = PalmProc.landmarks(dc).then(function () { return PalmProc.landmarks(dc); }).then(function () {
+        detOk = !!(PalmProc.everResulted() && !PalmProc.lastCallFailed());
+      }, function () { detOk = false; });
+    } catch (e) { detChain = Promise.resolve(); }
+    var netOk = false;
+    var netLeg;
     try {
       var dummyRoi = new Uint8Array(B.PALMPRINT_ROI_SIZE * B.PALMPRINT_ROI_SIZE);
       for (var di = 0; di < dummyRoi.length; di++) dummyRoi[di] = 128;
-      PalmNet.init().then(function (ok) {
-        if (ok) return PalmNet.embedPair(dummyRoi);
-      }).then(function () {}, function () {});
-    } catch (e) {}
+      netLeg = PalmNet.init().then(function (ok) {
+        if (!ok) return null;
+        return PalmNet.embedPair(dummyRoi);
+      }).then(function (pair) { netOk = !!pair; }, function () { netOk = false; });
+    } catch (e) { netLeg = Promise.resolve(); }
+    palmWarmPromise = Promise.all([detChain, netLeg]).then(function () {
+      palmWarmDetail = { detectorOk: detOk, palmnetOk: netOk };
+      palmWarmState = detOk ? 'ready' : 'failed';
+      return palmWarmState;
+    });
   }
 
   /* The facing of the camera ACTUALLY delivering frames right
@@ -4637,44 +4774,61 @@
     /* The burst itself: grabs at ~55 ms across the 900 ms window
        (12-18 frames), the circular indicator tracking elapsed
        time. Grabs use per-frame canvases — the frames are stored
-       for analysis, exactly as the old burst chain required. */
-    function recordBurst() {
+       for analysis, exactly as the old burst chain required.
+       v82: the analysis no longer waits for the window to
+       close. Each grabbed frame enters the SAME ordered
+       analysis chain the moment it lands — the chain below is
+       the pre-v82 analyseBurst body verbatim (same per-frame
+       analysis, same tracker sampling on even indices, same
+       pose tagging, same paint yield between frames) — so by
+       the time the 900 ms window closes, the early frames are
+       already analysed and only the tail remains. The first
+       grab is also taken at once instead of one 55 ms interval
+       late. What this does NOT change: which frames are
+       grabbed (same window, same pace, same min/max counts),
+       what is computed on them, the order results land in, or
+       the cancel rule — a cancel observed by the chain stops
+       the remaining analyses, and the caller's post-burst
+       cancel check still ends the capture as 'stopped' before
+       anything is banked. One honest difference: on a capture
+       cancelled mid-burst, some frames may already have been
+       analysed when the cancel lands (CPU spent, nothing
+       stored) where the old chain had analysed none. */
+    /* v82 (Chairman's method order, 2026-11-27 22:49 — enrol
+       in the 3-4 s band by pipeline overlap): the burst's
+       analysis chain starts per grabbed frame, INSIDE the
+       fixed 900 ms window, instead of strictly after it. The
+       chain body is the pre-v82 analyseBurst body verbatim —
+       same per-frame analysis, same order, same tracker
+       sampling on even indices, same pose tagging, same paint
+       yield — and the caller still banks nothing until the
+       whole chain has drained and the cancel check has run.
+       The first grab is taken at once instead of one 55 ms
+       interval late. What this does NOT change: the window
+       (900 ms), the grab pace (55 ms), the min/max frame
+       counts, the quality gates, the banked template count,
+       or the cancel rule. The measured cost, reported in the
+       v82 report: on the timing rig each frame analysis is a
+       long main-thread task (~850 ms there), so in-window
+       analyses starve the grab interval and the grabbed-frame
+       count falls (rig: 16 -> 3, with one enrolment in three
+       failing selection on that starved pool). On the
+       Chairman's phone the per-frame cost is far lower
+       (~200-300 ms), so the pool cost is smaller there — but
+       it is real, and it is the price of the ordered overlap;
+       the banked count (3 templates) and every gate are
+       untouched. */
+    function recordBurstAnalysed() {
       var frames = [];
-      var started = Date.now();
-      return new Promise(function (resolve) {
-        var doneFlag = false;
-        var finish = function () { if (doneFlag) return; doneFlag = true; clearInterval(iv); setRing(null); resolve(frames); };
-        var iv = setInterval(function () {
-          var f = grabVideoFrame(video);
-          if (f) { frames.push(f); Research.tapFrame(f); }
-          setRing((Date.now() - started) / B.PALMPRINT_BURST_MS);
-          if (frames.length >= B.PALMPRINT_BURST_MAX_FRAMES) finish();
-        }, 55);
-        setTimeout(finish, B.PALMPRINT_BURST_MS);
-      });
-    }
-    /* v50: a paint yield for the burst analysis — wait for the
-       next animation frame (raced against 60 ms so a throttled
-       rAF can never stall the analysis) so the browser actually
-       paints between burst frames. Before v50 the burst chain
-       ran 12-18 full analyses back to back in one starved
-       cascade (rig: one 12.7 s long task for 14 frames, zero
-       rAF buckets) with the UI frozen on the capture message. */
-    function yieldForPaint() {
-      if (typeof requestAnimationFrame !== 'function') return waitMs(0);
-      return Promise.race([
-        new Promise(function (resolve) { requestAnimationFrame(function () { setTimeout(resolve, 0); }); }),
-        waitMs(60)
-      ]);
-    }
-    function analyseBurst(frames) {
-      if (statusEl) statusEl.textContent = 'Palm captured — analysing the burst, hold on...';
       var results = [];
       var lmSets = [];
+      var started = Date.now();
       var chain = Promise.resolve();
-      frames.forEach(function (frame, i) {
+      var statusSet = false;
+      function enqueue(frame, i) {
         chain = chain.then(function () {
           if (control && control.cancelled) return;
+          if (!statusSet) { statusSet = true; if (statusEl) statusEl.textContent = 'Palm found — capturing and analysing, hold steady...'; }
           return analysePalmFrame(frame).then(function (r) {
             if (i % 2 === 0) tracker.add(frame, r.lm);
             results.push(r);
@@ -4692,9 +4846,45 @@
             }
           }).then(function () { return yieldForPaint(); }); // v50: paint between burst frames
         });
+      }
+      return new Promise(function (resolve) {
+        var doneFlag = false;
+        var finish = function () {
+          if (doneFlag) return; doneFlag = true; clearInterval(iv); setRing(null);
+          resolve(chain.then(function () { return { frames: frames, results: results, lmSets: lmSets }; }));
+        };
+        var grab = function () {
+          var f = grabVideoFrame(video);
+          if (f) { frames.push(f); Research.tapFrame(f); enqueue(f, frames.length - 1); }
+          setRing((Date.now() - started) / B.PALMPRINT_BURST_MS);
+          if (frames.length >= B.PALMPRINT_BURST_MAX_FRAMES) finish();
+        };
+        grab();
+        var iv = setInterval(grab, 55);
+        setTimeout(finish, B.PALMPRINT_BURST_MS);
       });
-      return chain.then(function () { return { results: results, lmSets: lmSets }; });
     }
+    /* v50: a paint yield for the burst analysis — wait for the
+       next animation frame (raced against 60 ms so a throttled
+       rAF can never stall the analysis) so the browser actually
+       paints between burst frames. Before v50 the burst chain
+       ran 12-18 full analyses back to back in one starved
+       cascade (rig: one 12.7 s long task for 14 frames, zero
+       rAF buckets) with the UI frozen on the capture message. */
+    function yieldForPaint() {
+      if (typeof requestAnimationFrame !== 'function') return waitMs(0);
+      return Promise.race([
+        new Promise(function (resolve) { requestAnimationFrame(function () { setTimeout(resolve, 0); }); }),
+        waitMs(60)
+      ]);
+    }
+    /* v82: analyseBurst no longer exists as a separate phase —
+       its body IS the chain inside recordBurstAnalysed above,
+       started per frame as the frame is grabbed (see there).
+       App-seat fix (v82 review): the in-window status line no
+       longer claims the palm is already "captured" while the
+       burst is still recording — it reads "capturing and
+       analysing" for the whole overlapped phase. */
     function out(extra) {
       var sp = tracker.state();
       var base = { results: [], burst: null, spoof: sp, lightTag: sp.lightTag, elapsedMs: Date.now() - t0 };
@@ -4707,16 +4897,13 @@
       if (w === 'detector') return out({ detectorFailed: true });
       if (w !== 'burst') return out({ timedOut: true, hint: lastHint });
       if (statusEl) statusEl.textContent = 'Palm found — capturing, hold steady...';
-      return recordBurst().then(function (burstFrames) {
+      return recordBurstAnalysed().then(function (a) {
         // v50: a cancel that landed during the 900 ms burst or
         // the burst analysis ends the capture as 'stopped' here,
         // instead of banking a palm for a view nobody is on.
         if (control && control.cancelled) { var o = out(); o.stopped = true; return o; }
-        return analyseBurst(burstFrames).then(function (a) {
-          if (control && control.cancelled) { var o2 = out(); o2.stopped = true; return o2; }
-          var lv = B.palmprintBurstLiveness(a.lmSets);
-          return out({ results: a.results, burst: { frames: a.results.length, liveness: lv } });
-        });
+        var lv = B.palmprintBurstLiveness(a.lmSets);
+        return out({ results: a.results, burst: { frames: a.results.length, liveness: lv } });
       });
     });
   }
@@ -4768,6 +4955,15 @@
      never dressed up as "no hand detected", which sent the user
      hunting for a hand problem that did not exist. */
   var DETECTOR_FAIL_MSG = 'The hand detector could not run on this device, so this scan could not look for a hand. This usually means the detector files have not loaded — check the connection, wait a few seconds, and try the scan again.';
+  /* v83 board fix (Design seat, FIX-C): the ARM variant of the
+     detector-failure wording. DETECTOR_FAIL_MSG ends "try the
+     scan again", which contradicts the held arm state — SCAN is
+     disabled and the real retry is Start Camera. This variant
+     keeps the same facts and ends with the Start Camera
+     instruction. Used ONLY at the two failed-arm sites in
+     startTermCamera; DETECTOR_FAIL_MSG itself is unchanged and
+     still used at every scan-time site. */
+  var DETECTOR_FAIL_ARM_MSG = 'The hand detector could not run on this device, so the scanner cannot start yet. This usually means the detector files have not loaded — check the connection, wait a few seconds, then tap Start Camera to try again.';
 
   function streamVerifyPalm(video, statusEl, person, people, swapCamera, fieldRec, control, opts) {
     var t0 = Date.now();
@@ -4810,6 +5006,26 @@
     // the impostor-maxima those paths already compute).
     var strictMoney = !!(opts && opts.strictMoney);
     var moneyGate = B.createMoneyScanGate();
+    /* v82: opts.peopleReady — the people list may arrive as a
+       promise (the terminal and Add Money scans now start
+       streaming on a by-id read of the target person and load
+       the full list concurrently). Within this stream the list
+       is consumed ONLY by the four impostor functions below,
+       all of which run at the verdict tail; they await the
+       same list via peopleForImpostors(), so the strict-money
+       margin is judged against every enrolled profile exactly
+       as when the list was loaded before the stream. A load
+       failure rejects into the tail and fails the scan closed
+       — the pre-v82 behaviour (the load sat in front of the
+       stream, its failure failing the scan before it started)
+       authorised exactly as little: nothing. Without the
+       option, the array argument is used as-is, exactly as
+       every pre-v82 caller passes it. */
+    var peopleSettled = (opts && opts.peopleReady && typeof opts.peopleReady.then === 'function')
+      ? opts.peopleReady.then(function (list) { return Array.isArray(list) ? list : []; })
+      : null;
+    if (peopleSettled) peopleSettled.catch(function () {}); // hygiene branch: a scan that ends before its tail must not leave an unhandled rejection; peopleForImpostors still returns the original promise, rejection and all
+    function peopleForImpostors() { return peopleSettled || Promise.resolve(people || []); }
     // v44: per-stage timing accumulators for the result-panel
     // diagnostics — the phone's own numbers, measured on-device:
     // landmark inference + ROI/base encode from analysePalmFrame,
@@ -4850,6 +5066,7 @@
     var frameEdcc = {};   // frameIdx -> EDCC result object (or null once applied)
     var frameNeural = {}; // frameIdx -> neural cosine | null (absent = still pending)
     var frameRoiByIdx = {}; // frameIdx -> the frame's ROI array
+    var framePairByIdx = {}; // v82: frameIdx -> the frame's PalmNet embedding pair, kept so the verdict tail can reuse it (see neuralImpostorMaxFor)
     var bestNeural = null;
     /* v51 HAND SEPARATION state: this profile's recorded hand
        (null for every pre-v51 profile) and the scan's probe hand
@@ -4905,25 +5122,43 @@
         return probes.length ? B.palmnetScoreEmbeddings(neuralBanked, probes) : null;
       }).catch(function () { return null; });
     }
-    function neuralImpostorMaxFor(rois, probeHand) {
+    function neuralImpostorMaxFor(rois, probeHand, winFrameIdx) {
       // v51: profiles the hand gate excludes are not candidates
       // for the impostor-max either — a cross-hand profile's
       // twin-driven score must not shrink the money margin.
-      var others = (people || []).filter(function (p) {
-        return p.id !== person.id && B.palmnetProfileSane(p.palmProfile) && !B.handGateBlocks(probeHand, B.palmProfileHand(p.palmProfile));
-      });
-      if (!others.length || !rois || !rois.length) return Promise.resolve(null);
-      return Promise.all(rois.map(function (roi) { return PalmNet.embedPair(roi); })).then(function (pairs) {
-        var probes = [];
-        pairs.forEach(function (pr) { if (pr) pr.forEach(function (e) { if (e) probes.push(e); }); });
-        if (!probes.length) return null;
-        var cur = null;
-        others.forEach(function (p) {
-          var s = B.palmnetScoreProfile(p.palmProfile, probes);
-          if (s !== null && (cur === null || s > cur)) cur = s;
+      // v82: the candidate list comes via peopleForImpostors()
+      // (see the peopleReady note at the head of this stream);
+      // its rejection is NOT caught here — it fails the scan
+      // closed at the tail. The pre-v82 catch survives, scoped
+      // to the embed/score chain it always covered.
+      return peopleForImpostors().then(function (peopleList) {
+        var others = peopleList.filter(function (p) {
+          return p.id !== person.id && B.palmnetProfileSane(p.palmProfile) && !B.handGateBlocks(probeHand, B.palmProfileHand(p.palmProfile));
         });
-        return cur;
-      }).catch(function () { return null; });
+        if (!others.length || !rois || !rois.length) return null;
+        /* v82: a streamed win's ROI was already embedded during
+           the stream — framePairByIdx holds the very pair that
+           produced its neural score — and embedding the
+           identical ROI again here was a second full engine
+           pass in the verdict tail. The cached pair is that
+           computation's own output, so every score below is
+           the same number; only the wait is gone. The
+           collected-set path (finalOut) has no single win
+           frame and embeds exactly as before. */
+        var cached = (typeof winFrameIdx === 'number' && rois.length === 1) ? framePairByIdx[winFrameIdx] : null;
+        var pairsP = cached ? Promise.resolve([cached]) : Promise.all(rois.map(function (roi) { return PalmNet.embedPair(roi); }));
+        return pairsP.then(function (pairs) {
+          var probes = [];
+          pairs.forEach(function (pr) { if (pr) pr.forEach(function (e) { if (e) probes.push(e); }); });
+          if (!probes.length) return null;
+          var cur = null;
+          others.forEach(function (p) {
+            var s = B.palmnetScoreProfile(p.palmProfile, probes);
+            if (s !== null && (cur === null || s > cur)) cur = s;
+          });
+          return cur;
+        }).catch(function () { return null; });
+      });
     }
     /* The PalmNet sentence for measured/diagnostics text: both
        scores and the accepting path when a score exists, the
@@ -4952,35 +5187,43 @@
        evidence (biometrics.js applies the reporting band); the
        win path keeps using the scalar maxima exactly as before. */
     function impostorTopFor(rois, probeHand) {
-      var others = (people || []).filter(function (p) {
-        return p.id !== person.id && B.palmprintProfileSane(p.palmProfile);
-      });
-      if (!others.length) return Promise.resolve(null);
-      return Match.verifyRoisMulti(others.map(function (p) { return p.palmProfile; }), rois, { probeHand: probeHand || null }).then(function (results) {
-        var top = null;
-        (results || []).forEach(function (ro, i) {
-          var s = ro && typeof ro.similarity === 'number' ? ro.similarity : null;
-          if (s !== null && (top === null || s > top.score)) top = { id: others[i].id, score: s };
+      // v82: candidates via peopleForImpostors() — its rejection
+      // propagates (fails the scan closed); the pre-v82 catch
+      // survives, scoped to the match call it always covered.
+      return peopleForImpostors().then(function (peopleList) {
+        var others = peopleList.filter(function (p) {
+          return p.id !== person.id && B.palmprintProfileSane(p.palmProfile);
         });
-        return top;
-      }).catch(function () { return null; });
+        if (!others.length) return null;
+        return Match.verifyRoisMulti(others.map(function (p) { return p.palmProfile; }), rois, { probeHand: probeHand || null }).then(function (results) {
+          var top = null;
+          (results || []).forEach(function (ro, i) {
+            var s = ro && typeof ro.similarity === 'number' ? ro.similarity : null;
+            if (s !== null && (top === null || s > top.score)) top = { id: others[i].id, score: s };
+          });
+          return top;
+        }).catch(function () { return null; });
+      });
     }
     function neuralImpostorTopFor(rois, probeHand) {
-      var others = (people || []).filter(function (p) {
-        return p.id !== person.id && B.palmnetProfileSane(p.palmProfile) && !B.handGateBlocks(probeHand, B.palmProfileHand(p.palmProfile));
-      });
-      if (!others.length || !rois || !rois.length) return Promise.resolve(null);
-      return Promise.all(rois.map(function (roi) { return PalmNet.embedPair(roi); })).then(function (pairs) {
-        var probes = [];
-        pairs.forEach(function (pr) { if (pr) pr.forEach(function (e) { if (e) probes.push(e); }); });
-        if (!probes.length) return null;
-        var top = null;
-        others.forEach(function (p) {
-          var s = B.palmnetScoreProfile(p.palmProfile, probes);
-          if (s !== null && (top === null || s > top.score)) top = { id: p.id, score: s };
+      // v82: candidates via peopleForImpostors(), as above.
+      return peopleForImpostors().then(function (peopleList) {
+        var others = peopleList.filter(function (p) {
+          return p.id !== person.id && B.palmnetProfileSane(p.palmProfile) && !B.handGateBlocks(probeHand, B.palmProfileHand(p.palmProfile));
         });
-        return top;
-      }).catch(function () { return null; });
+        if (!others.length || !rois || !rois.length) return null;
+        return Promise.all(rois.map(function (roi) { return PalmNet.embedPair(roi); })).then(function (pairs) {
+          var probes = [];
+          pairs.forEach(function (pr) { if (pr) pr.forEach(function (e) { if (e) probes.push(e); }); });
+          if (!probes.length) return null;
+          var top = null;
+          others.forEach(function (p) {
+            var s = B.palmnetScoreProfile(p.palmProfile, probes);
+            if (s !== null && (top === null || s > top.score)) top = { id: p.id, score: s };
+          });
+          return top;
+        }).catch(function () { return null; });
+      });
     }
     function impostorMaxFor(rois, probeHand) {
       // v35: one multi-profile call — the probe codes are encoded
@@ -4991,17 +5234,22 @@
       // v51: the probe hand rides the call — a profile the hand
       // gate excludes returns no similarity and so contributes
       // nothing to the max (it is not an impostor candidate).
-      var others = (people || []).filter(function (p) {
-        return p.id !== person.id && B.palmprintProfileSane(p.palmProfile);
-      });
-      if (!others.length) return Promise.resolve(null);
-      return Match.verifyRoisMulti(others.map(function (p) { return p.palmProfile; }), rois, { probeHand: probeHand || null }).then(function (results) {
-        var cur = null;
-        (results || []).forEach(function (ro) {
-          var s = ro && typeof ro.similarity === 'number' ? ro.similarity : null;
-          if (s !== null && (cur === null || s > cur)) cur = s;
+      // v82: candidates via peopleForImpostors(), as above (this
+      // function never caught — a match failure rejects, as
+      // before; now a people-load failure rejects the same way).
+      return peopleForImpostors().then(function (peopleList) {
+        var others = peopleList.filter(function (p) {
+          return p.id !== person.id && B.palmprintProfileSane(p.palmProfile);
         });
-        return cur;
+        if (!others.length) return null;
+        return Match.verifyRoisMulti(others.map(function (p) { return p.palmProfile; }), rois, { probeHand: probeHand || null }).then(function (results) {
+          var cur = null;
+          (results || []).forEach(function (ro) {
+            var s = ro && typeof ro.similarity === 'number' ? ro.similarity : null;
+            if (s !== null && (cur === null || s > cur)) cur = s;
+          });
+          return cur;
+        });
       });
     }
     function spoofOut(sp) {
@@ -5029,7 +5277,7 @@
          v49 margin judgement below and every recorded field
          are exactly the ones the sequential chain produced;
          only the verdict tail's wall-clock cost changes. */
-      return Promise.all([impostorMaxFor(win.rois, winHand), neuralImpostorMaxFor(win.rois, winHand)]).then(function (both) {
+      return Promise.all([impostorMaxFor(win.rois, winHand), neuralImpostorMaxFor(win.rois, winHand, win.frameIdx)]).then(function (both) {
         var impMax = both[0], nImpMax = both[1];
         {
           var extras = { neuralScore: typeof win.res.neuralScore === 'number' ? win.res.neuralScore : null, neuralImpostorMax: nImpMax, acceptedBy: win.res.acceptedBy || null, probeHand: winHand, profileHand: profileHand };
@@ -5284,6 +5532,7 @@
                   frameNeural[myIdx] = null;
                 } else {
                   PalmNet.embedPair(r.roi).then(function (pair) {
+                    framePairByIdx[myIdx] = pair || null; // v82: kept for the verdict tail's reuse (see neuralImpostorMaxFor)
                     var s = pair ? B.palmnetScoreEmbeddings(neuralBanked, pair) : null;
                     frameNeural[myIdx] = s;
                     if (s !== null && (bestNeural === null || s > bestNeural)) bestNeural = s;
@@ -6446,6 +6695,12 @@
   $('termSearch').addEventListener('input', debounce(renderTermPeople, 150)); // v77: debounced (was: full re-render per keystroke)
   function startTermCamera() {
     var status = $('termStatus');
+    /* v83: arming the terminal is also the warm-up retry —
+       after a failed warm-up, Start Camera (or a customer
+       change, which lands here too) runs the warm-up again
+       instead of leaving the terminal held until an app
+       restart. No-op unless the warm state is 'failed'. */
+    Pipeline.retryWarm();
     getTerminalPerson().then(function (person) {
       if (!person) { $('termResult').innerHTML = '<div class="error">Select an enrolled person first. Enroll on this device if the registry is empty.</div>'; return; }
       if (!personHasMethod(person)) {
@@ -6457,14 +6712,74 @@
       }
       Cam.start($('termVideo'), camFacing[termFacingKey()], termFacingKey()).then(function () {
         Pipeline.enterScanView();
-        $('termScan').disabled = false;
         // v58 MANUAL SCAN: the camera opening never starts the
         // scan. The terminal is armed — the customer positions
         // an open palm in the frame, then SCAN is tapped and
         // Show & Pay reads the palm as it streams, exactly as
         // before. (v43-v57 auto-started here; retired by the
         // Chairman's 2026-11-25 order.)
-        status.textContent = 'Camera on — the customer positions an open palm in the frame, anywhere in view, then tap SCAN.';
+        /* v83: the armed state also reflects the pipeline warm
+           state (Pipeline.warmState). Warm: the v58 armed state
+           above, unchanged. Still warming: SCAN stays held and
+           the status says the scanner is getting ready — the
+           wait happens HERE, while the operator is still
+           keying the amount and the customer is approaching,
+           not inside the timed scan (the v82 tail). The camera
+           itself has been live since the view opened (the v58
+           arm), so its exposure settles over the same window.
+           Warm-up failed: the surface says so with the
+           detector's own honest wording and SCAN stays held;
+           Start Camera retries the warm-up. The camera preview
+           analyses nothing while held (v58) and no frame is
+           captured, tapped or collected before a scan starts —
+           the v81 consent gates are exactly where they were. */
+        var warmNow = Pipeline.warmState();
+        if (warmNow === 'ready') {
+          $('termScan').disabled = false;
+          status.textContent = 'Camera on — the customer positions an open palm in the frame, anywhere in view, then tap SCAN.';
+          return;
+        }
+        $('termScan').disabled = true;
+        if (warmNow === 'failed') {
+          /* v83 board fix (Design seat, FIX-B/FIX-C): the pill
+             matches the held state, and the result area carries
+             the arm variant of the detector wording (the retry
+             here is Start Camera, not a scan). */
+          setSurfacePill('t', 'Not ready');
+          status.textContent = 'Scanner not ready — tap Start Camera to try again.';
+          $('termResult').innerHTML = '<div class="error">' + DETECTOR_FAIL_ARM_MSG + '</div>';
+          return;
+        }
+        setSurfacePill('t', 'Getting ready');
+        status.textContent = 'Camera on — the scanner is getting ready, just a moment…';
+        Pipeline.whenWarm().then(function () {
+          // A view change, a running scan or a different
+          // camera owns the surface by now — this continuation
+          // stands down in all three cases.
+          if (!$('page-terminal').classList.contains('active')) return;
+          if (palmScanBusy || termScanClaim) return;
+          if (!(Cam.stream && Cam.video === $('termVideo'))) return;
+          /* v83 app-seat fix (review 2, F1): the search box can
+             silently change the selected person while warming
+             (renderTermPeople + fillTermMethodNote, no change
+             event, no camera restart) — never enable SCAN for
+             a person who has no usable palm. */
+          var sel = termPeopleCache.find(function (p) { return p.id === $('termPerson').value; }) || null;
+          if (!sel || !personHasMethod(sel)) return;
+          if (Pipeline.warmState() === 'ready') {
+            $('termScan').disabled = false;
+            /* v83 board fix (Design seat, FIX-B): restore the
+               armed pill the warming state replaced. */
+            setSurfacePill('t', 'Ready');
+            status.textContent = 'Camera on — the customer positions an open palm in the frame, anywhere in view, then tap SCAN.';
+          } else {
+            /* v83 board fix (Design seat, FIX-B/FIX-C): held
+               failed state — pill + arm wording, as above. */
+            setSurfacePill('t', 'Not ready');
+            status.textContent = 'Scanner not ready — tap Start Camera to try again.';
+            $('termResult').innerHTML = '<div class="error">' + DETECTOR_FAIL_ARM_MSG + '</div>';
+          }
+        });
       }).catch(function (e) { $('termResult').innerHTML = cameraErrorHTML(e); status.textContent = 'Camera blocked.'; });
     });
   }
@@ -6553,21 +6868,83 @@
     var method = 'palm';
     var amount = Number($('termAmount').value || 0);
     $('termNext').classList.add('hidden');
-    $('termResult').innerHTML = '<div class="notice">Scanning — comparing against the stored enrollment...</div>';
-    /* v74 (Seat 1 fix): the timer starts at the tap, exactly as
-       on the wallet card — the registry lookup is part of the
-       scan session the user experiences. The exits below that
-       start no scan release the claim and reset it again, so a
-       rejected tap never leaves a ticking or frozen readout
-       behind. */
-    setSurfacePill('t', 'Scanning');
-    scanTimerStart('t', 'Scanned in ');
-    /* v79 (seat review): the blocked-ID set loads asynchronously
-       at boot; await it before the pre-scan gate below so a cold
-       first scan cannot slip through the not-yet-loaded window.
-       The post-verdict re-check further down stands regardless. */
-    Promise.resolve().then(function () { return Sync.ensureBlockedIds(); }).catch(function () {}).then(function () { return DB.all('people'); }).then(function (people) {
-      var person = people.find(function (p) { return p.id === personId; });
+    /* v83: the invocation's control exists from the tap, so
+       leaving the view or changing the customer during the
+       warm wait below cancels THIS invocation through
+       cancelTermScan — before v83 the control was created
+       after the registry lookup, and a cancel in that window
+       landed on a previous scan's control. */
+    var control = { cancelled: false, onFrame: function (info) { var fr = termSession.frame({ hasHand: info.hasHand, pose: info.pose }); termInds.update(info, fr); } };
+    termControl = control;
+    if (Pipeline.warmState() !== 'ready') {
+      /* v83 board fix (Product Manager seat, FIX-D): plain
+         wording, aligned to the arm state — no "palm engine",
+         no "warm" as an operator-facing state. */
+      $('termResult').innerHTML = '<div class="notice">Getting the scanner ready, just a moment — the scan will start as soon as the scanner is ready…</div>';
+    }
+    /* v82: the full people list loads CONCURRENTLY
+       (termPeopleReady — awaited only by the stream's impostor
+       tail, via opts.peopleReady); this chain reads the target
+       person by id, so the stream starts after one row's
+       unseal instead of every bank's. A list failure rejects
+       inside the tail and fails the scan closed; a by-id
+       failure fails this chain exactly as the full load's
+       failure did before. */
+    var termPeopleReady = DB.all('people');
+    termPeopleReady.catch(function () {}); // hygiene branch — the stream's own branch carries the rejection
+    /* v83 (the warm gate — the Chairman's merchant-tail order,
+       2026-11-27 23:22): the timed run does not begin until
+       the pipeline reports warm. Before v83 the timer started
+       at the tap (the v74 Seat 1 fix) and the chain raced the
+       fire-and-forget pre-warm: on the first scan after a
+       reopen, the scan's first landmarks calls queued behind
+       the leftover warm-up sends on PalmProc's single-flight
+       chain and the wait was stamped into durationMs (the
+       2,326 ms phone record). Now the tap waits at the
+       getting-ready notice above; the pill and the timer start
+       when warm readiness settles, and everything the v74 span
+       covered after that point — the blocked-ID await, the
+       registry lookup, the stream, the verdict — is inside the
+       span exactly as before. On a warm pipeline the gate
+       resolves in a microtask and the span is the v74 span
+       unchanged. A warm-up FAILURE ends the invocation here
+       with the detector's own honest wording: no scan is run,
+       nothing is verified, no payment is attempted, and the
+       settle below releases the claim — fail-closed, with a
+       background retry kicked so the next arm can succeed. */
+    var gateEnded = false;
+    /* v83 board fix (Design seat, FIX-B): a gate-level warm
+       failure leaves the surface pill at 'Not ready' — the
+       settle below must not restore 'Ready' over it. */
+    var gateFailed = false;
+    Pipeline.whenWarm().then(function (warm) {
+      if (control.cancelled) { gateEnded = true; return null; }
+      if (warm !== 'ready') {
+        gateEnded = true;
+        gateFailed = true;
+        setSurfacePill('t', 'Not ready');
+        /* v83 app-seat fixes (review 1 F1 + review 2 F3b):
+           the arm's settle continuation may have stood down
+           on this tap's own claim, leaving nobody to write
+           the status line — write the arm path's own failure
+           line here too, verbatim, so the operator never sees
+           a stale "getting ready" over the error. */
+        $('termStatus').textContent = 'Scanner not ready — tap Start Camera to try again.';
+        $('termResult').innerHTML = '<div class="error">' + DETECTOR_FAIL_MSG + '</div>';
+        Snd.buzz();
+        Pipeline.retryWarm();
+        return null;
+      }
+      setSurfacePill('t', 'Scanning');
+      scanTimerStart('t', 'Scanned in ');
+      $('termResult').innerHTML = '<div class="notice">Scanning — comparing against the stored enrollment...</div>';
+      /* v79 (seat review): the blocked-ID set loads asynchronously
+         at boot; await it before the pre-scan gate below so a cold
+         first scan cannot slip through the not-yet-loaded window.
+         The post-verdict re-check further down stands regardless. */
+      return Promise.resolve().then(function () { return Sync.ensureBlockedIds(); }).catch(function () {}).then(function () { return DB.get('people', personId); });
+    }).then(function (person) {
+      if (gateEnded) return null;
       if (!person) { releaseClaim(); scanTimerReset('t'); setSurfacePill('t', 'Ready'); $('termResult').innerHTML = '<div class="error">Select an enrolled person first. Enroll on this device if the registry is empty.</div>'; return null; }
       if (!personHasMethod(person)) {
         releaseClaim(); scanTimerReset('t'); setSurfacePill('t', 'Ready');
@@ -6645,17 +7022,17 @@
         // closure, queue the wire record (no-op when sync is off).
         Sync.noteScan({ kind: 'field-test', profileName: person.name, biomId: person.id, hand: neural && neural.probeHand ? neural.probeHand : null, edccScore: genuineScore, palmnetScore: neural && typeof neural.neuralScore === 'number' ? neural.neuralScore : null, result: result, fieldTest: fieldModeOn() });
       };
-      var control = { cancelled: false, onFrame: function (info) { var fr = termSession.frame({ hasHand: info.hasHand, pose: info.pose }); termInds.update(info, fr); } };
-      termControl = control;
       termInds.reset();
-      setSurfacePill('t', 'Scanning');
-      /* v74: the timer already runs from the tap (see the head
-         of this function) — it is NOT restarted here, so the
-         measured span covers the whole session. */
+      /* v83: the control was created at the head of this
+         function (so a cancel during the warm wait reaches
+         it), and the pill + timer were set at the warm gate —
+         the measured span covers the lookup and the stream,
+         exactly as the v74 span did, and starts the moment
+         the pipeline reported warm. */
       // v67: no swap callback — the terminal scan runs on the
       // camera the user chose, start to finish (the v37-v66
       // mid-scan auto-swap is deleted, Chairman's order).
-      var attempt = streamVerifyPalm($('termVideo'), $('termStatus'), person, people, null, fieldRec, control, { strictMoney: true }).then(function (out) {
+      var attempt = streamVerifyPalm($('termVideo'), $('termStatus'), person, [], null, fieldRec, control, { strictMoney: true, peopleReady: termPeopleReady }).then(function (out) {
         palmScanBusy = false;
         $('termScan').disabled = false;
         return out;
@@ -6829,7 +7206,7 @@
        nothing of its timer or claim. (With the claim held to
        settle, a newer invocation cannot in fact start until
        this settle has run.) */
-    .then(function () { if (termScanClaim === myClaim) { termScanClaim = null; if (!tookOver) { scanTimerReset('t'); setSurfacePill('t', 'Ready'); } } scanTimerStop('t'); moneyCommitBusy = false; checkPendingSwReload(); }); // v71: the terminal flow has fully settled // v74: backstop stop for the no-verdict exits (stopped / early return)
+    .then(function () { if (termScanClaim === myClaim) { termScanClaim = null; if (!tookOver) { scanTimerReset('t'); if (!gateFailed) setSurfacePill('t', 'Ready'); } } /* v83 app-seat fix F2: a cancel during the warm wait leaves the getting-ready notice in termResult, and a later re-arm never clears it — clear it here, on this cancel path only, and only if the notice is still what termResult holds. */ if (gateEnded && control.cancelled && !tookOver && $('termResult').innerHTML.indexOf('Getting the scanner ready') !== -1) { $('termResult').innerHTML = ''; } /* v83 board fix (Pen Tester seat, FIX-F): a scan cancelled during the warm wait must not leave the terminal stuck on "getting ready" with SCAN disabled when the pipeline is in fact ready — re-run the arm state write, guarded exactly as the arm continuation guards itself (terminal page active, no scan busy/claimed, the terminal camera still live). */ if (gateEnded && control.cancelled && !tookOver && $('page-terminal').classList.contains('active') && !palmScanBusy && !termScanClaim && Cam.stream && Cam.video === $('termVideo')) { startTermCamera(); } scanTimerStop('t'); moneyCommitBusy = false; checkPendingSwReload(); }); // v71: the terminal flow has fully settled // v74: backstop stop for the no-verdict exits (stopped / early return)
   }
   $('termScan').addEventListener('click', runTermScan);
 
@@ -7208,19 +7585,66 @@
     palmScanBusy = true;
     moneyCommitBusy = true; // v71: held until the flow's writes settle, not just the scan
     $('wScanRun').disabled = true;
-    setScanPill('Scanning');
-    scanTimerStart('w', 'Scanned in '); // v74: the tap is where analysis begins (v58) — the timer starts here
     var ctx = walletScanCtx;
     walletControl = { cancelled: false, onFrame: function (info) { var fr = walletSession.frame({ hasHand: info.hasHand, pose: info.pose }); updateScanIndicators(info, fr); } };
-    Promise.resolve()
-      .then(function () { return ctx.run(); })
+    /* v83 (the warm gate — the same mechanism as the terminal,
+       applied here because the wallet money-auth start is the
+       identical shape: claim, timer, stream): the timed run
+       begins when the pipeline reports warm, not at the tap.
+       A tap that lands while the deep pre-warm is still in
+       flight — the first Add Money scan after the app is
+       reopened is the phone case — waits at the getting-ready
+       status instead of paying the leftover warm-up inside
+       the measured span. On a warm pipeline the gate resolves
+       in a microtask and the span is the v74 span unchanged
+       (v74: the tap is where analysis begins — v83 keeps that
+       on every warm scan; the gate only redefines the start
+       of a scan whose pipeline is not yet warm: it has not
+       begun). A warm-up failure ends the invocation with the
+       detector's own wording via the card's failure path —
+       fail-closed, nothing authorised, and no scan record
+       (no scan was judged), with a background warm retry
+       kicked for the next tap. */
+    if (Pipeline.warmState() !== 'ready') $('wScanStatus').textContent = 'Getting the scanner ready…';
+    /* v83 board fix (Design seat, FIX-B): the wallet pill
+       follows the same held-state pattern as the terminal —
+       'Getting ready' while the getting-ready status shows,
+       'Not ready' on warm failure (walletGateFailed keeps the
+       settle from restoring 'Ready' over it), 'Ready' restored
+       where the armed state is restored. */
+    if (Pipeline.warmState() !== 'ready') setScanPill('Getting ready');
+    var walletGateFailed = false;
+    Pipeline.whenWarm().then(function (warm) {
+      /* v83 app-seat fix (review 2, F2): a cancel during the
+         warm wait can leave the card OPEN (the wScanCancel
+         tap only sets the flag) — restore the armed state
+         here, or Scan stays disabled with the getting-ready
+         status stuck. A card already closed ignores both
+         writes harmlessly. */
+      if (walletControl.cancelled) { $('wScanRun').disabled = false; setScanPill('Ready'); $('wScanStatus').textContent = 'Camera on — position the open palm in the frame, then tap Scan.'; return null; }
+      /* v83 app-seat fix (review 2, F3a): walletScanFailed
+         never touches wScanStatus — clear the getting-ready
+         status on this failure path too. */
+      if (warm !== 'ready') { Pipeline.retryWarm(); walletGateFailed = true; setScanPill('Not ready'); $('wScanStatus').textContent = 'Scanner not ready — tap Scan to try again.'; walletScanFailed({ fail: DETECTOR_FAIL_MSG, detectorFailed: true }); return null; }
+      /* v83 board fix (Fraud Checking seat, FIX-A): warm-wait
+         blocked re-check — a block learned while this tap waited
+         at the gate (the v79 latch / persisted blocked-ID set
+         can land mid-wait) must refuse BEFORE the flow runs.
+         Take the pre-gate refusal path exactly (showWalletScan
+         re-renders the blocked card) and never call ctx.run():
+         no scan is judged and no scan record is created. */
+      if (walletBlockedActive()) { showWalletScan(walletScanCtx); return null; }
+      setScanPill('Scanning');
+      scanTimerStart('w', 'Scanned in ');
+      return ctx.run();
+    })
       .catch(function (e) { walletScanFailed({ fail: 'Scan failed: ' + (e && e.message ? e.message : e) }); })
       .then(function () {
         palmScanBusy = false; moneyCommitBusy = false; walletSession.verdict();
         scanTimerStop('w'); // v74: the verdict is rendered by now — freeze the total in the pill
         // v58: a judged scan leaves the card ARMED, not
         // re-scanning — the next scan needs a fresh tap.
-        if (!$('walletScanCard').classList.contains('hidden')) setScanPill('Ready');
+        if (!$('walletScanCard').classList.contains('hidden') && !walletGateFailed) setScanPill('Ready');
         checkPendingSwReload(); // v71: deliver a held update reload now the flow has settled
       });
   }
@@ -7238,9 +7662,16 @@
      injectable — the v74 suite drives it over a fake clock and
      fake interval timers. One timer per scan surface (w/e/t/u,
      bound to that surface's pill readout). The measured span is
-     the user-facing scan: start() is called at the scan tap —
-     the v58 manual-scan moment analysis actually begins — and
-     stop() at the verdict; the displayed value is the real
+     the user-facing scan: start() is called when the scan
+     actually begins and stop() at the verdict. Timer-start
+     definition (corrected by the v83 board, 2026-11-28): for
+     the gated surfaces (terminal + wallet money-auth) the
+     timer starts when the warm gate settles; on an already-warm
+     pipeline that is effectively the tap and the span is the
+     v74 span unchanged; for a cold gated scan the warm wait is
+     excluded, so cold durationMs is not directly comparable
+     with pre-v83 cold records. Ungated surfaces still start at
+     the tap. The displayed value is the real
      elapsed milliseconds on THIS device, rendered in tenths by
      toFixed(1) (nearest tenth of the true value — never floored,
      never cached, never carried between scans). The tick is one
@@ -7612,9 +8043,20 @@
       syncKind: 'money-auth', // v56 Scan Sync kind for this context
       prompt: 'Scan YOUR OWN palm to add ' + fmtBDT(amt.amount) + ' of demo money to your wallet. Another person\'s palm, or no match, adds nothing.',
       run: function () {
-        return DB.all('people').then(function (people) {
-          var fresh = people.find(function (p) { return p.id === me.id; }) || me;
-          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, people, null, function () {}, walletControl, { strictMoney: true }).then(function (out) {
+        /* v82: the target person is read by id and the stream
+           starts on that one row's unseal; the full list loads
+           concurrently and is awaited only by the stream's
+           impostor tail (opts.peopleReady — the strict-money
+           margin still sees every profile, and a list failure
+           fails the scan closed there). The by-id read failing
+           fails this flow exactly as the full load's failure
+           did; a missing row falls back to the session person,
+           as the find-or-me fallback did. */
+        var peopleReady = DB.all('people');
+        peopleReady.catch(function () {}); // hygiene branch — the stream's own branch carries the rejection
+        return DB.get('people', me.id).then(function (got) {
+          var fresh = got || me;
+          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), fresh, [], null, function () {}, walletControl, { strictMoney: true, peopleReady: peopleReady }).then(function (out) {
             var auth = authFromVerify(out, fresh.id);
             if (!auth.verified) { walletScanFailed(out); return; }
             return DB.nextSeq('demoSeq', 1).then(function (seq) {
