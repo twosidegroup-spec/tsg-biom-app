@@ -50,11 +50,11 @@ function sliceBetween(src, a, b) {
 }
 
 /* ---------- version coherence + identity migration -------------- */
-check('VERSION app, shell, user-visible line and chain agree at v91 (v91 named pin change: liquid glass)',
-  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v91' &&
-  swSrc.indexOf("CACHE = 'tsg-biom-shell-v91'") !== -1 &&
-  html.indexOf('TSG Biom · App v91 · TwoSide Group') !== -1 &&
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v91');
+check('VERSION app, shell, user-visible line and chain agree at v94 (v94 named pin change: declutter)',
+  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v94' &&
+  swSrc.indexOf("CACHE = 'tsg-biom-shell-v94'") !== -1 &&
+  html.indexOf('TSG Biom · App v94 · TwoSide Group') !== -1 &&
+  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v94');
 check('MIGRATION the v69 step is a pure adoption: a v68 store opens byte-identical',
   (function () {
     const before = JSON.stringify({

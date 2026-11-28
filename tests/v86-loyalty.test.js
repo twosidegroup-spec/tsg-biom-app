@@ -49,13 +49,13 @@ const WEEK = 604800000;
 const NOW = 200 * WEEK + 3 * 86400000; // inside week 200
 
 /* ---------------- version coherence ---------------- */
-check('VERSION app, shell, meta stamp, user-visible line and chain agree at v91',
-  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v91' &&
-  swSrc.indexOf("CACHE = 'tsg-biom-shell-v91'") !== -1 &&
-  htmlSrc.indexOf('<meta name="biom-build" content="v91">') !== -1 &&
-  htmlSrc.indexOf('TSG Biom · App v91 · TwoSide Group') !== -1 &&
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v91' &&
-  B.BIOM_DATA_VERSIONS.length === 55);
+check('VERSION app, shell, meta stamp, user-visible line and chain agree at v94',
+  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v94' &&
+  swSrc.indexOf("CACHE = 'tsg-biom-shell-v94'") !== -1 &&
+  htmlSrc.indexOf('<meta name="biom-build" content="v94">') !== -1 &&
+  htmlSrc.indexOf('TSG Biom · App v94 · TwoSide Group') !== -1 &&
+  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v94' &&
+  B.BIOM_DATA_VERSIONS.length === 58);
 
 /* ---------------- ledger: balance is computed ---------------- */
 check('LEDGER balance is the signed sum over events (earn +, redeem -, adjust signed)',

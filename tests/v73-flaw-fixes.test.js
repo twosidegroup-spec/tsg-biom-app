@@ -76,14 +76,14 @@ function sliceBetween(src, a, b) {
 }
 
 /* ================= RELEASE coherence ============================ */
-check('VERSION app, shell, meta stamp, user-visible line and chain agree at v91 (v91 named pin change: liquid glass)',
-  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v91' &&
-  swSrc.indexOf("CACHE = 'tsg-biom-shell-v91'") !== -1 &&
-  html.indexOf('<meta name="biom-build" content="v91">') !== -1 &&
-  html.indexOf('TSG Biom · App v91 · TwoSide Group') !== -1 &&
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v91');
-check('MIGRATION the chain ends at v88 with 52 links (v91 named pin change: liquid glass)',
-  B.BIOM_DATA_VERSIONS.length === 55 && B.BIOM_DATA_VERSIONS[0] === 'v37');
+check('VERSION app, shell, meta stamp, user-visible line and chain agree at v94 (v94 named pin change: declutter)',
+  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v94' &&
+  swSrc.indexOf("CACHE = 'tsg-biom-shell-v94'") !== -1 &&
+  html.indexOf('<meta name="biom-build" content="v94">') !== -1 &&
+  html.indexOf('TSG Biom · App v94 · TwoSide Group') !== -1 &&
+  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v94');
+check('MIGRATION the chain ends at v94 with 58 links (v94 named pin change: declutter)',
+  B.BIOM_DATA_VERSIONS.length === 58 && B.BIOM_DATA_VERSIONS[0] === 'v37');
 check('MIGRATION the v73 step is a pure adoption: a v72-stamped snapshot opens unchanged under v73',
   (function () {
     const store = {

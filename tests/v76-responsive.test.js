@@ -60,12 +60,12 @@ const swSrc = fs.readFileSync(path.join(root, 'sw.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
 
 /* ---------- version coherence + identity migration -------------- */
-check('VERSION app, shell, meta stamp, user-visible line and chain agree at v91',
-  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v91' &&
-  swSrc.indexOf("CACHE = 'tsg-biom-shell-v91'") !== -1 &&
-  html.indexOf('<meta name="biom-build" content="v91">') !== -1 &&
-  html.indexOf('TSG Biom · App v91 · TwoSide Group') !== -1 &&
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v91');
+check('VERSION app, shell, meta stamp, user-visible line and chain agree at v94',
+  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v94' &&
+  swSrc.indexOf("CACHE = 'tsg-biom-shell-v94'") !== -1 &&
+  html.indexOf('<meta name="biom-build" content="v94">') !== -1 &&
+  html.indexOf('TSG Biom · App v94 · TwoSide Group') !== -1 &&
+  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v94');
 check('MIGRATION the v76 step is a pure adoption: a v75 store opens byte-identical at v76',
   (function () {
     const before = JSON.stringify({ people: [{ id: 'p1', name: 'Gate', wallet: { balance: 800 } }], logs: [], transactions: [], meta: [] });

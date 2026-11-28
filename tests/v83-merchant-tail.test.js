@@ -74,13 +74,13 @@ function sliceBetween(src, a, b) {
 }
 
 /* ---------------- version coherence ---------------- */
-check('VERSION app, shell, meta stamp, user-visible line and chain agree at v91',
-  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v91' &&
-  swSrc.indexOf("CACHE = 'tsg-biom-shell-v91'") !== -1 &&
-  htmlSrc.indexOf('<meta name="biom-build" content="v91">') !== -1 &&
-  htmlSrc.indexOf('TSG Biom · App v91 · TwoSide Group') !== -1 &&
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v91' &&
-  B.BIOM_DATA_VERSIONS.length === 55);
+check('VERSION app, shell, meta stamp, user-visible line and chain agree at v94',
+  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v94' &&
+  swSrc.indexOf("CACHE = 'tsg-biom-shell-v94'") !== -1 &&
+  htmlSrc.indexOf('<meta name="biom-build" content="v94">') !== -1 &&
+  htmlSrc.indexOf('TSG Biom · App v94 · TwoSide Group') !== -1 &&
+  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v94' &&
+  B.BIOM_DATA_VERSIONS.length === 58);
 
 /* ---------------- migration: v83 is a pure adoption ---------------- */
 check('MIGRATION the v83 step is a pure adoption: a v82 store opens byte-identical at v83', (function () {

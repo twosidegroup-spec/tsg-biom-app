@@ -49,7 +49,7 @@ check('CSP the page sends no referrer', html.indexOf('<meta name="referrer" cont
 check('SELF-HOST no shipped file references the jsDelivr CDN any more',
   Object.keys(shipped).every(function (k) { return shipped[k].indexOf('cdn.jsdelivr.net') === -1; }));
 check('SELF-HOST MediaPipe loads from the vendored copy (script tag + locateFile)',
-  html.indexOf('src="vendor/mediapipe-hands-0.4.1675469240/hands.js?b=v91"') !== -1 &&
+  html.indexOf('src="vendor/mediapipe-hands-0.4.1675469240/hands.js?b=v94"') !== -1 &&
   appSrc.indexOf("'vendor/mediapipe-hands-0.4.1675469240/' + f") !== -1);
 check('SELF-HOST ONNX Runtime is REMOVED — the TSG Palm Engine ships in biometrics.js (v65 named pin change: the v64 vendored-runtime pin is superseded by the TSG-ONLY programme)',
   appSrc.indexOf('B.palmEngineSource()') !== -1 &&
@@ -80,8 +80,8 @@ check('MODEL a context without SubtleCrypto fails soft with the reason stated, o
   (appSrc.match(/no SubtleCrypto/g) || []).length >= 2);
 
 /* ---------- service worker (Seat 2 M-3) ---------------------------- */
-check('SW the shell is v88 and models/ + vendor/ are network-only (never cached; (v91 named pin change: liquid glass))',
-  swSrc.indexOf("CACHE = 'tsg-biom-shell-v91'") !== -1 &&
+check('SW the shell is v88 and models/ + vendor/ are network-only (never cached; (v94 named pin change: declutter))',
+  swSrc.indexOf("CACHE = 'tsg-biom-shell-v94'") !== -1 &&
   swSrc.indexOf("url.pathname.indexOf('/models/')") !== -1 &&
   swSrc.indexOf("url.pathname.indexOf('/vendor/')") !== -1);
 

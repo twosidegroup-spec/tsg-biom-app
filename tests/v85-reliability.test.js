@@ -62,13 +62,13 @@ function sliceBetween(src, a, b) {
 }
 
 /* ---------------- version coherence + migration ---------------- */
-check('VERSION app, shell, meta stamp, user-visible line and chain agree at v91 (v86 named pin change: Phase-3 loyalty; the v85 migration checks below stay historical)',
-  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v91' &&
-  swSrc.indexOf("CACHE = 'tsg-biom-shell-v91'") !== -1 &&
-  htmlSrc.indexOf('<meta name="biom-build" content="v91">') !== -1 &&
-  htmlSrc.indexOf('TSG Biom · App v91 · TwoSide Group') !== -1 &&
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v91' &&
-  B.BIOM_DATA_VERSIONS.length === 55);
+check('VERSION app, shell, meta stamp, user-visible line and chain agree at v94 (v86 named pin change: Phase-3 loyalty; the v85 migration checks below stay historical)',
+  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v94' &&
+  swSrc.indexOf("CACHE = 'tsg-biom-shell-v94'") !== -1 &&
+  htmlSrc.indexOf('<meta name="biom-build" content="v94">') !== -1 &&
+  htmlSrc.indexOf('TSG Biom · App v94 · TwoSide Group') !== -1 &&
+  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v94' &&
+  B.BIOM_DATA_VERSIONS.length === 58);
 check('MIGRATION v85 is a pure adoption: a v84 store (with and without a bankHealth mark) opens byte-identical at v85 — the step materialises nothing',
   (function () {
     const before = JSON.stringify({ people: [

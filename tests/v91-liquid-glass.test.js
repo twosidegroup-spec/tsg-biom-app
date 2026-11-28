@@ -62,13 +62,13 @@ check('GLASS no backdrop blur is scoped onto the enrol / topup / terminal pages'
 check('GLASS text-contrast guard: tiles and buttons sit on the STRONG glass (88% white)',
   glass.indexOf('.qa-tile{background:var(--glass-bg-strong)') !== -1 &&
   glass.indexOf('.btn{border-radius:var(--radius-pill);background:var(--glass-bg-strong)') !== -1);
-check('VERSION app, shell, chain and stamps agree at v91',
-  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v91' &&
-  swSrc.indexOf("CACHE = 'tsg-biom-shell-v91'") !== -1 &&
-  htmlSrc.indexOf('<meta name="biom-build" content="v91">') !== -1 &&
-  htmlSrc.indexOf('TSG Biom · App v91 · TwoSide Group') !== -1 &&
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v91' &&
-  B.BIOM_DATA_VERSIONS.length === 55);
+check('VERSION app, shell, chain and stamps agree at v94',
+  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v94' &&
+  swSrc.indexOf("CACHE = 'tsg-biom-shell-v94'") !== -1 &&
+  htmlSrc.indexOf('<meta name="biom-build" content="v94">') !== -1 &&
+  htmlSrc.indexOf('TSG Biom · App v94 · TwoSide Group') !== -1 &&
+  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v94' &&
+  B.BIOM_DATA_VERSIONS.length === 58);
 
 console.log('\n' + (fail === 0 ? 'ALL v91 LIQUID-GLASS TESTS PASSED (' + pass + ')' : fail + ' FAILURES, ' + pass + ' passed'));
 if (fail) process.exit(1);
