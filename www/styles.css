@@ -124,9 +124,6 @@ input:focus,select:focus{outline:2px solid rgba(22,99,217,.35);border-color:var(
 .camtoggle.flashtoggle{margin-top:8px}
 .camtoggle button:disabled{opacity:.45;cursor:default;box-shadow:none}
 .flashnote:empty{display:none}
-.checkrow{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
-.checkrow .check{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:10px 14px;font-size:14px;font-weight:700;color:var(--text);margin:0;cursor:pointer}
-.checkrow .check input{width:auto;accent-color:var(--blue);margin:0}
 .steps span.skipped{opacity:.38;text-decoration:line-through}
 .camstatus{position:absolute;left:10px;bottom:10px;background:rgba(7,28,63,.78);color:#eaf2ff;padding:7px 11px;border-radius:9px;font-size:13px}
 .notice{border:1px solid #ecd9a8;color:#7a5a0e;border-radius:14px;padding:12px 14px;font-size:14px;line-height:1.5;background:#fdf6e0}
@@ -190,20 +187,10 @@ select.personlist option{padding:12px 10px}
 .profilecard .pc-name{display:block;font-size:16px;font-weight:800}
 .profilecard .pc-id{display:block;color:var(--blue);font-weight:700;font-size:13px;margin-top:2px}
 .profilecard .pc-sub{display:block;color:var(--muted);font-size:12.5px;margin-top:4px;line-height:1.45}
-.balancebox{background:#eef3fd;border:1px solid var(--line);border-radius:18px;padding:18px;margin-top:14px;text-align:center}
-.balancebox .ballabel{color:var(--muted);font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:1px}
-.balancebox .balnum{font-size:38px;font-weight:800;color:var(--blue);margin-top:4px}
-.balancebox .balnote{color:var(--warn);font-size:13px;font-weight:700;margin-top:4px}
-.stmtrow{display:flex;justify-content:space-between;gap:12px;padding:10px 2px;border-bottom:1px solid var(--line2);font-size:14px}
-.stmtrow .smeta{color:var(--muted);font-size:12.5px;line-height:1.5}
-.stmtrow .amt{font-weight:800;white-space:nowrap}
-.stmtrow .amt.in{color:var(--ok)}
-.stmtrow .amt.out{color:var(--danger)}
 /* --- Touch targets & simpler forms --- */
 .btn{min-height:48px}
 .camtoggle button{min-height:44px;padding:10px 16px}
 input,select{padding:14px;font-size:16px;min-height:52px}
-.checkrow .check{min-height:52px}
 @media (max-width:640px){ h1{font-size:23px }
   .desk-actions{grid-template-columns:1fr} .resultbig .verdict{font-size:32px} }
 

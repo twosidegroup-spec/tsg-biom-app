@@ -21,13 +21,13 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="TSG Biom">
-<meta name="biom-build" content="v83">
+<meta name="biom-build" content="v87">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-180.png">
-<link rel="stylesheet" href="styles.css?b=v83">
-<script src="vendor/mediapipe-hands-0.4.1675469240/hands.js?b=v83"></script>
-<script src="biometrics.js?b=v83"></script>
+<link rel="stylesheet" href="styles.css?b=v87">
+<script src="vendor/mediapipe-hands-0.4.1675469240/hands.js?b=v87"></script>
+<script src="biometrics.js?b=v87"></script>
 </head>
 <body class="mode-customer">
 <!-- v71 boot splash: a neutral branded state that paints before
@@ -446,8 +446,13 @@
           <button class="setrow danger" id="acLogout"><span class="setic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"/><path d="M10 8l-4 4 4 4M6 12h11"/></svg></span><span class="setlbl">Log Out</span></button>
         </div>
       </div>
+
+      <div class="card seccard" id="acLoyaltyCard">
+        <h2>Palm Loyalty</h2>
+        <div id="acLoyaltyBody"></div>
+      </div>
     </div>
-    <div class="versionline" id="versionLine">TSG Biom · App v83 · TwoSide Group</div>
+    <div class="versionline" id="versionLine">TSG Biom · App v87 · TwoSide Group</div>
   </section>
 
   <!-- DESK (HOME) -->
@@ -473,7 +478,7 @@
     </div>
     <div class="card" style="margin-top:16px">
       <h2>Live modes</h2>
-      <p style="margin:0 0 8px"><span class="badge ok">Palm Loyalty — LIVE</span> <span class="sub">Verified palm scans earn loyalty points automatically (1 point per BDT 10 paid, 5 points for a visit scan).</span></p>
+      <p style="margin:0 0 8px"><span class="badge ok">Palm Loyalty — LIVE</span> <span class="sub">Verified palm scans and completed Biom Pay payments earn loyalty points automatically. Every earn is recorded in the customer's points statement — see My Account → Palm Loyalty.</span></p>
       <p style="margin:0"><span class="badge warn">Palm Pay — Biometric Authorised — Pending Provider Settlement</span> <span class="sub">Payments are authorised by the biometric scan and recorded on this device; money moves only when the official bKash / Nagad merchant connection is live.</span></p>
     </div>
     <div class="card" style="margin-top:16px">
@@ -596,15 +601,7 @@
         <p><b>Real matching.</b> An EDCC palmprint encoder reads the palm's own print pattern, and verification scores the live patch against the enrolled templates — the best match decides.</p>
         <p><b>Nothing is simulated.</b> If no hand or no clear print is seen, the scan fails openly. Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.</p>
       </div>
-      <details class="copyfold">
-        <summary>The full explanation</summary>
-        <p class="sub" style="margin:0">
-          TSG Biom is palm-only. MediaPipe landmarks locate the palm, a 96&times;96 palm patch is cut out and aligned from the wrist and knuckle anchors, and an EDCC palmprint encoder reads the palm's own print pattern — the method family used by real palmprint systems.
-          Enrolment runs one 900&nbsp;ms burst and banks the three sharpest time-spaced templates, bit-packed. At verification the live patch is packed the same way and a five-shift popcount matcher scores it against the enrolled templates — the best match decides.
-          Nothing here is simulated — if no hand or no clear print is seen, the scan fails openly.
-          Palm-vein scanning needs infrared hardware, which a normal camera does not have — we do not fake it.
-        </p>
-      </details>
+
     </div>
   </section>
 
@@ -692,6 +689,7 @@
         <div><button class="btn primary" id="palmCapture" disabled>Scan Palm</button></div>
       </div>
       <div id="palmMsg" style="margin-top:12px"></div>
+      <div id="palmSelfCheck" class="hidden" style="margin-top:12px"></div>
     </div>
 
     <div id="enroll-done" class="card hidden">
@@ -896,18 +894,15 @@
     <div class="grid">
       <div class="card"><h2>bKash — Tokenized Checkout API</h2>
         <p><span class="badge warn">Sandbox connected — TEST MODE · Production not connected — partnership + merchant credentials required</span></p>
-        <label>Merchant number</label><input disabled placeholder="Added after partnership approval">
-        <label>API credentials</label><input disabled placeholder="Held on the API server only — never entered in the app">
+        <p class="sub" style="margin:0">Merchant number is added after partnership approval. API credentials: Held on the API server only — never entered in the app.</p>
       </div>
       <div class="card"><h2>Nagad — Payment Gateway API</h2>
         <p><span class="badge warn">Not connected — merchant credentials required</span></p>
-        <label>Merchant number</label><input disabled placeholder="Added after partnership approval">
-        <label>API credentials</label><input disabled placeholder="Merchant keys are entered in the connected version">
+        <p class="sub" style="margin:0">Merchant number is added after partnership approval. Merchant keys are entered in the connected version.</p>
       </div>
     </div>
     <div class="card" style="margin-top:14px"><h2>Install TSG Biom as an app</h2>
       <p class="sub" style="margin:0 0 10px">Android Chrome: tap <b>Install App</b> above, or open the browser menu and choose <b>Add to Home screen / Install app</b>. iPhone Safari: tap <b>Share</b>, then <b>Add to Home Screen</b>. The app then opens full-screen from its own home-screen icon, like a normal store app.</p>
-      <button class="btn primary" id="installBtn2">Install App</button>
     </div>
   </section>
 </main>
@@ -934,6 +929,6 @@
 
 <div id="toast" class="hidden" role="status"></div>
 
-<script src="app.js?b=v83"></script>
+<script src="app.js?b=v87"></script>
 </body>
 </html>

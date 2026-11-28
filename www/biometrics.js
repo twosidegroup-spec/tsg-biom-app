@@ -2245,6 +2245,208 @@
     if (!codes || !codes.length) return false;
     return codes.length <= 3;
   }
+  /* v85 (Phase 2 reliability) — WITHIN-BURST HOLDOUT. Enrolment
+     banking (selectPalmprintBurstCodes) proves only that the
+     burst's picked frames agree with EACH OTHER; nothing checked
+     that a frame the selection did NOT pick agrees with the
+     banked templates — the evidence gap behind the 2026-11-28
+     TSG-BIO-2843 failure (a bank that passed its own banking
+     guard twice, then matched nothing). The holdout is computed
+     at banking time from data already in hand: the sharpest
+     usable open burst frame whose index is NOT in sel.picks,
+     scored against the just-banked profile through the very
+     paths a verify uses — EDCC via verifyPalmprintRois (the
+     packed matcher, mirror twin included) and PalmNet via
+     palmnetScoreProfile over the holdout frame's embeddings
+     (computed by the caller, app-side, from the frame's ROI) —
+     and fused by fusePalmVerifyResults at the FROZEN bars
+     (EDCC 0.32 / PalmNet 0.5895, fused OR). No new threshold:
+     the holdout's "verified" IS the standard fused verdict on
+     one fresh-ish frame. burstHoldoutFrame picks the frame;
+     burstHoldoutCheck scores it. Both are pure. */
+  function burstHoldoutFrame(frames, sel) {
+    if (!sel || !Array.isArray(sel.picks)) return null;
+    var usable = palmprintUsableOpenFrames(frames).filter(function (u) {
+      return !!u.roi && sel.picks.indexOf(u.index) === -1;
+    });
+    if (!usable.length) return null;
+    usable.sort(function (a, b) { return b.sharpness - a.sharpness; });
+    return usable[0];
+  }
+  function burstHoldoutCheck(holdout, profile, holdoutEmbeddings) {
+    var out = { checked: false, frameIndex: null, edccScore: null, neuralScore: null, verified: false, acceptedBy: null };
+    if (!holdout || !holdout.roi || !profile) return out;
+    var edcc = verifyPalmprintRois(profile, [holdout.roi]);
+    var neural = palmnetScoreProfile(profile, Array.isArray(holdoutEmbeddings) ? holdoutEmbeddings : []);
+    var fused = fusePalmVerifyResults(edcc && edcc.ok ? edcc : null, neural);
+    out.checked = !!(edcc && edcc.ok) || neural !== null;
+    out.frameIndex = typeof holdout.index === 'number' ? holdout.index : null;
+    out.edccScore = fused.similarity;
+    out.neuralScore = fused.neuralScore;
+    out.verified = fused.verified === true;
+    out.acceptedBy = fused.acceptedBy || null;
+    return out;
+  }
+  /* v85 — the WEAK-BANK signal. A bank is weak on holdout
+     evidence when the holdout was actually checkable (at least
+     one system scored it) and the fused verdict at the frozen
+     bars did NOT verify. An unchecked holdout (no spare frame,
+     no readable evidence) is NO signal — never a weakness claim.
+     The second signal source is the person's bankHealth mark
+     (below). Both feed DISPLAY-ONLY guidance in app.js: no
+     matcher, guard or verdict path reads either one. */
+  function bankWeakFromHoldout(holdout) {
+    return !!(holdout && holdout.checked === true && holdout.verified !== true);
+  }
+  /* v85 — the bankHealth mark: the ONE additive optional person
+     field v85 introduces. Written only by the v85 enrolment
+     self-check flow (app.js) when a new bank could not be
+     confirmed by its own fresh presentation (self-check failed,
+     or the user skipped/cancelled the confirmation) — shape
+     { weak: true, reason: 'self-check-failed' |
+     'self-check-skipped' | 'holdout-below-bars', ts }. Absent
+     on every pre-v85 record and on every confirmed bank; the
+     v85 migration step materialises NOTHING (pure adoption).
+     personBankWeak is the only reader, and it is read only by
+     display code (My Account / Registry guidance). Matching
+     never reads it: it changes no verdict, blocks no scan and
+     deletes nothing. */
+  function personBankWeak(person) {
+    return !!(person && person.bankHealth && typeof person.bankHealth === 'object' && person.bankHealth.weak === true);
+  }
+
+  /* ================= v86: Palm Loyalty event ledger =================
+     Phase A Step 8.1 (app-side half), per the ratified CD-5 data
+     model: points stop being a bare mutable counter and become an
+     APPEND-ONLY EVENT LEDGER carried on the person record
+     (person.loyaltyEvents). An event is
+       { eventId, biomId, type: 'earn'|'redeem'|'adjust', points,
+         reason, refIntentId?, scanRef?, ts }
+     and app code NEVER edits or deletes an event once appended —
+     a correction is a new 'adjust' event, never a rewrite.
+     The BALANCE IS COMPUTED FROM THE EVENTS (loyaltyBalance is
+     the one shared rule): 'earn' adds its points, 'redeem'
+     subtracts its points, 'adjust' adds its (signed) points.
+     person.loyaltyPoints survives ONLY as a cached display value:
+     loyaltyAppendEvent recomputes it from the ledger on every
+     append and writes it back onto the record, so profile sync
+     carries the balance exactly as it did before v86 — no
+     durability regression, and any reader that still reads the
+     cache (Registry, dashboard mirror) sees the ledger's truth.
+     A person with NO events yet (every pre-v86 record before its
+     migration opening event, and brand-new enrolments) reads as
+     their cached value at the app layer; the ledger becomes the
+     truth the moment it has events.
+     Events carry NO palm data — an id, a count, a reason and a
+     timestamp only (v81 consent surface unchanged).
+     The server half of Step 8.1 (a synced loyalty collection) is
+     a separate gated release and is NOT built here: tonight the
+     ledger is device-local, exactly like the balance it replaces. */
+  function loyaltySignedPoints(ev) {
+    if (!ev || typeof ev !== 'object') return 0;
+    var pts = Number(ev.points);
+    if (!isFinite(pts)) return 0;
+    if (ev.type === 'redeem') return -Math.abs(pts);
+    return pts; // 'earn' adds; 'adjust' carries its own sign
+  }
+  function loyaltyBalance(events) {
+    if (!Array.isArray(events)) return 0;
+    var sum = 0;
+    for (var i = 0; i < events.length; i++) sum += loyaltySignedPoints(events[i]);
+    return sum;
+  }
+  /* The migration opening event: deterministic eventId derived
+     from the Biom ID, so re-running the v86 step (or opening the
+     same store twice) can never write it twice — the step also
+     refuses any person who already has events. ts is the
+     enrolment time when the record carries one: the balance
+     existed by then; no more precise time is claimed. */
+  function loyaltyOpeningEvent(person) {
+    var pts = Number(person && person.loyaltyPoints) || 0;
+    return {
+      eventId: 'loy-opening-' + String(person && person.id),
+      biomId: String(person && person.id),
+      type: 'earn', points: pts, reason: 'opening',
+      ts: Number(person && person.enrolledAt) || 0
+    };
+  }
+  /* Append ONE event and refresh the cached balance from the
+     ledger. Returns the stored event, or null when the event is
+     not a well-formed earn/redeem/adjust with a finite point
+     count (fail closed: a malformed event never enters the
+     ledger and never moves the cache). Existing events are
+     never touched — the array only grows. */
+  function loyaltyAppendEvent(person, ev) {
+    if (!person || typeof person !== 'object') return null;
+    if (!ev || typeof ev !== 'object') return null;
+    if (ev.type !== 'earn' && ev.type !== 'redeem' && ev.type !== 'adjust') return null;
+    if (!isFinite(Number(ev.points))) return null;
+    if (!Array.isArray(person.loyaltyEvents)) person.loyaltyEvents = [];
+    var stored = {
+      eventId: String(ev.eventId || ''),
+      biomId: String(ev.biomId || person.id || ''),
+      type: ev.type, points: Number(ev.points),
+      reason: String(ev.reason || ''), ts: Number(ev.ts) || 0
+    };
+    if (ev.refIntentId) stored.refIntentId = String(ev.refIntentId);
+    if (ev.scanRef) stored.scanRef = String(ev.scanRef);
+    person.loyaltyEvents.push(stored);
+    person.loyaltyPoints = loyaltyBalance(person.loyaltyEvents);
+    return stored;
+  }
+  /* ---- Weekly streaks (Duolingo learning note, adopted design) ----
+     Consecutive-WEEK palm activity, computed from ledger earn
+     events — never a stored counter. Activity evidence is earn
+     events with a real timestamp; the migration 'opening' event
+     is a balance artefact, not palm activity, and never counts.
+     Weeks are fixed 7-day buckets (ts / 604800000) so the rule is
+     identical on every device. Reaching the milestone week count
+     earns ONE streak freeze (at most one held, ever); a freeze is
+     automatically spent to cover ONE fully-missed week, so the
+     streak survives that week unchanged (the frozen week does not
+     itself add to the count). Freezes are earned only — never
+     sold, never purchasable — and milestone BONUS POINTS are not
+     part of this design (a points amount is a value decision,
+     D3-pending). The current (in-progress) week never breaks a
+     streak: it is only judged once it has ended. */
+  var LOYALTY_WEEK_MS = 604800000;
+  function loyaltyWeekIndex(ts) { return Math.floor(Number(ts) / LOYALTY_WEEK_MS); }
+  function loyaltyStreak(events, nowTs, milestoneWeeks) {
+    var out = { weeks: 0, freezesHeld: 0, freezesEarned: 0, freezesUsed: 0, activeThisWeek: false };
+    if (!Array.isArray(events) || !events.length) return out;
+    var milestone = Number(milestoneWeeks) > 0 ? Math.floor(Number(milestoneWeeks)) : 0;
+    var active = {};
+    var first = Infinity, last = -Infinity;
+    events.forEach(function (ev) {
+      if (!ev || ev.type !== 'earn' || ev.reason === 'opening') return;
+      var ts = Number(ev.ts);
+      if (!(ts > 0)) return;
+      var w = loyaltyWeekIndex(ts);
+      active[w] = true;
+      if (w < first) first = w;
+      if (w > last) last = w;
+    });
+    if (first === Infinity) return out;
+    var curWeek = loyaltyWeekIndex(Number(nowTs) || Date.now());
+    out.activeThisWeek = !!active[curWeek];
+    // Judge every COMPLETED week from the first activity week to
+    // the week just ended, then the current week if it has
+    // activity (it extends the streak but can never break it).
+    var endWeek = out.activeThisWeek ? curWeek : curWeek - 1;
+    var streak = 0, held = 0, earned = 0, used = 0;
+    for (var w = first; w <= endWeek; w++) {
+      if (active[w]) {
+        streak++;
+        if (milestone > 0 && streak % milestone === 0 && held === 0) { held = 1; earned++; }
+      } else if (held > 0) {
+        held = 0; used++; // freeze covers this missed week; streak survives unchanged
+      } else {
+        streak = 0;
+      }
+    }
+    out.weeks = streak; out.freezesHeld = held; out.freezesEarned = earned; out.freezesUsed = used;
+    return out;
+  }
   /* The fail reason for a profile this pipeline cannot judge:
      a legacy profile gets the honest re-scan reason, anything
      else the long-standing missing/invalid one. */
@@ -6089,7 +6291,7 @@ function createTsgPalmEngine() {
      therefore the identity, and a v62 store — sealed banks, hand
      stamps, wallet, points, and a queued sync outbox row
      included — opens under v63 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62', 'v63', 'v64', 'v65', 'v66', 'v67', 'v68', 'v69', 'v70', 'v71', 'v72', 'v73', 'v74', 'v75', 'v76', 'v77', 'v78', 'v79', 'v80', 'v81', 'v82', 'v83'];
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62', 'v63', 'v64', 'v65', 'v66', 'v67', 'v68', 'v69', 'v70', 'v71', 'v72', 'v73', 'v74', 'v75', 'v76', 'v77', 'v78', 'v79', 'v80', 'v81', 'v82', 'v83', 'v84', 'v85', 'v86', 'v87'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -6239,6 +6441,57 @@ function createTsgPalmEngine() {
        app.js only, so a v82 store opens byte-identical
        under v83. */
     'v83': function (snap) { return snap; },
+    /* v84: pure adoption — the Phase-1 speed release (the
+       speculative verdict tail started at the win latch, and
+       the verdict tail awaiting the win frame's in-flight
+       PalmNet embed instead of a duplicate pass) changes no
+       stored shape at all: it is verdict-tail scheduling inside
+       app.js only, so a v83 store opens byte-identical
+       under v84. */
+    'v84': function (snap) { return snap; },
+    /* v85: pure adoption with ONE documented exception in
+       SPIRIT, not in this step: v85's enrolment self-check flow
+       may write the additive optional person.bankHealth mark on
+       NEW enrolments at runtime (see personBankWeak above). The
+       migration materialises nothing — no existing person gains
+       the field, no field changes shape — so a v84 store opens
+       byte-identical under v85, and pre-v85 records stay
+       untouched. The mark is display-only guidance data; no
+       matcher reads it. */
+    'v85': function (snap) { return snap; },
+    /* v86: the loyalty ledger step — v86's ONE shape change.
+       Every person whose cached balance (person.loyaltyPoints)
+       is above zero and who has no ledger events yet gains
+       exactly ONE opening-balance event (loyaltyOpeningEvent:
+       type 'earn', reason 'opening', points = the existing
+       balance, eventId derived deterministically from the Biom
+       ID so a re-run can never double it). Persons with zero or
+       absent points get NO event and stay byte-identical, as
+       does every bank, wallet, statement, transaction and log
+       row — the step only ADDS person.loyaltyEvents where the
+       rule fires. Idempotent: a person who already has events
+       is returned untouched. */
+    'v86': function (snap) {
+      var changed = false;
+      var people = snap.people.map(function (p) {
+        if (!p || typeof p !== 'object') return p;
+        if (!(Number(p.loyaltyPoints) > 0)) return p;
+        if (Array.isArray(p.loyaltyEvents) && p.loyaltyEvents.length) return p;
+        var np = {};
+        Object.keys(p).forEach(function (k) { np[k] = p[k]; });
+        np.loyaltyEvents = [loyaltyOpeningEvent(p)];
+        changed = true;
+        return np;
+      });
+      if (!changed) return snap;
+      return { people: people, logs: snap.logs, transactions: snap.transactions, meta: snap.meta };
+    },
+    /* v87: pure adoption — the Phase-5 UI declutter (dead
+       controls and dead CSS removed, duplicated copy folded)
+       changes no stored shape at all: it is presentation-only
+       in index.html / app.js / styles.css, so a v86 store opens
+       byte-identical under v87. */
+    'v87': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
@@ -6427,6 +6680,16 @@ function createTsgPalmEngine() {
     palmprintProfileFailReason: palmprintProfileFailReason,
     palmprintProfileSane: palmprintProfileSane,
     palmBankThin: palmBankThin,
+    burstHoldoutFrame: burstHoldoutFrame,
+    burstHoldoutCheck: burstHoldoutCheck,
+    bankWeakFromHoldout: bankWeakFromHoldout,
+    personBankWeak: personBankWeak,
+    loyaltySignedPoints: loyaltySignedPoints,
+    loyaltyBalance: loyaltyBalance,
+    loyaltyOpeningEvent: loyaltyOpeningEvent,
+    loyaltyAppendEvent: loyaltyAppendEvent,
+    loyaltyWeekIndex: loyaltyWeekIndex,
+    loyaltyStreak: loyaltyStreak,
     verifyPalmprintProfile: verifyPalmprintProfile,
     palmprintProbePacked: palmprintProbePacked,
     shiftGrayClamped: shiftGrayClamped,
