@@ -56,12 +56,12 @@ function sliceBetween(src, a, b) {
 }
 
 /* ---------- version coherence + identity migration -------------- */
-check('VERSION app, shell, meta stamp, user-visible line and chain agree at v94',
-  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v94' &&
-  swSrc.indexOf("CACHE = 'tsg-biom-shell-v94'") !== -1 &&
-  html.indexOf('<meta name="biom-build" content="v94">') !== -1 &&
-  html.indexOf('TSG Biom · App v94 · TwoSide Group') !== -1 &&
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v94');
+check('VERSION app, shell, meta stamp, user-visible line and chain agree at v95',
+  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v95' &&
+  swSrc.indexOf("CACHE = 'tsg-biom-shell-v95'") !== -1 &&
+  html.indexOf('<meta name="biom-build" content="v95">') !== -1 &&
+  html.indexOf('TSG Biom · App v95 · TwoSide Group') !== -1 &&
+  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v95');
 check('MIGRATION the v75 step is a pure adoption: a v74 store opens byte-identical at v75',
   (function () {
     const store = {
@@ -167,11 +167,11 @@ check('GUARD BEHAVIOUR cross-path (Seat 1): a v74-document/v75-app coherence spe
   })());
 
 /* ---------- (4) version-stamped shell assets ----------------------- */
-check('ASSETS index.html version-stamps its design-bearing shell assets at ?b=v94',
-  html.indexOf('href="styles.css?b=v94"') !== -1 &&
-  html.indexOf('src="vendor/mediapipe-hands-0.4.1675469240/hands.js?b=v94"') !== -1 &&
-  html.indexOf('src="biometrics.js?b=v94"') !== -1 &&
-  html.indexOf('src="app.js?b=v94"') !== -1);
+check('ASSETS index.html version-stamps its design-bearing shell assets at ?b=v95',
+  html.indexOf('href="styles.css?b=v95"') !== -1 &&
+  html.indexOf('src="vendor/mediapipe-hands-0.4.1675469240/hands.js?b=v95"') !== -1 &&
+  html.indexOf('src="biometrics.js?b=v95"') !== -1 &&
+  html.indexOf('src="app.js?b=v95"') !== -1);
 check('ASSETS no un-stamped copy of those references remains',
   html.indexOf('href="styles.css"') === -1 &&
   html.indexOf('src="biometrics.js"') === -1 &&

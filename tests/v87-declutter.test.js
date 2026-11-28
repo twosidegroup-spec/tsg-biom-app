@@ -24,12 +24,12 @@ function check(name, cond, detail) {
 }
 
 /* ---- version mechanics ---- */
-check('APP_DATA_VERSION is v94', appSrc.indexOf("var APP_DATA_VERSION = 'v94';") !== -1);
-check('SW cache is tsg-biom-shell-v94', swSrc.indexOf("const CACHE = 'tsg-biom-shell-v94';") !== -1);
-check('index.html build meta is v94', htmlSrc.indexOf('<meta name="biom-build" content="v94">') !== -1);
-check('index.html version line reads App v94', htmlSrc.indexOf('TSG Biom · App v94 · TwoSide Group') !== -1);
-check('index.html asset stamps are ?b=v94', htmlSrc.indexOf('app.js?b=v94') !== -1 && htmlSrc.indexOf('styles.css?b=v94') !== -1 && htmlSrc.indexOf('?b=v86') === -1);
-check('BIOM_DATA_VERSIONS ends with v94 (v94 named pin change: declutter)', /'v93', 'v94'\]/.test(bioSrc));
+check('APP_DATA_VERSION is v95', appSrc.indexOf("var APP_DATA_VERSION = 'v95';") !== -1);
+check('SW cache is tsg-biom-shell-v95', swSrc.indexOf("const CACHE = 'tsg-biom-shell-v95';") !== -1);
+check('index.html build meta is v95', htmlSrc.indexOf('<meta name="biom-build" content="v95">') !== -1);
+check('index.html version line reads App v95', htmlSrc.indexOf('TSG Biom · App v95 · TwoSide Group') !== -1);
+check('index.html asset stamps are ?b=v95', htmlSrc.indexOf('app.js?b=v95') !== -1 && htmlSrc.indexOf('styles.css?b=v95') !== -1 && htmlSrc.indexOf('?b=v86') === -1);
+check('BIOM_DATA_VERSIONS ends with v95 (v95 named pin change: merchant terminal lightest)', /'v94', 'v95'\]/.test(bioSrc));
 
 /* ---- removed dead controls stay removed ---- */
 check('Partner page: no disabled placeholder inputs remain', htmlSrc.indexOf('<input disabled') === -1);

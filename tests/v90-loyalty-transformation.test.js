@@ -71,13 +71,13 @@ check('BLOCKED the wallet blocked card is still wired',
   appSrc.indexOf('but Add Money, Send Money, Biom Pay and palm scans are stopped') === -1);
 
 /* ---- version coherence ------------------------------------------- */
-check('VERSION app, shell, chain and stamps agree at v94',
-  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v94' &&
-  swSrc.indexOf("CACHE = 'tsg-biom-shell-v94'") !== -1 &&
-  htmlSrc.indexOf('<meta name="biom-build" content="v94">') !== -1 &&
-  htmlSrc.indexOf('TSG Biom · App v94 · TwoSide Group') !== -1 &&
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v94' &&
-  B.BIOM_DATA_VERSIONS.length === 58);
+check('VERSION app, shell, chain and stamps agree at v95',
+  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v95' &&
+  swSrc.indexOf("CACHE = 'tsg-biom-shell-v95'") !== -1 &&
+  htmlSrc.indexOf('<meta name="biom-build" content="v95">') !== -1 &&
+  htmlSrc.indexOf('TSG Biom · App v95 · TwoSide Group') !== -1 &&
+  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v95' &&
+  B.BIOM_DATA_VERSIONS.length === 59);
 
 console.log('\n' + (fail === 0 ? 'ALL v90 LOYALTY-TRANSFORMATION TESTS PASSED (' + pass + ')' : fail + ' FAILURES, ' + pass + ' passed'));
 if (fail) process.exit(1);

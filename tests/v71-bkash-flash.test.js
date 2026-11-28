@@ -50,12 +50,12 @@ function sliceBetween(src, a, b) {
 }
 
 /* ---------- version coherence + identity migration -------------- */
-check('VERSION app, shell, meta stamp, user-visible line and chain agree at v94 (v94 named pin change: declutter); the v71 rail content below is unchanged)',
-  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v94' &&
-  swSrc.indexOf("CACHE = 'tsg-biom-shell-v94'") !== -1 &&
-  html.indexOf('<meta name="biom-build" content="v94">') !== -1 &&
-  html.indexOf('TSG Biom · App v94 · TwoSide Group') !== -1 &&
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v94');
+check('VERSION app, shell, meta stamp, user-visible line and chain agree at v95 (v95 named pin change: merchant terminal lightest); the v71 rail content below is unchanged)',
+  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v95' &&
+  swSrc.indexOf("CACHE = 'tsg-biom-shell-v95'") !== -1 &&
+  html.indexOf('<meta name="biom-build" content="v95">') !== -1 &&
+  html.indexOf('TSG Biom · App v95 · TwoSide Group') !== -1 &&
+  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v95');
 check('MIGRATION the v70 and v71 steps are pure adoptions: a v69 store opens byte-identical at v71',
   (function () {
     const store = {

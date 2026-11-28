@@ -1103,3 +1103,60 @@ h1{font-size:26px}
 @media (min-width:1024px){
   #walletHome>.qa-grid .qa-tile{min-height:104px}
 }
+
+/* ================= v95 — MERCHANT TERMINAL, LIGHTEST =================
+   The Chairman's word (2026-11-28, on the live v94 build): the
+   merchant desktop terminal is "not good at all" — fix it
+   completely, and make nothing too dark: the lightest version,
+   light mode. The v66-era merchant block painted the whole
+   terminal page as a full-bleed navy slab with a dark card and
+   dark inputs. This layer retires that presentation on the
+   merchant face: the page returns to the app's light aurora,
+   the terminal becomes one light glass card with white inputs,
+   and on desktop the card becomes a proper point-of-sale
+   layout — controls on the left, the scan stage on the right.
+   The camera view itself is untouched: it shows the live
+   camera, and scan surfaces and speed do not move. */
+body.mode-customer.role-merchant #page-terminal{
+  background:none;margin:0;padding:0;border-radius:0}
+body.mode-customer.role-merchant #page-terminal h1{color:var(--text)}
+body.mode-customer.role-merchant #page-terminal .sub{color:var(--muted)}
+body.mode-customer.role-merchant #page-terminal .card{
+  background:var(--lg-scrim);border:1px solid var(--lg-rim);color:var(--text);
+  -webkit-backdrop-filter:var(--lg-blur);backdrop-filter:var(--lg-blur)}
+body.mode-customer.role-merchant #page-terminal label{color:var(--muted)}
+body.mode-customer.role-merchant #page-terminal input,
+body.mode-customer.role-merchant #page-terminal select{
+  background:rgba(255,255,255,.88);color:var(--text);border:1px solid rgba(11,44,177,.16)}
+body.mode-customer.role-merchant #page-terminal .camnote,
+body.mode-customer.role-merchant #page-terminal .scanwith{color:var(--muted)}
+body.mode-customer.role-merchant #page-terminal .camtoggle{
+  background:rgba(255,255,255,.55);border:1px solid rgba(255,255,255,.85)}
+body.mode-customer.role-merchant #page-terminal .camtoggle button{color:var(--muted)}
+body.mode-customer.role-merchant #page-terminal .camtoggle button.on{background:#1951FC;color:#fff}
+body.mode-customer.role-merchant #page-terminal .scanind{
+  background:rgba(255,255,255,.55);border:1px solid rgba(255,255,255,.85);color:var(--muted)}
+body.mode-customer.role-merchant #page-terminal .btn{
+  background:rgba(255,255,255,.78);color:var(--text);border:1px solid rgba(255,255,255,.92)}
+body.mode-customer.role-merchant #page-terminal .btn.primary{
+  background:#1951FC;color:#fff;border:1px solid rgba(255,255,255,.35)}
+body.mode-customer.role-merchant #page-terminal .check{color:var(--text)}
+@media (min-width:1024px){
+  body.mode-customer.role-merchant #page-terminal{margin-top:0}
+  body.mode-customer.role-merchant #page-terminal .card{
+    display:grid;grid-template-columns:380px 1fr;column-gap:26px;align-items:start;grid-auto-flow:dense}
+  body.mode-customer.role-merchant #page-terminal .card>label,
+  body.mode-customer.role-merchant #page-terminal #termSearch,
+  body.mode-customer.role-merchant #page-terminal .card>.row:not(:has(#termStart)){grid-column:1}
+  body.mode-customer.role-merchant #page-terminal .card>.camtoggle,
+  body.mode-customer.role-merchant #page-terminal .card>.camnote,
+  body.mode-customer.role-merchant #page-terminal .card>.flashnote,
+  body.mode-customer.role-merchant #page-terminal .card>.scanpill,
+  body.mode-customer.role-merchant #page-terminal .card>.camwrap,
+  body.mode-customer.role-merchant #page-terminal .card>.scaninds,
+  body.mode-customer.role-merchant #page-terminal .card>.row:has(#termStart),
+  body.mode-customer.role-merchant #page-terminal #termScan,
+  body.mode-customer.role-merchant #page-terminal #termNext,
+  body.mode-customer.role-merchant #page-terminal #termResult{grid-column:2}
+  body.mode-customer.role-merchant #page-terminal .card>.row:has(#termStore){flex-direction:column}
+}

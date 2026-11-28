@@ -51,11 +51,11 @@ function sliceBetween(src, a, b) {
 }
 
 /* ---------- version coherence + identity migration -------------- */
-check('VERSION app, shell, user-visible line and chain agree at v94 (v94 named pin change: declutter); the v68 detector-delivery content below is unchanged)',
-  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v94' &&
-  swSrc.indexOf("CACHE = 'tsg-biom-shell-v94'") !== -1 &&
-  html.indexOf('TSG Biom · App v94 · TwoSide Group') !== -1 &&
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v94');
+check('VERSION app, shell, user-visible line and chain agree at v95 (v95 named pin change: merchant terminal lightest); the v68 detector-delivery content below is unchanged)',
+  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v95' &&
+  swSrc.indexOf("CACHE = 'tsg-biom-shell-v95'") !== -1 &&
+  html.indexOf('TSG Biom · App v95 · TwoSide Group') !== -1 &&
+  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v95');
 check('MIGRATION the v68 step is a pure adoption: a v67 store opens byte-identical',
   (function () {
     const before = JSON.stringify({
@@ -190,7 +190,7 @@ check('CSP connect-src admits blob: (the runtime fetches its files from the asse
 /* ---------- service worker ---------------------------------------- */
 check('SW the parts ride the vendor network-only rule (pathname /vendor/ — assembled bytes are always the served bytes)',
   swSrc.indexOf("url.pathname.indexOf('/vendor/')") !== -1 &&
-  swSrc.indexOf("CACHE = 'tsg-biom-shell-v94'") !== -1);
+  swSrc.indexOf("CACHE = 'tsg-biom-shell-v95'") !== -1);
 
 /* ---------- frozen systems ----------------------------------------- */
 check('FREEZE the shipped bars are untouched (EDCC 0.32 / PalmNet 0.5895)',

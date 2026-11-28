@@ -58,14 +58,15 @@ check('LG2 the desktop sidebar floats detached (16px inset, 28px radius, navy gl
 check('LG2 the customer face rides the same glass (nav + hero scoped overrides)',
   lg.indexOf('body.mode-customer.role-customer .nav, body.mode-customer.role-merchant .nav{') !== -1 &&
   lg.indexOf('body.mode-customer.role-customer .balcard') !== -1);
-check('LG2 no backdrop blur is scoped onto the camera wrap or the scan pages in this layer',
-  lg.indexOf('.camwrap') === -1 && lg.indexOf('#page-terminal') === -1 &&
-  lg.indexOf('#page-enroll') === -1 && lg.indexOf('#page-topup') === -1);
+check('LG2 no backdrop blur is scoped onto the camera wrap or the scan pages in this layer (v95 named pin change: merchant terminal lightest — the check now bounds at the v95 layer)',
+  (function () { const g = cssSrc.slice(cssSrc.indexOf('v92 — TRUE LIQUID GLASS'), cssSrc.indexOf('v95 — MERCHANT TERMINAL'));
+    return g.indexOf('.camwrap') === -1 && g.indexOf('#page-terminal') === -1 &&
+      g.indexOf('#page-enroll') === -1 && g.indexOf('#page-topup') === -1; })());
 check('LG2 version coherence at v92 (app, sw, html, chain length 56)',
-  appSrc.indexOf("var APP_DATA_VERSION = 'v94';") !== -1 &&
-  swSrc.indexOf('tsg-biom-shell-v94') !== -1 &&
-  htmlSrc.indexOf('content="v94"') !== -1 && htmlSrc.indexOf('App v94') !== -1 &&
-  B.BIOM_DATA_VERSIONS.length === 58 && B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v94');
+  appSrc.indexOf("var APP_DATA_VERSION = 'v95';") !== -1 &&
+  swSrc.indexOf('tsg-biom-shell-v95') !== -1 &&
+  htmlSrc.indexOf('content="v95"') !== -1 && htmlSrc.indexOf('App v95') !== -1 &&
+  B.BIOM_DATA_VERSIONS.length === 59 && B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v95');
 
 console.log('\nv92-liquid-glass-true: ' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

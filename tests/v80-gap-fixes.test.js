@@ -64,13 +64,13 @@ const htmlSrc = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const swSrc = fs.readFileSync(path.join(root, 'sw.js'), 'utf8');
 
 /* ---------- version coherence + identity migration -------------- */
-check('VERSION app, shell, meta stamp, user-visible line and chain agree at v94',
-  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v94' &&
-  swSrc.indexOf("CACHE = 'tsg-biom-shell-v94'") !== -1 &&
-  htmlSrc.indexOf('<meta name="biom-build" content="v94">') !== -1 &&
-  htmlSrc.indexOf('TSG Biom · App v94 · TwoSide Group') !== -1 &&
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v94' &&
-  B.BIOM_DATA_VERSIONS.length === 58);
+check('VERSION app, shell, meta stamp, user-visible line and chain agree at v95',
+  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v95' &&
+  swSrc.indexOf("CACHE = 'tsg-biom-shell-v95'") !== -1 &&
+  htmlSrc.indexOf('<meta name="biom-build" content="v95">') !== -1 &&
+  htmlSrc.indexOf('TSG Biom · App v95 · TwoSide Group') !== -1 &&
+  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v95' &&
+  B.BIOM_DATA_VERSIONS.length === 59);
 check('MIGRATION the v80 step is a pure adoption: a v79 store opens byte-identical at v80', (function () {
   const before = JSON.stringify({ people: [{ id: 'TSG-BIO-1', name: 'Gate', wallet: { balance: 5, statement: [], linkedAccounts: [] } }], logs: [], transactions: [], meta: [{ k: 'syncBlockedIds', v: 1 }] });
   const mig = B.migrateBiomData(JSON.parse(before), 'v79', 'v80');

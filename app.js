@@ -465,7 +465,7 @@
      is excluded, so cold durationMs is not directly
      comparable with pre-v83 cold records. The migration step
      is a pure adoption (see biometrics.js). */
-  var APP_DATA_VERSION = 'v94';
+  var APP_DATA_VERSION = 'v95';
   /* ---------------- boot splash lifecycle (v71, rebuilt v75) ------
      index.html stamps its build in <meta name="biom-build"> and
      paints a neutral boot splash before any app code runs.

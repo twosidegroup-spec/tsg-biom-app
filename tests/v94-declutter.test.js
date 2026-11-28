@@ -59,16 +59,16 @@ check('DC enrol redesign: the side panel joins the glass system, icons on flat b
 check('DC enrol redesign: the step dots become one connected rail',
   dc.indexOf('.enrolldots{width:max-content;position:relative}') !== -1 &&
   dc.indexOf('.enrolldots::before') !== -1);
-check('DC scan surfaces stay solid (no camera selector in the v94 layer)',
-  !/camwrap|scanpill|video/.test(dc));
-check('VERSION app, shell, meta stamp, user-visible line and chain agree at v94',
-  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v94' &&
-  swSrc.indexOf("CACHE = 'tsg-biom-shell-v94'") !== -1 &&
-  htmlSrc.indexOf('<meta name="biom-build" content="v94">') !== -1 &&
-  htmlSrc.indexOf('TSG Biom · App v94 · TwoSide Group') !== -1 &&
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v94');
+check('DC scan surfaces stay solid (no camera selector in the v94 layer; v95 named pin change: merchant terminal lightest — the check now bounds at the v95 layer)',
+  !/camwrap|scanpill|video/.test(cssSrc.slice(at, cssSrc.indexOf('v95 — MERCHANT TERMINAL'))));
+check('VERSION app, shell, meta stamp, user-visible line and chain agree at v95',
+  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v95' &&
+  swSrc.indexOf("CACHE = 'tsg-biom-shell-v95'") !== -1 &&
+  htmlSrc.indexOf('<meta name="biom-build" content="v95">') !== -1 &&
+  htmlSrc.indexOf('TSG Biom · App v95 · TwoSide Group') !== -1 &&
+  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v95');
 check('CHAIN the migration chain has 58 links and the v94 step is a pure adoption',
-  B.BIOM_DATA_VERSIONS.length === 58 &&
+  B.BIOM_DATA_VERSIONS.length === 59 &&
   (function () {
     const mig = B.migrateBiomData({ people: [], logs: [], transactions: [], meta: [] }, 'v93', 'v94');
     return mig.appliedSteps.indexOf('v94') !== -1 && mig.changed === false;

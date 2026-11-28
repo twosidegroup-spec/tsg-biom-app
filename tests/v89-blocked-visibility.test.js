@@ -167,10 +167,10 @@ async function main() {
     })());
 
   /* ---- 5. version coherence ------------------------------------- */
-  check('VERSION app, shell, chain and stamps agree at v94 (the v89 content shipped inside v90)',
-    appSrc.indexOf("var APP_DATA_VERSION = 'v94';") !== -1 &&
-    swSrc.indexOf('tsg-biom-shell-v94') !== -1 &&
-    htmlSrc.indexOf('content="v94"') !== -1 &&
+  check('VERSION app, shell, chain and stamps agree at v95 (the v89 content shipped inside v90)',
+    appSrc.indexOf("var APP_DATA_VERSION = 'v95';") !== -1 &&
+    swSrc.indexOf('tsg-biom-shell-v95') !== -1 &&
+    htmlSrc.indexOf('content="v95"') !== -1 &&
     B.BIOM_DATA_VERSIONS.indexOf('v89') !== -1 && B.BIOM_DATA_VERSIONS.indexOf('v90') !== -1);
 
   console.log('\nv89-blocked-visibility: ' + pass + ' passed, ' + fail + ' failed');

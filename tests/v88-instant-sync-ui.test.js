@@ -237,11 +237,11 @@ async function main() {
     cssSrc.indexOf('.balcard .balnum{font-size:var(--fs-display)') !== -1);
   check('UI the bottom nav carries the Scan emphasis (nav-scan) on the Scanner tab',
     htmlSrc.indexOf('data-page="scanner" class="nav-scan"') !== -1 && cssSrc.indexOf('.nav button.nav-scan') !== -1);
-  check('VERSION app, shell, chain and stamps agree at v94',
-    (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v94' &&
-    swSrc.indexOf("CACHE = 'tsg-biom-shell-v94'") !== -1 &&
-    B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v94' &&
-    htmlSrc.indexOf('app.js?b=v94') !== -1 && htmlSrc.indexOf('TSG Biom · App v94 · TwoSide Group') !== -1);
+  check('VERSION app, shell, chain and stamps agree at v95',
+    (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v95' &&
+    swSrc.indexOf("CACHE = 'tsg-biom-shell-v95'") !== -1 &&
+    B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v95' &&
+    htmlSrc.indexOf('app.js?b=v95') !== -1 && htmlSrc.indexOf('TSG Biom · App v95 · TwoSide Group') !== -1);
 
   console.log('\n' + (fail === 0 ? 'ALL v88 INSTANT-SYNC + UI TESTS PASSED (' + pass + ')' : fail + ' FAILURES, ' + pass + ' passed'));
   process.exit(fail === 0 ? 0 : 1);

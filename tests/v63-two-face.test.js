@@ -64,12 +64,12 @@ const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
 const apiRecordsSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'tsg-biom-api', 'lib', 'records.js'), 'utf8');
 
 /* ---------------- version coherence ---------------------------- */
-check('VERSION app, shell and chain agree at v94 (v94 named pin change: declutter))',
-  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v94' &&
-  swSrc.indexOf('tsg-biom-shell-v94') !== -1 &&
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v94');
-check('VERSION the chain is v37->v94: 58 links, 57 migration steps (v94 named pin change: declutter) — was 50 links at v86 (the v38 suite proves the applied steps; v79 named pin change: block system, pure adoption like the v77 performance link)',
-  B.BIOM_DATA_VERSIONS.length === 58 && B.BIOM_DATA_VERSIONS[0] === 'v37', 'links=' + B.BIOM_DATA_VERSIONS.length);
+check('VERSION app, shell and chain agree at v95 (v95 named pin change: merchant terminal lightest))',
+  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v95' &&
+  swSrc.indexOf('tsg-biom-shell-v95') !== -1 &&
+  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v95');
+check('VERSION the chain is v37->v95: 59 links, 58 migration steps (v95 named pin change: merchant terminal lightest) — was 50 links at v86 (the v38 suite proves the applied steps; v79 named pin change: block system, pure adoption like the v77 performance link)',
+  B.BIOM_DATA_VERSIONS.length === 59 && B.BIOM_DATA_VERSIONS[0] === 'v37', 'links=' + B.BIOM_DATA_VERSIONS.length);
 
 /* ---------------- the face-mode core, extracted ---------------- */
 const faceSrc = appSrc.slice(appSrc.indexOf('/* FACE-MODE-BEGIN'), appSrc.indexOf('/* FACE-MODE-END */'));
@@ -174,7 +174,7 @@ check('FACE Lock returns to the customer face (surfaces detached, gate closed)',
   check('MARKUP the page boots in customer mode and carries the owner bar + version line',
     htmlSrc.indexOf('<body class="mode-customer">') !== -1 &&
     htmlSrc.indexOf('id="ownerBar"') !== -1 && htmlSrc.indexOf('id="ownerLockBtn"') !== -1 &&
-    htmlSrc.indexOf('id="versionLine"') !== -1 && htmlSrc.indexOf('App v94') !== -1 &&
+    htmlSrc.indexOf('id="versionLine"') !== -1 && htmlSrc.indexOf('App v95') !== -1 &&
     htmlSrc.indexOf('id="brandLogo"') !== -1);
   check('MARKUP the wallet hero carries the points chip',
     htmlSrc.indexOf('id="wHomePoints"') !== -1 && htmlSrc.indexOf('Palm Loyalty') !== -1);

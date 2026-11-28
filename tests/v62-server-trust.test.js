@@ -43,10 +43,10 @@ const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
 
 /* ---------------- version + shape ------------------------------ */
 (function () {
-  check('VERSION app, shell and chain agree at v94 (v94 named pin change: declutter))',
-    (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v94' &&
-    swSrc.indexOf('tsg-biom-shell-v94') !== -1 &&
-    B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v94');
+  check('VERSION app, shell and chain agree at v95 (v95 named pin change: merchant terminal lightest))',
+    (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v95' &&
+    swSrc.indexOf('tsg-biom-shell-v95') !== -1 &&
+    B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v95');
 
   const person = { id: 'TSG-BIO-9', name: 'Rig', palmProfile: { v: 4, format: 'packed96', codes: ['QUJD'] } };
   check('SHAPE a person without a walletLink emits the v61 record byte-identical',

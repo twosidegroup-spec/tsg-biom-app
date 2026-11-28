@@ -46,15 +46,16 @@ check('OC the loyalty chip takes the board teal tint + glow',
 check('OC the role-page hero carries the same capsule glow as the balance hero',
   oc.indexOf('.rolehero{border:1px solid rgba(147,197,253,.95)') !== -1 &&
   oc.indexOf('0 0 44px rgba(55,129,252,.45)') !== -1);
-check('OC scan surfaces stay solid (the v93 layer names no camera/scan selector)',
-  oc.indexOf('.camwrap') === -1 && oc.indexOf('#page-terminal') === -1 &&
-  oc.indexOf('#page-enroll') === -1 && oc.indexOf('#page-topup') === -1);
-check('OC version coherence: app, shell, stamps and chain agree at v94',
-  appSrc.indexOf("var APP_DATA_VERSION = 'v94';") !== -1 &&
-  swSrc.indexOf("const CACHE = 'tsg-biom-shell-v94';") !== -1 &&
-  htmlSrc.indexOf('content="v94"') !== -1 && htmlSrc.indexOf('App v94') !== -1 &&
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v94' &&
-  B.BIOM_DATA_VERSIONS.length === 58);
+check('OC scan surfaces stay solid (the v93 layer names no camera/scan selector; v95 named pin change: merchant terminal lightest — the check now bounds at the v95 layer)',
+  (function () { const g = cssSrc.slice(at, cssSrc.indexOf('v95 — MERCHANT TERMINAL'));
+    return g.indexOf('.camwrap') === -1 && g.indexOf('#page-terminal') === -1 &&
+      g.indexOf('#page-enroll') === -1 && g.indexOf('#page-topup') === -1; })());
+check('OC version coherence: app, shell, stamps and chain agree at v95',
+  appSrc.indexOf("var APP_DATA_VERSION = 'v95';") !== -1 &&
+  swSrc.indexOf("const CACHE = 'tsg-biom-shell-v95';") !== -1 &&
+  htmlSrc.indexOf('content="v95"') !== -1 && htmlSrc.indexOf('App v95') !== -1 &&
+  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v95' &&
+  B.BIOM_DATA_VERSIONS.length === 59);
 
 console.log('\nv93-deep-ocean-light: ' + pass + ' passed, ' + fail + ' failed');
 if (fail) process.exit(1);

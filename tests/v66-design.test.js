@@ -148,11 +148,11 @@ check('SKELETONS row-shaped skeletons exist for desktop alongside the mobile car
   html.indexOf('id="walletProfilesSkeleton"') !== -1);
 
 /* ---------- version + migration (§D.5 / item 9) -------------------------- */
-check('VERSION app, shell, user-visible line and chain agree at v94 (v94 named pin change: declutter)',
-  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v94' &&
-  swSrc.indexOf("CACHE = 'tsg-biom-shell-v94'") !== -1 &&
-  html.indexOf('TSG Biom · App v94 · TwoSide Group') !== -1 &&
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v94');
+check('VERSION app, shell, user-visible line and chain agree at v95 (v95 named pin change: merchant terminal lightest)',
+  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v95' &&
+  swSrc.indexOf("CACHE = 'tsg-biom-shell-v95'") !== -1 &&
+  html.indexOf('TSG Biom · App v95 · TwoSide Group') !== -1 &&
+  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v95');
 check('MIGRATION the v66 step is a pure adoption: a v65 store opens byte-identical',
   (function () {
     const store = {
