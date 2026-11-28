@@ -465,7 +465,7 @@
      is excluded, so cold durationMs is not directly
      comparable with pre-v83 cold records. The migration step
      is a pure adoption (see biometrics.js). */
-  var APP_DATA_VERSION = 'v87';
+  var APP_DATA_VERSION = 'v91';
   /* ---------------- boot splash lifecycle (v71, rebuilt v75) ------
      index.html stamps its build in <meta name="biom-build"> and
      paints a neutral boot splash before any app code runs.
@@ -972,11 +972,32 @@
     var revoked = false;     // v62: the server has revoked (blacklisted) this device
     var blocked = false;     // v78: the server has blocked this device's OWN account (its Biom ID is blockedBiomId)
     var blockedBiomId = '';
+    /* v89: the block's story for the OWN account — reason, time and
+       who blocked — learned from the pull rows (the API's lean
+       summary carries them while the block stands, per the
+       Chairman's 2026-11-28 ruling: the blocked person's own
+       wallet must show WHY). Null when the server sent none. */
+    var blockedReason = null;
+    var blockedTs = null;
+    var blockedBy = null;
     var seqDesync = false;   // v62: signing sequence out of step and re-registration failed
     var lastSyncTs = 0;
     var lastError = '';
     var flushTimer = null;
     var retryTimer = null;
+    /* v88 (Phase 4 — instant sync): retry bookkeeping for the
+       REAL backoff loop. retryAttempt counts consecutive failed
+       flushes since the last item the server accepted; the delay
+       for the next attempt is min(5 * 2^attempt, 300) seconds.
+       retryDelaySec is the delay of the currently scheduled
+       retry (0 when none is scheduled) and is exposed in state()
+       so the promise "will retry" is inspectable, not a slogan.
+       flushAgain coalesces records created while a flush is
+       already running: the running flush re-runs once at its end
+       instead of those records waiting for an unrelated event. */
+    var retryAttempt = 0;
+    var retryDelaySec = 0;
+    var flushAgain = false;
     var versions = null;     // v62: biomId -> last server-acknowledged bank version
     var versionsPromise = null;
     var bootstrapping = null;
@@ -1019,12 +1040,35 @@
     function learnBlocked(biomId, isNowBlocked) {
       if (!biomId) return;
       ensureBlockedIds().then(function () {
-        if (isNowBlocked && blockedIds[biomId] !== true) { blockedIds[biomId] = true; persistBlockedIds(); }
+        /* v89: an entry may now be an info object ({r,t,b}) learned
+           from a pull row — a bare 403 learn (no story available)
+           must never downgrade it to a plain true. */
+        if (isNowBlocked && !blockedIds[biomId]) { blockedIds[biomId] = true; persistBlockedIds(); }
         else if (!isNowBlocked && blockedIds[biomId]) { delete blockedIds[biomId]; persistBlockedIds(); }
       }).catch(function () {});
     }
     function isBlocked(biomId) {
-      return !!(blockedIds && biomId && blockedIds[biomId] === true);
+      /* v89: truthy — legacy entries are `true`, v89 entries may be
+         an info object carrying the block's story. */
+      return !!(blockedIds && biomId && blockedIds[biomId]);
+    }
+    /* v89: the block's story for any ID this device knows about —
+       { reason, ts, by } with nulls where the server sent nothing,
+       or null when the ID is not blocked. The own-account latch is
+       consulted for the device's own ID (its story is freshest). */
+    function blockedInfo(biomId) {
+      if (!biomId) return null;
+      if (blocked && blockedBiomId === biomId) {
+        return { reason: blockedReason, ts: blockedTs, by: blockedBy };
+      }
+      var e = blockedIds ? blockedIds[biomId] : null;
+      if (!e) return null;
+      if (e === true) return { reason: null, ts: null, by: null };
+      return {
+        reason: typeof e.r === 'string' ? e.r : null,
+        ts: typeof e.t === 'number' ? e.t : null,
+        by: e.b === 'system' || e.b === 'chairman' ? e.b : null
+      };
     }
 
     function prefs() { return deps.getPrefs(); }
@@ -1048,14 +1092,45 @@
       saveChain = saveChain.then(function () { return deps.saveOutbox(snap); }).catch(function () {});
       return saveChain;
     }
-    function scheduleFlush() {
-      if (flushTimer) return;
-      flushTimer = setTimeout(function () { flushTimer = null; flush(); }, 900);
+    /* v88 (Phase 4): scheduleFlush IS the instant-sync trigger.
+       Pre-v88 it set a 900 ms debounce timer — a record created
+       in that window waited, and if the app was killed inside
+       the window nothing ever re-fired. Now a flush attempt
+       starts AT RECORD CREATION: requestFlush() calls flush()
+       synchronously from the enqueue path (the enqueue itself
+       already ran inside ensureLoaded, so the queue is loaded).
+       A burst created in the same tick coalesces for free: the
+       first call starts the flush, later calls set flushAgain,
+       and the running flush's FIFO loop already sees every item
+       queued while it runs — plus one explicit re-run at the
+       end for anything queued in the final microtask window.
+       No further user or app event is needed for the attempt. */
+    function scheduleFlush() { requestFlush(); }
+    function requestFlush() {
+      if (flushing) { flushAgain = true; return; }
+      flush();
     }
     function scheduleRetry(seconds) {
       if (retryTimer) return;
       var wait = typeof seconds === 'number' && isFinite(seconds) && seconds > 0 ? Math.min(seconds, 300) : 30;
-      retryTimer = setTimeout(function () { retryTimer = null; flush(); }, wait * 1000);
+      retryDelaySec = wait;
+      retryTimer = setTimeout(function () { retryTimer = null; retryDelaySec = 0; flush(); }, wait * 1000);
+    }
+    /* v88: the real retry the pre-v88 status text promised and
+       never scheduled. A generic network failure or an
+       unexpected server answer now schedules the next attempt
+       with exponential backoff (5 s, 10 s, 20 s, … capped at
+       300 s) and the loop runs until the queue drains or a
+       latch (key rejected / revoked / sequence desync) stops
+       it — those latches are configuration faults a timer
+       cannot fix, and they surface via indicator() instead.
+       The 429 and not-registered paths keep their own
+       server-directed delays and do not consume backoff steps. */
+    function scheduleBackoff() {
+      if (keyRejected || revoked || seqDesync) return;
+      var delay = Math.min(5 * Math.pow(2, retryAttempt), 300);
+      retryAttempt++;
+      scheduleRetry(delay);
     }
     function fillRecord(core, ts) {
       var p = prefs();
@@ -1284,6 +1359,19 @@
       return null;
     }
 
+    /* v88: remove THIS item from the outbox, by identity — not
+       a blind shift of the queue head. With instant sync a flush
+       is routinely in flight when a newer note for the same
+       Biom ID dedupes the queue (noteProfile replaces the queued
+       upsert): the item being sent may already be gone from the
+       queue, and shifting would drop the NEWER unsent item in
+       its place. Identity removal makes the in-flight completion
+       a no-op against the queue and leaves the newer item for
+       the loop's next pass. */
+    function dropItem(item) {
+      var ix = queue ? queue.indexOf(item) : -1;
+      if (ix !== -1) queue.splice(ix, 1);
+    }
     function flush() {
       if (flushing || keyRejected || revoked || seqDesync || !active()) return Promise.resolve(state());
       flushing = true;
@@ -1324,7 +1412,7 @@
                flight) drops it here — deleted, never sent — so
                the withdrawal promise holds regardless of the
                dropResearch race. */
-            queue.shift();
+            dropItem(item);
             await persist();
             continue;
           }
@@ -1340,12 +1428,17 @@
           try {
             res = await deps.fetchFn(url, { method: 'POST', headers: auth.headers, body: JSON.stringify(bodyObj) });
           } catch (e) {
+            /* v88: the retry is now REAL — scheduleBackoff arms
+               the timer before the break, so this record gets
+               its next attempt without any further event. */
             lastError = 'network unreachable — will retry';
+            scheduleBackoff();
             break;
           }
           if (res && res.status >= 200 && res.status < 300) {
+            retryAttempt = 0; // v88: an accepted item resets the backoff ladder
             commitSeq(auth.seq);
-            queue.shift();
+            dropItem(item);
             lastSyncTs = deps.now();
             lastError = '';
             if (isProfile && versions) {
@@ -1360,7 +1453,7 @@
                unblock never un-revokes devices, but a credential
                that can write again is no longer refused), so the
                latch clears on the server's own evidence. */
-            if (isProfile && blocked && item.record.biomId === blockedBiomId) { blocked = false; blockedBiomId = ''; }
+            if (isProfile && blocked && item.record.biomId === blockedBiomId) { blocked = false; blockedBiomId = ''; blockedReason = null; blockedTs = null; blockedBy = null; }
             await persist();
             continue;
           }
@@ -1371,7 +1464,7 @@
                and surface the divergence — the bank is re-emitted
                by the next local change, now based on the truth. */
             commitSeq(auth.seq);
-            queue.shift();
+            dropItem(item);
             if (errBody && typeof errBody.currentVersion === 'number' && versions) {
               versions[item.record.biomId] = errBody.currentVersion;
               persistVersions();
@@ -1390,7 +1483,7 @@
                The sequence WAS consumed (auth passed; the refusal
                is past auth, exactly like the 409 path above). */
             commitSeq(auth.seq);
-            queue.shift();
+            dropItem(item);
             lastError = 'research upload refused by the server — bundle dropped';
             await persist();
             continue;
@@ -1428,10 +1521,10 @@
                  unblock instead of never. Scans and profile
                  upserts keep the drop semantics above — they
                  self-heal on the next local change. */
-              queue.shift();
+              dropItem(item);
               deferredTombstones.push(item);
             } else {
-              queue.shift();
+              dropItem(item);
             }
             var ownIdOnFlush = null;
             try { ownIdOnFlush = deps.ownBiomId ? deps.ownBiomId() : null; } catch (e) {}
@@ -1461,6 +1554,7 @@
             break;
           }
           lastError = 'server answered ' + (res ? res.status : 'no response') + ' — will retry';
+          scheduleBackoff(); // v88: an unexpected answer retries on the same backoff loop
           break;
         }
         if (deferredTombstones.length) {
@@ -1469,9 +1563,30 @@
         }
         flushing = false;
         deps.onStatus();
+        /* v88: records created while this flush ran asked for
+           one more attempt (flushAgain) — run it now, in this
+           same turn, so their attempt never waits for another
+           event. The latch guard mirrors flush()'s own entry. */
+        if (flushAgain) {
+          flushAgain = false;
+          if (queue && queue.length && !keyRejected && !revoked && !seqDesync && active()) return flush();
+        }
         return state();
-      }).catch(function () { flushing = false; return state(); });
+      }).catch(function () {
+        flushing = false;
+        /* v88: even an unexpected engine error leaves a queued
+           record with a scheduled next attempt, never stranded. */
+        if (queue && queue.length && active()) scheduleBackoff();
+        return state();
+      });
     }
+    /* v88: reconnect / return triggers. The app wiring binds
+       these to the window 'online' event and to
+       visibilitychange (visible again): regaining connectivity
+       also resets the backoff ladder, because the failure that
+       built it is the one that just ended. */
+    function onOnline() { retryAttempt = 0; return flush(); }
+    function onVisible() { return flush(); }
 
     /* B7 pull: read the counts-only summary and apply server
        tombstones newer than the version this device knows —
@@ -1534,8 +1649,19 @@
              from the pull, before any write is refused. Server
              truth wins in both directions. */
           if (ownIdOnPull && row.biomId === ownIdOnPull) {
-            if (row.blocked === true && !blocked) { blocked = true; blockedBiomId = row.biomId; blockedChanged = true; }
-            else if (row.blocked !== true && blocked && blockedBiomId === row.biomId) { blocked = false; blockedBiomId = ''; blockedChanged = true; }
+            if (row.blocked === true) {
+              /* v89: the latch also learns the block's story, so
+                 the person's own wallet can show WHY. */
+              var rowReason = typeof row.blockedReason === 'string' ? row.blockedReason : null;
+              var rowTs = typeof row.blockedTs === 'number' ? row.blockedTs : null;
+              var rowBy = row.blockedBy === 'system' || row.blockedBy === 'chairman' ? row.blockedBy : null;
+              if (!blocked || blockedBiomId !== row.biomId || blockedReason !== rowReason || blockedTs !== rowTs || blockedBy !== rowBy) {
+                blocked = true; blockedBiomId = row.biomId;
+                blockedReason = rowReason; blockedTs = rowTs; blockedBy = rowBy;
+                blockedChanged = true;
+              }
+            }
+            else if (row.blocked !== true && blocked && blockedBiomId === row.biomId) { blocked = false; blockedBiomId = ''; blockedReason = null; blockedTs = null; blockedBy = null; blockedChanged = true; }
           }
           /* v79: the SAME rows teach the terminal set — every
              customer's flag, not only this device's own. A
@@ -1543,9 +1669,24 @@
              verdict at the till; an unblocked one scans
              normally again. The map mutates in place here (the
              pull already awaited ensureBlockedIds) and persists
-             once, after the loop. */
+             once, after the loop.
+             v89: when the row carries the block's story, the entry
+             is stored as an info object {r,t,b} so the person's
+             own surfaces can show the reason; a row without the
+             story never downgrades an entry that already has one. */
           if (blockedIds) {
-            if (row.blocked === true && blockedIds[row.biomId] !== true) { blockedIds[row.biomId] = true; blockedIdsChanged = true; }
+            if (row.blocked === true) {
+              var hasStory = typeof row.blockedReason === 'string' || typeof row.blockedTs === 'number' || row.blockedBy === 'system' || row.blockedBy === 'chairman';
+              if (hasStory) {
+                var infoObj = {
+                  r: typeof row.blockedReason === 'string' ? row.blockedReason : null,
+                  t: typeof row.blockedTs === 'number' ? row.blockedTs : null,
+                  b: row.blockedBy === 'system' || row.blockedBy === 'chairman' ? row.blockedBy : null
+                };
+                var prev = blockedIds[row.biomId];
+                if (!prev || prev === true || prev.r !== infoObj.r || prev.t !== infoObj.t || prev.b !== infoObj.b) { blockedIds[row.biomId] = infoObj; blockedIdsChanged = true; }
+              } else if (!blockedIds[row.biomId]) { blockedIds[row.biomId] = true; blockedIdsChanged = true; }
+            }
             else if (row.blocked !== true && blockedIds[row.biomId]) { delete blockedIds[row.biomId]; blockedIdsChanged = true; }
           }
           if (row.deleted && row.version > knownVersion(row.biomId)) {
@@ -1660,8 +1801,40 @@
         queued: queue ? queue.length : 0,
         keyRejected: keyRejected, revoked: revoked, seqDesync: seqDesync,
         blocked: blocked, blockedBiomId: blockedBiomId,
-        lastSyncTs: lastSyncTs, lastError: lastError
+        /* v89: the own block's story, for the wallet banner. */
+        blockedReason: blockedReason, blockedTs: blockedTs, blockedBy: blockedBy,
+        lastSyncTs: lastSyncTs, lastError: lastError,
+        /* v88: the retry loop's live state — a scheduled retry
+           is a fact the UI and the suites can read, not a hope. */
+        retryScheduled: !!retryTimer, retryDelaySec: retryDelaySec, retryAttempt: retryAttempt
       };
+    }
+    /* v88: the honest sync indicator — one plain-words state
+       for the persistent indicator on the record-creating
+       surfaces (Phase 0 gap 4 + 6: latches were silent
+       kill-switches and the queue was visible only in owner
+       Settings). Every state carries What; the stopped states
+       also carry Next — the step that revives sync. Blocked
+       keeps the frozen v79 semantics: it is reported, never
+       worked around. isOnline is the optional wiring dep
+       (navigator.onLine); absent it, a queued record with a
+       network error reads as pending-with-retry, which is the
+       truth either way. */
+    function indicator() {
+      var p = prefs();
+      if (!p.on) return { kind: 'off', text: 'Sync off', next: '' };
+      if (!(p.endpoint && hasCred(p))) return { kind: 'setup', text: 'Sync needs setup', next: 'Open Scan Sync settings and add the server endpoint and device key.' };
+      if (blocked) return { kind: 'blocked', text: 'Sync stopped — this account is blocked', next: 'An admin must unblock this account before its records can sync.' };
+      if (revoked) return { kind: 'error', text: 'Sync stopped — this device was revoked', next: 'Ask the server admin to un-revoke this device, or register again in Scan Sync settings.' };
+      if (keyRejected) return { kind: 'error', text: 'Sync stopped — the server rejected this device key', next: 'Check the device key in Scan Sync settings, then Save settings.' };
+      if (seqDesync) return { kind: 'error', text: 'Sync stopped — this device needs re-registering', next: 'Save settings in Scan Sync, then tap Sync now.' };
+      var n = queue ? queue.length : 0;
+      var offline = false;
+      try { offline = typeof deps.isOnline === 'function' && deps.isOnline() === false; } catch (e) {}
+      if (offline) return { kind: 'offline', text: n ? (n + ' pending — offline, will send when back') : 'Offline — will send when back', next: '' };
+      if (n) return { kind: 'pending', text: n + (n === 1 ? ' record' : ' records') + ' pending — sending now, with automatic retry if the network fails', next: '' };
+      if (lastError) return { kind: 'pending', text: 'Sync needs attention — ' + lastError, next: '' };
+      return { kind: 'synced', text: lastSyncTs ? 'Synced' : 'Synced — nothing waiting', next: '' };
     }
     function statusText() {
       var s = state();
@@ -1678,8 +1851,10 @@
       keyRejected = false;
       revoked = false;
       seqDesync = false;
+      retryAttempt = 0; // v88: a settings save is a fresh start for the backoff ladder too
       blocked = false;
       blockedBiomId = '';
+      blockedReason = null; blockedTs = null; blockedBy = null;
       if (lastError === 'key rejected' || lastError === 'device revoked' || lastError === 'signing sequence out of step' || lastError === 'account blocked') lastError = '';
       deps.onStatus();
     }
@@ -1698,6 +1873,9 @@
       tombstonedIds = {};
       lastSyncTs = 0;
       lastError = '';
+      retryAttempt = 0;
+      retryDelaySec = 0;
+      flushAgain = false;
       if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
       if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
       // Persist AFTER any in-flight persist of the old queue, so
@@ -1710,8 +1888,10 @@
       queueTombstones: queueTombstones, purgeProfile: purgeProfile, pendingItems: pendingItems,
       testConnection: testConnection,
       scheduleFlush: scheduleFlush, state: state, statusText: statusText,
+      indicator: indicator, onOnline: onOnline, onVisible: onVisible,
       settingsChanged: settingsChanged, reset: reset, ensureLoaded: ensureLoaded,
       isBlocked: isBlocked,
+      blockedInfo: blockedInfo,
       ensureBlockedIds: ensureBlockedIds
     };
   }
@@ -1898,7 +2078,23 @@
      must be told plainly that its palm scanning is blocked —
      never a vague failure. */
   var BLOCKED_TERMINAL_LINE = 'Palm scanning failed — your palm scanning is blocked.';
-  var BLOCKED_ACCOUNT_LINE = 'This account has been blocked. Palm scans, payments, sending and adding money are stopped until an admin unblocks it.';
+  var BLOCKED_ACCOUNT_LINE = 'This account has been blocked. Palm scans, payments and adding money are stopped until an admin unblocks it.';
+  /* v89 (Chairman ruling, 2026-11-28): the block must be VISIBLE
+     in the person's own wallet, with its reason — never a silent
+     refusal. blockedReasonLine renders the server's recorded
+     reason, or an honest absence when none was recorded. */
+  function blockedInfoFor(personId) {
+    try { return Sync.blockedInfo(personId); } catch (e) { return null; }
+  }
+  function blockedReasonLine(info) {
+    if (info && typeof info.reason === 'string' && info.reason) return 'Reason: ' + info.reason;
+    return 'No reason was recorded for this block.';
+  }
+  function blockedCardHTML(info) {
+    return '<h3>Your account has been blocked</h3>'
+      + '<p class="blockedreason">' + esc(blockedReasonLine(info)) + '</p>'
+      + '<p class="sub" style="margin:0">You can open and view your wallet, but Add Money, Biom Pay and palm scans are stopped until the block is removed.</p>';
+  }
   var SYNC_DEFAULT_ENDPOINT = 'https://tsg-biom-api.vercel.app';
   var SYNC_BOOTSTRAP_KEY = '7d969f9a4e4a3a232477d952cbfe3c2a4271d41d83071aec';
   var Sync = createBiomSync({
@@ -1966,6 +2162,9 @@
     },
     onProfileConflict: function () { renderSyncStatus(); },
     fetchFn: function (url, opts) { return fetchWithTimeout(url, opts, 20000); }, // v77: bounded — a stalled sync can never hang the app
+    /* v88: the indicator's offline leg reads the browser's own
+       connectivity flag through this dep (the engine stays pure). */
+    isOnline: function () { return typeof navigator === 'undefined' || navigator.onLine !== false; },
     now: function () { return Date.now(); },
     uuid: syncUuid,
     onStatus: function () { renderSyncStatus(); },
@@ -2301,6 +2500,20 @@
   function renderSyncStatus() {
     var el = $('syncStatus');
     if (el) el.textContent = Sync.statusText();
+    /* v88: the persistent sync indicator (Phase 0 gaps 4 + 6) —
+       the same honest state, in plain words, on every surface
+       where records are created, not only in owner Settings.
+       The kind drives colour; the word is always present, so
+       no state is colour-only. A latched stop also shows its
+       next step. */
+    var ind = $('syncIndicator');
+    if (ind && typeof Sync.indicator === 'function') {
+      var st = Sync.indicator();
+      ind.className = 'sync-indicator kind-' + st.kind;
+      var txt = $('syncIndicatorText');
+      if (txt) txt.textContent = st.text + (st.next ? ' ' + st.next : '');
+      ind.setAttribute('aria-label', 'Sync status: ' + st.text);
+    }
   }
   function fillSyncSettings() {
     if ($('syncEndpoint')) $('syncEndpoint').value = syncPrefGet('biomSyncEndpoint') || SYNC_DEFAULT_ENDPOINT;
@@ -6939,7 +7152,7 @@
     var events = (me && Array.isArray(me.loyaltyEvents)) ? me.loyaltyEvents : [];
     var streak = B.loyaltyStreak(events, Date.now(), LOYALTY_CONFIG.streakMilestoneWeeks);
     var html = '<div class="kv"><b>Points balance:</b> <span class="num">' + bal.toLocaleString() + ' pts</span></div>';
-    html += '<p class="sub" style="margin:10px 0 0">Points are earned when your palm is verified on a visit scan, and when a Biom Pay payment completes. A point is only ever added after the scan or payment has actually happened — a refused or failed payment earns nothing. Every earn is recorded in the statement below, and the balance is counted from those records. What points will be worth is set by the merchant programme and will be announced there — this app promises no value for points yet.</p>';
+    html += '<p class="sub" style="margin:10px 0 0">Every time a shop scans your palm, you earn points. Paying with Biom Pay earns points too. Your points are counted from the list below — nothing is added for a scan or a payment that did not happen. Shops will announce what the points can be used for.</p>';
     html += '<div class="kv" style="margin-top:12px"><b>Weekly palm streak:</b> ' + streak.weeks + (streak.weeks === 1 ? ' week' : ' weeks');
     if (streak.freezesHeld > 0) html += '<br><b>Streak freeze:</b> 1 held — it will cover one missed week automatically, so your streak survives it.';
     else html += '<br><span style="color:var(--muted)">Streak freeze: none held. Reaching ' + LOYALTY_CONFIG.streakMilestoneWeeks + ' weeks in a row earns one — it covers a missed week so the streak survives. Freezes are earned, never bought.</span>';
@@ -7619,7 +7832,6 @@
   var walletSessionId = null; // Biom ID whose wallet is open (this session only)
   var walletPeopleCache = [];
   var walletScanCtx = null;   // { title, prompt, run } for the shared scan card
-  var sendDraft = { amount: null, receiverId: null, receiverName: null };
 
   function loadWalletPeople() {
     return DB.all('people').then(function (people) { walletPeopleCache = people; return people; });
@@ -7670,7 +7882,6 @@
       $('walletLocked').classList.toggle('hidden', !!me);
       $('walletHome').classList.toggle('hidden', !me);
       $('walletAdd').classList.add('hidden');
-      $('walletSend').classList.add('hidden');
       /* v71: walletPay joins the sheets closed on returning
          home — pre-v71 it stayed open under the home view
          (its Back button appeared to do nothing). */
@@ -7730,6 +7941,18 @@
   }
   function renderWalletHome(me) {
     var w = B.walletEnsurePerson(me).wallet;
+    /* v89 (Chairman ruling, 2026-11-28): a blocked person still
+       opens and views their wallet — entry is never refused — but
+       the block is shown at the top of the wallet WITH its reason.
+       Before v89 the wallet rendered exactly as normal and scans
+       simply vanished (his own morning test: "everything scan was
+       perfect showing no blocked feeling"). */
+    var bEl = $('wHomeBlocked');
+    if (bEl) {
+      var bInfo = blockedInfoFor(me.id);
+      if (bInfo) { bEl.innerHTML = blockedCardHTML(bInfo); bEl.classList.remove('hidden'); }
+      else { bEl.innerHTML = ''; bEl.classList.add('hidden'); }
+    }
     $('wHomeName').textContent = me.name;
     $('wHomeId').textContent = me.id;
     $('wHomeAvatar').textContent = initialsOf(me.name);
@@ -7940,7 +8163,9 @@
        restarts and settings changes. */
     if (walletBlockedActive()) {
       $('wScanStatus').textContent = 'Account blocked';
-      $('wScanMsg').innerHTML = '<div class="error">' + BLOCKED_ACCOUNT_LINE + '</div>';
+      var wBlkInfo = null;
+      try { var wBlkMe = walletSessionPerson(); if (wBlkMe) wBlkInfo = blockedInfoFor(wBlkMe.id); } catch (e) {}
+      $('wScanMsg').innerHTML = '<div class="error">' + BLOCKED_ACCOUNT_LINE + '<br>' + esc(blockedReasonLine(wBlkInfo)) + '</div>';
       $('wScanStart').disabled = true;
       return;
     }
@@ -8392,16 +8617,10 @@
     if (raw === '' || !isFinite(n) || n <= 0) { line.textContent = ''; return; }
     line.textContent = 'Balance after: ' + fmtBDT(projBase[key] + dir * n);
   }
-  [['wAddAmount', 'wAddProjected', 'add', 1], ['wSendAmount', 'wSendProjected', 'send', -1], ['wPayAmount', 'wPayProjected', 'pay', -1]].forEach(function (cfg) {
+  [['wAddAmount', 'wAddProjected', 'add', 1], ['wPayAmount', 'wPayProjected', 'pay', -1]].forEach(function (cfg) {
     var field = $(cfg[0]);
     if (field) field.addEventListener('input', function () { updateProjected(cfg[0], cfg[1], cfg[2], cfg[3]); });
   });
-  function setSendProgress(step) {
-    var bar = $('wSendProgressBar');
-    if (bar) bar.style.transform = 'scaleX(' + (step / 3) + ')';
-    var lbl = $('wSendProgressLabel');
-    if (lbl) lbl.textContent = step === 1 ? 'Step 1 of 3 — Receiver' : step === 2 ? 'Step 2 of 3 — Amount' : 'Step 3 of 3 — Review and confirm with your palm';
-  }
   $('wAddOpen').addEventListener('click', function () {
     var me = walletSessionPerson();
     if (!me) return;
@@ -8478,177 +8697,6 @@
         });
       }
     });
-  });
-
-  /* Send Money (v63 order, the Chairman 2026-11-25 10:47):
-     (1) the RECEIVER's palm identifies them, (2) the amount is
-     entered, (3) the sender's OWN palm authorises — then the
-     payment completes. (Before v63 the amount came first.) The
-     store layer re-checks every rule at apply time (receiver
-     registered, not self, amount within balance, authorisation
-     is the sender). */
-  $('wSendOpen').addEventListener('click', function () {
-    var me = walletSessionPerson();
-    if (!me) return;
-    sendDraft = { amount: null, receiverId: null, receiverName: null };
-    $('walletHome').classList.add('hidden');
-    $('walletSend').classList.remove('hidden');
-    $('wSendBalance').textContent = fmtBDT(B.walletEnsurePerson(me).wallet.balance);
-    projBase.send = B.walletEnsurePerson(me).wallet.balance;
-    setSendProgress(1);
-    $('wSendMsg').innerHTML = '';
-    $('wSendAmount').value = '';
-    updateProjected('wSendAmount', 'wSendProjected', 'send', -1);
-    $('wSendReceiverLine').innerHTML = '';
-    $('wSendAmountBlock').classList.add('hidden');
-    $('wSendConfirm').classList.add('hidden');
-    $('wSendConfirm').innerHTML = '';
-  });
-  $('wSendBack').addEventListener('click', function () { renderWallet(); });
-  $('wSendScanReceiver').addEventListener('click', function () {
-    var me = walletSessionPerson();
-    if (!me) return;
-    showWalletScan({
-      title: 'Send money — scan the receiver\'s palm',
-      syncKind: 'identify', // v56 Scan Sync kind for this context
-      prompt: 'The RECEIVER shows their open palm. The scan finds their Biom ID — if the palm matches no registered palm, no money can be sent.',
-      run: function () {
-        return DB.all('people').then(function (people) {
-          return streamIdentifyPalm($('wScanVideo'), $('wScanStatus'), people, null, walletControl).then(function (out) {
-            if (!out || out.fail || !out.person) { walletScanFailed(out); return; }
-            if (out.person.id === me.id) {
-              $('wScanMsg').innerHTML = '<div class="error">That is your own palm — you cannot send money to yourself. Scan the receiver\'s palm.</div>';
-              $('wScanRun').disabled = false;
-              Snd.buzz();
-              return;
-            }
-            /* v79 (seat review): a blocked account cannot
-               receive either — the block is total and its wallet
-               is seized, so a Send to it stops at identification,
-               with the reason stated plainly. Same treatment as
-               the merchant terminal gives a blocked palm. */
-            if (Sync.isBlocked(out.person.id)) {
-              $('wScanMsg').innerHTML = '<div class="error">' + BLOCKED_TERMINAL_LINE + ' Money cannot be sent to a blocked account.</div>';
-              $('wScanRun').disabled = false;
-              Snd.buzz();
-              return;
-            }
-            sendDraft.receiverId = out.person.id;
-            sendDraft.receiverName = out.person.name;
-            sendDraft.amount = null;
-                        scanTimerStop('w'); // v74 (Seat 1 fix): freeze first, so the record stamps the shown total
-Sync.noteScan({ kind: 'identify', profileName: out.person.name, biomId: out.person.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
-            hideWalletScan();
-            $('walletSend').classList.remove('hidden');
-            /* v63 step 2: the receiver is known — now the
-               amount is entered against their verified card. */
-            $('wSendReceiverLine').innerHTML =
-              '<div class="recvcard"><div class="rc-head"><span class="avatarbtn" style="background:var(--blue);border:none;cursor:default">' + esc(initialsOf(out.person.name)) + '</span>' +
-              '<div><div class="rc-name">' + esc(out.person.name) + '</div><div class="rc-id">' + esc(out.person.id) + '</div></div>' +
-              '<span class="badge ok" style="margin-left:auto">Palm verified</span></div></div>';
-            $('wSendReceiverLine').innerHTML += '<div class="sub" style="margin-top:6px">Receiver palm scanned in ' + ScanTimers.w.elapsedText() + '.</div>'; // v74: the identification scan's measured time, stated where its result lands
-            $('wSendAmountBlock').classList.remove('hidden');
-            setSendProgress(2);
-            $('wSendConfirm').classList.add('hidden');
-            $('wSendConfirm').innerHTML = '';
-            $('wSendMsg').innerHTML = '';
-          });
-        });
-      }
-    });
-  });
-  function renderSendConfirm() {
-    var me = walletSessionPerson();
-    if (!me || !sendDraft.receiverId) return;
-    setSendProgress(3);
-    var w = B.walletEnsurePerson(me).wallet;
-    $('wSendConfirm').classList.remove('hidden');
-    $('wSendConfirm').innerHTML =
-      '<div class="recvcard"><div class="rc-head"><span class="avatarbtn" style="background:var(--blue);border:none;cursor:default">' + esc(initialsOf(sendDraft.receiverName)) + '</span>' +
-      '<div><div class="rc-name">' + esc(sendDraft.receiverName) + '</div><div class="rc-id">' + esc(sendDraft.receiverId) + '</div></div>' +
-      '<span class="badge ok" style="margin-left:auto">Palm verified</span></div>' +
-      '<div class="rc-rows"><b>Amount:</b> ' + fmtBDT(sendDraft.amount) + ' (demo money)<br>' +
-      '<b>Your demo balance:</b> ' + fmtBDT(w.balance) + (sendDraft.amount > w.balance ? '<br><b>That is more than your balance — the send will be blocked.</b>' : '') + '</div></div>' +
-      '<button class="btn primary big" id="wSendAuthorise" style="margin-top:12px">Scan Palm to Send</button>';
-    $('wSendAuthorise').addEventListener('click', authoriseSend);
-  }
-  function authoriseSend() {
-    var me = walletSessionPerson();
-    if (!me || !sendDraft.receiverId) return;
-    /* v73 (Seat 3 F2): snapshot the draft NOW, at authorise
-       entry. The Send card stays live during the scan and its
-       Continue handler overwrites sendDraft, so reading the
-       draft at apply time (as before v73) could move a
-       different amount than the one the prompt below names.
-       The snapshot — and only the snapshot — is used through
-       the prompt and the apply. */
-    var sendSnap = { receiverId: sendDraft.receiverId, receiverName: sendDraft.receiverName, amount: sendDraft.amount };
-    showWalletScan({
-      title: 'Send money — authorise with your own palm',
-      syncKind: 'money-auth', // v56 Scan Sync kind for this context
-      prompt: 'Scan YOUR OWN palm to send ' + fmtBDT(sendSnap.amount) + ' of demo money to ' + sendSnap.receiverName + ' (' + sendSnap.receiverId + '). Only your palm can authorise a send from your wallet.',
-      run: function () {
-        return DB.all('people').then(function (people) {
-          var freshSender = people.find(function (p) { return p.id === me.id; }) || me;
-          return streamVerifyPalm($('wScanVideo'), $('wScanStatus'), freshSender, people, null, function () {}, walletControl, { strictMoney: true }).then(function (out) {
-            var auth = authFromVerify(out, freshSender.id);
-            if (!auth.verified) { walletScanFailed(out); return; }
-            return DB.nextSeq('demoSeq', 1).then(function (seq) {
-              var res = B.walletApplySend(people, freshSender.id, sendSnap.receiverId, sendSnap.amount, auth, Date.now(), B.walletDemoRef(seq));
-              if (!res.ok) { $('wScanMsg').innerHTML = '<div class="error">' + esc(res.error) + '</div>'; $('wScanRun').disabled = false; return; }
-              // The transfer was computed atomically from the one
-              // snapshot above; persist both updated records.
-              return DB.put('people', res.sender).then(function () { return DB.put('people', res.receiver); }).then(function () {
-                /* v67: both Inbox events are written HERE — on
-                   the success path only, after BOTH updated
-                   records are stored: the sender's "Send money
-                   successful" and the receiver's "You received
-                   money". A refused authorisation never reaches
-                   this line. */
-                Inbox.add(res.sender.id, Inbox.event('send', { amount: res.senderEntry.amount, balanceAfter: res.senderEntry.balanceAfter, ref: res.senderEntry.ref, counterpartyName: res.receiver.name, detail: 'To ' + res.receiver.name + ' (' + res.receiver.id + ') · Demo money' }));
-                Inbox.add(res.receiver.id, Inbox.event('receive', { amount: res.receiverEntry.amount, balanceAfter: res.receiverEntry.balanceAfter, ref: res.receiverEntry.ref, counterpartyName: freshSender.name, detail: 'From ' + freshSender.name + ' (' + freshSender.id + ') · Demo money' }));
-                                scanTimerStop('w'); // v74 (Seat 1 fix): freeze first, so the record stamps the shown total
-Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: freshSender.id, hand: out.diag ? out.diag.probeHand : null, edccScore: out.diag ? out.diag.edcc : null, palmnetScore: out.diag ? out.diag.neural : null, result: 'Verified' });
-                noteMoneyProfile(res.sender); // v78: mirror both sides of the transfer to the dashboard dossier
-                noteMoneyProfile(res.receiver);
-                var sentAmount = sendSnap.amount, sentTo = sendSnap.receiverName, sentToId = sendSnap.receiverId, sentRef = res.senderEntry.ref, newBal = res.senderEntry.balanceAfter;
-                sendDraft = { amount: null, receiverId: null, receiverName: null };
-                balanceFlashPending = true;
-                hideWalletScan();
-                return renderWallet().then(function () {
-                  $('wHomeMsg').innerHTML = '<div class="success">Sent ' + fmtBDT(sentAmount) + ' of demo money to ' + esc(sentTo) + ' (' + esc(sentToId) + '). New demo balance: ' + fmtBDT(newBal) + '.<br>Reference: ' + esc(sentRef) + ' (demo reference — not a real payment).<br>Scanned in ' + ScanTimers.w.elapsedText() + '.</div>';
-                  toast('Demo money sent');
-                  Snd.chime();
-                });
-              });
-            });
-          });
-        });
-      }
-    });
-  }
-
-  /* v63 Send step 2: the amount is entered only after the
-     receiver's palm has identified them; Continue validates it
-     and builds the review card whose button runs step 3 (the
-     sender's authorising scan, authoriseSend above). */
-  $('wSendContinue').addEventListener('click', function () {
-    var me = walletSessionPerson();
-    if (!me || !sendDraft.receiverId) return;
-    var amt = B.walletValidateAmount($('wSendAmount').value);
-    if (!amt.ok) { $('wSendMsg').innerHTML = '<div class="error">' + esc(amt.error) + '</div>'; return; }
-    $('wSendMsg').innerHTML = '';
-    sendDraft.amount = amt.amount;
-    renderSendConfirm();
-  });
-  $('wSendChangeReceiver').addEventListener('click', function () {
-    sendDraft = { amount: null, receiverId: null, receiverName: null };
-    setSendProgress(1);
-    $('wSendReceiverLine').innerHTML = '';
-    $('wSendAmountBlock').classList.add('hidden');
-    $('wSendConfirm').classList.add('hidden');
-    $('wSendConfirm').innerHTML = '';
-    $('wSendMsg').innerHTML = '';
   });
 
   /* ---------------- Wallet Biom Pay (v63) --------------------------
@@ -9226,6 +9274,14 @@ Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: fresh
     if (me) renderWalletHome(me);
   });
   $('wHomeAvatar').addEventListener('click', function () { go('account'); });
+  /* v90: the wallet home's Palm Loyalty tile — the loyalty system
+     is a first-class surface now (the Chairman's order): it opens
+     My Account at the loyalty card. */
+  var loyaltyTile = $('wLoyaltyOpen');
+  if (loyaltyTile) loyaltyTile.addEventListener('click', function () {
+    go('account');
+    setTimeout(function () { var c = $('acLoyaltyCard'); if (c) c.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 350);
+  });
   $('wQuickHistory').addEventListener('click', function () {
     var card = $('wActivityCard');
     if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -9448,7 +9504,7 @@ Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: fresh
         if ($('topTitle')) $('topTitle').textContent = mode === 'neural' ? 'Neural Scan — add PalmNet embeddings' : 'Add Angles — widen a palm profile';
         if ($('topSub')) $('topSub').textContent = '';
         if ($('topWho')) $('topWho').innerHTML = '<b>' + esc(person.name) + '</b> — ' + esc(person.id);
-        $('topMsg').innerHTML = '<div class="error">' + BLOCKED_ACCOUNT_LINE + (mode === 'neural' ? ' Neural Scan is stopped while the block stands.' : ' Strengthen and Add Angle are stopped while the block stands.') + '</div>';
+        $('topMsg').innerHTML = '<div class="error">' + BLOCKED_ACCOUNT_LINE + (mode === 'neural' ? ' Neural Scan is stopped while the block stands.' : ' Strengthen and Add Angle are stopped while the block stands.') + '<br>' + esc(blockedReasonLine(blockedInfoFor(personId))) + '</div>';
         $('topStatus').textContent = 'Account blocked';
         if ($('topCapture')) $('topCapture').disabled = true;
         return;
@@ -10009,7 +10065,6 @@ Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: fresh
   (function () {
     var SHEETS = [
       { id: 'walletAdd', closeId: 'wAddBack' },
-      { id: 'walletSend', closeId: 'wSendBack' },
       { id: 'walletPay', closeId: 'wPayBack' },
       { id: 'walletScanCard', closeId: 'wScanCancel' }
     ];
@@ -10519,6 +10574,16 @@ Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: fresh
   }
   wireWipeData();
   wireSyncSettings();
+  /* v88 (Phase 4): reconnect + return triggers — regaining
+     connectivity or coming back to the app flushes the outbox
+     immediately, so a record created offline (or whose attempt
+     failed) gets its next attempt from the event itself, not
+     from the next scan, the next boot or a manual tap. */
+  window.addEventListener('online', function () { Sync.onOnline(); renderSyncStatus(); });
+  window.addEventListener('offline', function () { renderSyncStatus(); });
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) { Sync.onVisible(); renderSyncStatus(); }
+  });
   /* v81: research-mode controls — the consent overlay's two
      answers and the standing Settings / More toggles all land
      in researchSetConsent, the one place the choice changes. */

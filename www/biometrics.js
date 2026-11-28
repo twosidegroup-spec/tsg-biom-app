@@ -6291,7 +6291,7 @@ function createTsgPalmEngine() {
      therefore the identity, and a v62 store — sealed banks, hand
      stamps, wallet, points, and a queued sync outbox row
      included — opens under v63 byte-identical. */
-  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62', 'v63', 'v64', 'v65', 'v66', 'v67', 'v68', 'v69', 'v70', 'v71', 'v72', 'v73', 'v74', 'v75', 'v76', 'v77', 'v78', 'v79', 'v80', 'v81', 'v82', 'v83', 'v84', 'v85', 'v86', 'v87'];
+  var BIOM_DATA_VERSIONS = ['v37', 'v38', 'v39', 'v40', 'v41', 'v42', 'v43', 'v44', 'v45', 'v46', 'v47', 'v48', 'v49', 'v50', 'v51', 'v52', 'v53', 'v54', 'v55', 'v56', 'v57', 'v58', 'v59', 'v60', 'v61', 'v62', 'v63', 'v64', 'v65', 'v66', 'v67', 'v68', 'v69', 'v70', 'v71', 'v72', 'v73', 'v74', 'v75', 'v76', 'v77', 'v78', 'v79', 'v80', 'v81', 'v82', 'v83', 'v84', 'v85', 'v86', 'v87', 'v88', 'v89', 'v90', 'v91'];
   var BIOM_DATA_STEPS = {
     'v38': function (snap) { return snap; },
     'v39': function (snap) { return snap; },
@@ -6492,6 +6492,26 @@ function createTsgPalmEngine() {
        in index.html / app.js / styles.css, so a v86 store opens
        byte-identical under v87. */
     'v87': function (snap) { return snap; },
+    /* v88: pure adoption — Phases 3+4 (the §K UI refresh and the
+       instant-sync engine) change no stored shape at all: sync
+       behaviour and presentation only, in app.js / index.html /
+       styles.css, so a v87 store opens byte-identical under v88. */
+    'v88': function (snap) { return snap; },
+    /* v89: pure adoption — the blocked-visibility release (the
+       block's story carried in the sync engine's blocked set and
+       shown in the wallet) changes no stored person shape; the
+       persisted syncBlockedIds map may now hold info objects next
+       to legacy `true` values, and both read as blocked. */
+    'v89': function (snap) { return snap; },
+    /* v90: pure adoption — the loyalty transformation (Send Money
+       removed from the product, Palm Loyalty a first-class
+       surface, plain-words UI pass, calmer quick actions) changes
+       no stored shape; historical wallet statement rows, sends
+       included, stay readable exactly as recorded. */
+    'v90': function (snap) { return snap; },
+    /* v91: pure adoption — the Liquid Glass · Biom Blue visual
+       layer is presentation only; no stored shape changes. */
+    'v91': function (snap) { return snap; },
     'v45': function (snap) {
       var changed = false;
       var people = snap.people.map(function (p) {
