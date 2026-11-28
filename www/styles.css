@@ -863,3 +863,243 @@ input,select{background:rgba(255,255,255,.85);border:1px solid var(--glass-edge)
     border:none;border-right:1px solid rgba(255,255,255,.22);
     box-shadow:inset 0 1px 0 rgba(255,255,255,.25), 18px 0 40px rgba(3,25,91,.18)}
 }
+
+/* ================= v92 — TRUE LIQUID GLASS =================
+   The Chairman's verdict on v91 (2026-11-28): "not feeling
+   glassy — just button colour changed, old structure." He is
+   right: v91's panels were 66–88% solid — that is pale cards,
+   not glass. This layer is built from TWO reference sets:
+   (1) his own images — the glossy blue CAPSULE stack in his
+   exact ramp (#03195B → #0B2CB1 → #1951FC → #3781FC → #CBE9FD),
+   the gel pill buttons and floating glass panel of his Liquid
+   Glass UI Kit, the bubble's iridescent RIM LIGHT (edge only),
+   and the styleguide's token discipline; (2) the Pinterest
+   board checked live in his browser (18 pins): light ice-blue
+   aurora background with soft glow orbs, frosted white panels
+   at 10–25% with heavy blur, a 1px white rim brightest at the
+   top-left, ONE radius scale (cards 20–24, panels 28, pills
+   full, icons circular), soft blue-grey shadows, and every
+   chrome element FLOATING detached over the background.
+   Two tints of ONE recipe: clear glass for chrome and heroes,
+   a scrim plate for text-heavy surfaces (the pins' own rule:
+   text sits on a scrim, not directly on blur). Camera and
+   scan surfaces still carry NO backdrop blur — scan speed
+   and camera clarity are untouched, as always. */
+body{
+  --lg-clear:linear-gradient(135deg, rgba(255,255,255,.44), rgba(255,255,255,.20) 55%, rgba(255,255,255,.32));
+  --lg-scrim:linear-gradient(135deg, rgba(255,255,255,.80), rgba(255,255,255,.64));
+  --lg-rim:rgba(255,255,255,.75);
+  --lg-blur:blur(22px) saturate(1.75);
+  --lg-shadow:0 22px 44px rgba(11,44,177,.16), 0 4px 12px rgba(11,44,177,.08), inset 0 1px 0 rgba(255,255,255,.85), inset 1px 0 0 rgba(255,255,255,.35);
+  --lg-hero-shadow:0 26px 52px rgba(25,81,252,.38), 0 6px 16px rgba(3,25,91,.25), inset 0 1px 0 rgba(255,255,255,.65), inset 0 -18px 30px rgba(3,25,91,.22);
+  background:
+    radial-gradient(55% 38% at 88% -4%, rgba(55,129,252,.50), rgba(55,129,252,0) 62%),
+    radial-gradient(48% 36% at -8% 12%, rgba(139,124,255,.36), rgba(139,124,255,0) 60%),
+    radial-gradient(60% 42% at 108% 78%, rgba(45,212,191,.30), rgba(45,212,191,0) 62%),
+    radial-gradient(75% 50% at 50% -10%, rgba(203,233,253,.90), rgba(203,233,253,0) 65%),
+    linear-gradient(180deg,#E3EEFD 0%, #D8E9FC 48%, #E9F3FE 100%);
+  background-attachment:fixed}
+/* Top bar: translucent navy glass — the aurora breathes through it */
+.topbar{background:linear-gradient(135deg, rgba(3,25,91,.86), rgba(11,44,177,.80) 55%, rgba(25,81,252,.78));
+  border-bottom:1px solid rgba(255,255,255,.40);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.45), 0 16px 34px rgba(3,25,91,.28)}
+/* Balance hero: his capsule stack as one card — layered ramp,
+   a glossy streak across the top, light through the edges */
+.balcard{background:
+  linear-gradient(180deg, rgba(255,255,255,.38), rgba(255,255,255,0) 42%),
+  radial-gradient(120% 110% at 10% -20%, rgba(203,233,253,.55), rgba(203,233,253,0) 55%),
+  linear-gradient(150deg,#0B2CB1 0%, #1951FC 52%, #3781FC 100%);
+  border:1px solid rgba(255,255,255,.55);border-radius:28px;
+  box-shadow:var(--lg-hero-shadow)}
+body.mode-customer.role-customer .balcard, body.mode-customer.role-merchant .balcard{
+  background:
+  linear-gradient(180deg, rgba(255,255,255,.38), rgba(255,255,255,0) 42%),
+  radial-gradient(120% 110% at 10% -20%, rgba(203,233,253,.55), rgba(203,233,253,0) 55%),
+  linear-gradient(150deg,#0B2CB1 0%, #1951FC 52%, #3781FC 100%);
+  border:1px solid rgba(255,255,255,.55);
+  box-shadow:var(--lg-hero-shadow)}
+.balpoints{background:rgba(255,255,255,.20);border:1px solid rgba(255,255,255,.45);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.5)}
+/* Cards: clear glass, floating over the aurora */
+.card{background:var(--lg-clear);border:1px solid var(--lg-rim);box-shadow:var(--lg-shadow);border-radius:24px}
+#page-wallet .card,#page-account .card,#page-balance .card,#page-inbox .card,
+#page-more .card,#page-partner .card,#page-stores .card,#page-settings .card,
+#page-dashboard .card,#page-logs .card,#page-registry .card,.profilecard,.rolecard{
+  -webkit-backdrop-filter:var(--lg-blur);backdrop-filter:var(--lg-blur)}
+.profilecard{background:var(--lg-scrim)}
+.rolecard{background:var(--lg-clear);border:1px solid var(--lg-rim);box-shadow:var(--lg-shadow);border-radius:24px}
+.rc-card{background:var(--lg-scrim);border:1px solid var(--lg-rim);box-shadow:var(--lg-shadow)}
+.rc-card .rc-actions{background:transparent}
+/* Quick tiles: clear glass with glossy icon discs */
+.qa-tile{background:var(--lg-clear);
+  -webkit-backdrop-filter:var(--lg-blur);backdrop-filter:var(--lg-blur);
+  border:1px solid var(--lg-rim);box-shadow:var(--lg-shadow);border-radius:24px}
+/* Buttons: gel capsules from his kit — glossy top, deep base,
+   a coloured shadow under the primary */
+.btn{border-radius:var(--radius-pill);background:var(--lg-scrim);border:1px solid var(--lg-rim);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.9), 0 10px 22px rgba(11,44,177,.12);
+  -webkit-backdrop-filter:var(--lg-blur);backdrop-filter:var(--lg-blur)}
+.btn.primary{background:linear-gradient(180deg,#5B97FF 0%, #3781FC 30%, #1951FC 68%, #0B2CB1 100%);
+  border:1px solid rgba(255,255,255,.50);color:#fff;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.75), inset 0 -10px 18px rgba(3,25,91,.35), 0 16px 30px rgba(25,81,252,.42)}
+.btn.primary:hover{background:linear-gradient(180deg,#3781FC 0%, #1951FC 45%, #0B2CB1 100%)}
+/* Bottom nav: a true floating glass pill; the active tab is a
+   glossy blue capsule riding inside it */
+.nav{background:linear-gradient(135deg, rgba(255,255,255,.46), rgba(255,255,255,.24));
+  -webkit-backdrop-filter:blur(24px) saturate(1.8);backdrop-filter:blur(24px) saturate(1.8);
+  border:1px solid var(--lg-rim);border-radius:30px;
+  box-shadow:0 24px 48px rgba(3,25,91,.22), inset 0 1px 0 rgba(255,255,255,.9)}
+.nav button.active{background:linear-gradient(180deg,#3781FC,#1951FC 60%,#0B2CB1);color:#fff;border-radius:24px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.6), 0 10px 20px rgba(25,81,252,.35)}
+.nav button.active svg{stroke:#fff}
+body.mode-customer.role-customer .nav, body.mode-customer.role-merchant .nav{
+  background:linear-gradient(135deg, rgba(255,255,255,.46), rgba(255,255,255,.24));
+  border:1px solid var(--lg-rim);
+  box-shadow:0 24px 48px rgba(3,25,91,.22), inset 0 1px 0 rgba(255,255,255,.9)}
+body.mode-customer.role-customer .nav button, body.mode-customer.role-merchant .nav button{color:#33507e}
+body.mode-customer.role-customer .nav button.active, body.mode-customer.role-merchant .nav button.active{
+  background:linear-gradient(180deg,#3781FC,#1951FC 60%,#0B2CB1);color:#fff}
+body.mode-customer.role-customer .nav button.active svg, body.mode-customer.role-merchant .nav button.active svg{stroke:#fff}
+body.mode-customer .navbadge{border-color:rgba(255,255,255,.8)}
+/* Inputs + chips ride the scrim tier */
+input,select{background:rgba(255,255,255,.62);border:1px solid var(--lg-rim);border-radius:16px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.8)}
+.chip{background:rgba(255,255,255,.45);border:1px solid var(--lg-rim)}
+.scanpill{background:rgba(255,255,255,.45);border:1px solid var(--lg-rim)}
+.sync-indicator{background:var(--lg-scrim);border:1px solid var(--lg-rim);box-shadow:var(--lg-shadow)}
+.blockedcard{background:linear-gradient(135deg, rgba(254,226,226,.78), rgba(254,202,202,.55));
+  border:1px solid rgba(255,255,255,.7);
+  -webkit-backdrop-filter:var(--lg-blur);backdrop-filter:var(--lg-blur)}
+/* Desktop: the sidebar FLOATS detached over the aurora (the
+   Flowy pin) — navy glass, rounded, its active item a white
+   glass pill */
+@media (min-width:1024px){
+  .nav{left:16px;top:16px;bottom:16px;width:236px;border-radius:28px;
+    background:linear-gradient(165deg, rgba(3,25,91,.88), rgba(11,44,177,.82) 60%, rgba(25,81,252,.78));
+    border:1px solid rgba(255,255,255,.35);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.40), 0 24px 48px rgba(3,25,91,.30)}
+  .nav button.active{background:rgba(255,255,255,.22);color:#fff;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.45)}
+  /* The customer-face light-pill override above is phone-only in
+     effect: on desktop the sidebar is navy glass for BOTH faces,
+     so its white title and pale labels stay readable (render-gate
+     find, v92: white-on-pale sidebar text was invisible). */
+  body.mode-customer.role-customer .nav, body.mode-customer.role-merchant .nav{
+    background:linear-gradient(165deg, rgba(3,25,91,.88), rgba(11,44,177,.82) 60%, rgba(25,81,252,.78));
+    border:1px solid rgba(255,255,255,.35);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.40), 0 24px 48px rgba(3,25,91,.30)}
+  body.mode-customer.role-customer .nav button, body.mode-customer.role-merchant .nav button{color:#DCE8FD}
+  body.mode-customer.role-customer .nav button.active, body.mode-customer.role-merchant .nav button.active{
+    background:rgba(255,255,255,.22);color:#fff;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.45)}
+}
+
+/* ================= v93 — DEEP OCEAN, LIGHT MODE =================
+   The Chairman's pick (2026-11-28): the Deep Ocean Glass board —
+   glowing royal-blue capsule, luminous-rimmed glass tiles, glowing
+   accents — rebuilt on a LIGHT field, not dark. This layer keeps
+   the v92 aurora and structure, brightens the field so more
+   colour shows through the glass, and adds the board's signature
+   GLOW: a luminous rim and a soft blue aura around the hero
+   capsule, the tiles, the primary buttons and the active nav
+   capsule. Camera/scan surfaces stay solid, as always. */
+body{
+  background:
+    radial-gradient(55% 38% at 88% -4%, rgba(55,129,252,.55), rgba(55,129,252,0) 62%),
+    radial-gradient(48% 36% at -8% 12%, rgba(139,124,255,.42), rgba(139,124,255,0) 60%),
+    radial-gradient(60% 42% at 108% 78%, rgba(45,212,191,.36), rgba(45,212,191,0) 62%),
+    radial-gradient(75% 50% at 50% -10%, rgba(203,233,253,.95), rgba(203,233,253,0) 65%),
+    linear-gradient(180deg,#EDF4FE 0%, #E0EBFC 48%, #EFF7FE 100%);
+  background-attachment:fixed}
+/* The hero capsule GLOWS like the board: luminous rim + blue aura */
+.balcard{border:1px solid rgba(147,197,253,.95);
+  box-shadow:0 0 44px rgba(55,129,252,.50), 0 26px 52px rgba(25,81,252,.38), inset 0 1px 0 rgba(255,255,255,.65), inset 0 -14px 28px rgba(3,25,91,.35)}
+/* The role-page hero is the same capsule family — same glow */
+.rolehero{border:1px solid rgba(147,197,253,.95);
+  box-shadow:0 0 44px rgba(55,129,252,.45), 0 26px 52px rgba(25,81,252,.35), inset 0 1px 0 rgba(255,255,255,.65), inset 0 -14px 28px rgba(3,25,91,.35)}
+/* Glass surfaces get the board's luminous rim + a faint blue aura */
+.card,.qa-tile,.rolecard{border-color:rgba(255,255,255,.92);
+  box-shadow:0 0 26px rgba(55,129,252,.13), 0 22px 44px rgba(11,44,177,.16), 0 4px 12px rgba(11,44,177,.08), inset 0 1px 0 rgba(255,255,255,.85), inset 1px 0 0 rgba(255,255,255,.35)}
+.qa-tile svg{filter:drop-shadow(0 0 6px rgba(55,129,252,.55))}
+/* Gel buttons and the active nav capsule carry the glow too */
+.btn.primary{box-shadow:inset 0 1px 0 rgba(255,255,255,.75), inset 0 -10px 18px rgba(3,25,91,.35), 0 16px 30px rgba(25,81,252,.42), 0 0 30px rgba(25,81,252,.45)}
+.nav button.active{box-shadow:inset 0 1px 0 rgba(255,255,255,.6), 0 10px 20px rgba(25,81,252,.35), 0 0 22px rgba(55,129,252,.50)}
+/* The loyalty chip: teal-tinted rim with a soft glow, as on the board */
+.balpoints{border:1px solid rgba(94,234,212,.65);
+  box-shadow:0 0 18px rgba(45,212,191,.35), inset 0 1px 0 rgba(255,255,255,.7)}
+
+/* ================= v94 — DECLUTTER =================
+   The Chairman's word (2026-11-28, on the v93 renders): the
+   buttons are "clutter with fills", the header and the sidebar
+   clutter each other on desktop, the installed app must not
+   show the install header at all, and the Create your Biom
+   wallet page gets a redesign. This layer answers all four,
+   with one calm pass over every page:
+   - Buttons go FLAT: one solid fill, one soft shadow — no gel
+     gradients, no bevel stacks, no glow halos. The hero
+     capsule keeps its Deep Ocean glow (his v93 pick); buttons
+     are not heroes.
+   - Desktop: the top bar stops being a second navy bar. It
+     turns transparent and its brand text steps aside (the
+     sidebar already carries the brand; the logo itself stays —
+     it is the owner long-press door), leaving one clean pill.
+   - Installed (standalone): the top bar is GONE at every
+     width, so the app feels like the installed app it is.
+   - Enrol: the How-it-works panel joins the glass system, the
+     step dots become one connected rail, the form calms down. */
+/* — Buttons: flat fills, one shadow — */
+.btn{background:rgba(255,255,255,.78);border:1px solid rgba(255,255,255,.92);
+  box-shadow:0 6px 16px rgba(11,44,177,.10)}
+.btn.primary{background:#1951FC;border:1px solid rgba(255,255,255,.35);
+  box-shadow:0 10px 22px rgba(25,81,252,.28)}
+.btn.primary:hover{background:#0B2CB1}
+.btn.danger{background:rgba(255,255,255,.78)}
+.chip{background:rgba(255,255,255,.70);border:1px solid rgba(255,255,255,.92);box-shadow:none}
+.camtoggle button.on{box-shadow:none}
+.qa-tile svg{filter:none}
+.card,.qa-tile,.rolecard{box-shadow:0 22px 44px rgba(11,44,177,.16), 0 4px 12px rgba(11,44,177,.08), inset 0 1px 0 rgba(255,255,255,.85), inset 1px 0 0 rgba(255,255,255,.35)}
+.balpoints{box-shadow:inset 0 1px 0 rgba(255,255,255,.7)}
+.nav button.active{background:#1951FC;box-shadow:0 8px 18px rgba(25,81,252,.25)}
+/* — Desktop top bar: no second navy bar — */
+@media (min-width:1024px){
+  .topbar, body.mode-customer.role-customer .topbar, body.mode-customer.role-merchant .topbar, body.mode-owner .topbar{background:transparent;border-bottom:none;box-shadow:none;padding:14px 20px}
+  .brand>div{display:none}
+  .topbar .btn{background:rgba(255,255,255,.80);color:var(--blue);border:1px solid rgba(255,255,255,.92);
+    box-shadow:0 6px 16px rgba(11,44,177,.12);
+    -webkit-backdrop-filter:var(--lg-blur);backdrop-filter:var(--lg-blur)}
+  .topbar .btn:hover{border-color:#fff}
+}
+/* — Installed app: the header goes away — */
+@media (display-mode:standalone){
+  .topbar{display:none}
+}
+body.standalone .topbar{display:none}
+body.standalone main{padding-top:14px}
+/* — Enrol: glass side panel + one connected step rail — */
+@media (min-width:1024px){
+  .enroll-split{grid-template-columns:320px 1fr;gap:20px}
+  .enroll-side{background:var(--lg-scrim);border:1px solid var(--lg-rim);box-shadow:var(--lg-shadow);
+    color:var(--text);border-radius:24px;
+    -webkit-backdrop-filter:var(--lg-blur);backdrop-filter:var(--lg-blur)}
+  .enroll-side-brand{color:var(--text)}
+  .enroll-side-brand small{color:var(--muted)}
+  .enroll-side-title{color:var(--text)}
+  .enroll-side-lines p{color:var(--muted)}
+  .enroll-side-lines p b{color:var(--text)}
+  .enroll-ic{background:#1951FC}
+}
+#page-enrol .card{padding:22px}
+#page-enrol input,#page-enrol select{background:rgba(255,255,255,.88)}
+#page-enrol .progress{height:6px}
+.enrolldots{width:max-content;position:relative}
+.enrolldots::before{content:"";position:absolute;left:15px;right:15px;top:50%;height:2px;background:rgba(11,44,177,.14)}
+.enrolldot{position:relative;z-index:1}
+#enrollDetailsNext{margin-top:18px}
+@media (max-width:640px){
+  #enrollDetailsNext{width:100%}
+}
+/* — Every page: calmer titles, taller desktop tiles — */
+h1{font-size:26px}
+@media (min-width:1024px){
+  #walletHome>.qa-grid .qa-tile{min-height:104px}
+}

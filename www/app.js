@@ -465,7 +465,7 @@
      is excluded, so cold durationMs is not directly
      comparable with pre-v83 cold records. The migration step
      is a pure adoption (see biometrics.js). */
-  var APP_DATA_VERSION = 'v91';
+  var APP_DATA_VERSION = 'v94';
   /* ---------------- boot splash lifecycle (v71, rebuilt v75) ------
      index.html stamps its build in <meta name="biom-build"> and
      paints a neutral boot splash before any app code runs.
@@ -11187,6 +11187,17 @@ Sync.noteScan({ kind: 'owner-unlock', profileName: person.name, biomId: person.i
     toast(isIOS ? 'To install: tap Share, then "Add to Home Screen".' : 'To install: open the Chrome menu and choose "Install app" / "Add to Home screen". If it does not appear, this page may already be installed or opened in an in-app browser - open it in Chrome.');
   }
   $('installBtn').addEventListener('click', install);
+  /* v94: an installed app shows no install header. When the
+     app runs standalone (opened from its home-screen icon),
+     the body takes the standalone class and the top bar goes
+     away entirely, so it feels like the installed app it is.
+     The version-line owner door stays available in this mode. */
+  function markStandalone() {
+    document.body.classList.add('standalone');
+    var b = $('installBtn'); if (b) b.style.display = 'none';
+  }
+  if ((window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true) markStandalone();
+  window.addEventListener('appinstalled', markStandalone);
 
   /* ---------------- Service worker -------------------------------------
      v59: registered here instead of an inline <script> in
