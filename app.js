@@ -465,7 +465,7 @@
      is excluded, so cold durationMs is not directly
      comparable with pre-v83 cold records. The migration step
      is a pure adoption (see biometrics.js). */
-  var APP_DATA_VERSION = 'v83';
+  var APP_DATA_VERSION = 'v87';
   /* ---------------- boot splash lifecycle (v71, rebuilt v75) ------
      index.html stamps its build in <meta name="biom-build"> and
      paints a neutral boot splash before any app code runs.
@@ -5067,6 +5067,29 @@
     var frameNeural = {}; // frameIdx -> neural cosine | null (absent = still pending)
     var frameRoiByIdx = {}; // frameIdx -> the frame's ROI array
     var framePairByIdx = {}; // v82: frameIdx -> the frame's PalmNet embedding pair, kept so the verdict tail can reuse it (see neuralImpostorMaxFor)
+    var framePairPromiseByIdx = {}; // v84 (L3): frameIdx -> the frame's IN-FLIGHT PalmNet embedPair promise, kept so the verdict tail can await the very pass already running instead of starting a second embed of the same ROI (see neuralImpostorMaxFor)
+    /* v84 (L1): the speculative verdict tail. When the win first
+       latches in tryWin, the two impostor maxima verifiedOut will
+       need are started AT ONCE on exactly verifiedOut's inputs
+       (win.rois, and the hand verifiedOut would use at that
+       moment: win.probeHand when the winning frame's hand is
+       known — verifiedOut reads win.probeHand first, so that
+       value can never change afterwards — otherwise the
+       latch-time scanHand() consensus). verifiedOut consumes
+       the cached promises ONLY when the hand it computes at the
+       tail is the very hand the speculation used and the win
+       object is the very object that latched; on any difference
+       it starts the maxima cold, exactly as v83 did, so no
+       scored value can differ. If the scan exits without a
+       verdict (liveness / spoof / cancel / cap), the cached
+       promises are simply never consumed — hygiene catches are
+       attached at start so a rejected speculation (e.g. the
+       peopleReady load failing on a scan that ends early) never
+       surfaces as an unhandled rejection; the waste is compute
+       only. The collected-set path (finalOut -> verifiedOut)
+       builds a NEW win object, so it never matches specTail's
+       win reference and keeps v83 behaviour byte-for-byte. */
+    var specTail = null; // { winRef, hand, edccP, neuralP } | null
     var bestNeural = null;
     /* v51 HAND SEPARATION state: this profile's recorded hand
        (null for every pre-v51 profile) and the scan's probe hand
@@ -5112,7 +5135,25 @@
       }
       if (fused.verified) {
         win = { res: fused, rois: [frameRoiByIdx[frameIdx]], fast: false, frameIdx: frameIdx, probeHand: frames[frameIdx] ? frames[frameIdx].hand : null };
+        startSpecTail(); // v84 (L1): start the verdict tail now, on this win's exact inputs — see the specTail note above
       }
+    }
+    /* v84 (L1): start verifiedOut's two impostor maxima at latch
+       time. Inputs are win.rois and the latch-time hand
+       (win.probeHand || scanHand()) — the same expression
+       verifiedOut evaluates; consumption is guarded there by
+       win-object identity AND hand equality, so a consensus that
+       moved after the latch (possible only when the winning
+       frame's own hand was unknown) discards the speculation
+       and recomputes cold. Called once, at the latch. */
+    function startSpecTail() {
+      if (specTail || !win) return;
+      var hand = win.probeHand || scanHand();
+      var edccP = impostorMaxFor(win.rois, hand);
+      var neuralP = neuralImpostorMaxFor(win.rois, hand, win.frameIdx);
+      edccP.catch(function () {}); // hygiene branch: an unconsumed speculation must never surface an unhandled rejection; verifiedOut still awaits the original promises, rejection and all
+      neuralP.catch(function () {});
+      specTail = { winRef: win, hand: hand, edccP: edccP, neuralP: neuralP };
     }
     function neuralScoreForRois(rois) {
       if (!neuralBanked || !rois || !rois.length) return Promise.resolve(null);
@@ -5146,7 +5187,16 @@
            collected-set path (finalOut) has no single win
            frame and embeds exactly as before. */
         var cached = (typeof winFrameIdx === 'number' && rois.length === 1) ? framePairByIdx[winFrameIdx] : null;
-        var pairsP = cached ? Promise.resolve([cached]) : Promise.all(rois.map(function (roi) { return PalmNet.embedPair(roi); }));
+        /* v84 (L3): the cached pair has not landed yet, but the
+           stream's embed of this very ROI is still in flight —
+           await THAT promise instead of calling embedPair again
+           on the same ROI. The pair it resolves is the same
+           pair (the same engine pass), so every score below is
+           the same number; only the duplicate pass goes away.
+           A fresh embed runs only when no in-flight promise
+           exists for the frame. */
+        var inFlight = (!cached && typeof winFrameIdx === 'number' && rois.length === 1) ? framePairPromiseByIdx[winFrameIdx] : null;
+        var pairsP = cached ? Promise.resolve([cached]) : (inFlight ? inFlight.then(function (pair) { return [pair]; }) : Promise.all(rois.map(function (roi) { return PalmNet.embedPair(roi); })));
         return pairsP.then(function (pairs) {
           var probes = [];
           pairs.forEach(function (pr) { if (pr) pr.forEach(function (e) { if (e) probes.push(e); }); });
@@ -5277,7 +5327,17 @@
          v49 margin judgement below and every recorded field
          are exactly the ones the sequential chain produced;
          only the verdict tail's wall-clock cost changes. */
-      return Promise.all([impostorMaxFor(win.rois, winHand), neuralImpostorMaxFor(win.rois, winHand, win.frameIdx)]).then(function (both) {
+      /* v84 (L1): consume the speculative tail started at the
+         latch when it was started for THIS win object with THIS
+         hand — the inputs are then provably the ones the cold
+         calls below would use, and the awaited values are the
+         same promises' values. Otherwise (the collected-set
+         path's new win object, or a hand consensus that moved
+         after the latch) start cold, exactly as v83 did. */
+      var tailP = (specTail && specTail.winRef === win && specTail.hand === winHand)
+        ? Promise.all([specTail.edccP, specTail.neuralP])
+        : Promise.all([impostorMaxFor(win.rois, winHand), neuralImpostorMaxFor(win.rois, winHand, win.frameIdx)]);
+      return tailP.then(function (both) {
         var impMax = both[0], nImpMax = both[1];
         {
           var extras = { neuralScore: typeof win.res.neuralScore === 'number' ? win.res.neuralScore : null, neuralImpostorMax: nImpMax, acceptedBy: win.res.acceptedBy || null, probeHand: winHand, profileHand: profileHand };
@@ -5531,7 +5591,9 @@
                 if (B.handGateBlocks(r.hand, profileHand)) {
                   frameNeural[myIdx] = null;
                 } else {
-                  PalmNet.embedPair(r.roi).then(function (pair) {
+                  var pairPromise = PalmNet.embedPair(r.roi);
+                  framePairPromiseByIdx[myIdx] = pairPromise; // v84 (L3): the in-flight pass itself, awaited by the verdict tail instead of a duplicate embed (see neuralImpostorMaxFor)
+                  pairPromise.then(function (pair) {
                     framePairByIdx[myIdx] = pair || null; // v82: kept for the verdict tail's reuse (see neuralImpostorMaxFor)
                     var s = pair ? B.palmnetScoreEmbeddings(neuralBanked, pair) : null;
                     frameNeural[myIdx] = s;
@@ -6268,22 +6330,48 @@
         palmProfile: enroll.palm || null,
         enrolledAt: Date.now()
       };
+      /* v85: the bankHealth mark — the ONE additive optional
+         field v85 writes, only on a NEW enrolment whose bank
+         the self-check could not confirm (failed / skipped /
+         stopped). Display-only (B.personBankWeak); absent on
+         confirmed banks and on every pre-v85 record. */
+      if (enrollBankWeak) person.bankHealth = enrollBankWeak;
       return DB.put('people', person).then(function () {
         // v56 Scan Sync: the new bank upserts and the enrol scan
         // record queues (no-ops when sync is off).
         Sync.noteProfile(person);
         Sync.noteScan({ kind: 'enrol', profileName: person.name, biomId: person.id, hand: B.palmProfileHand(person.palmProfile), result: 'Enrolled' });
+        /* v85: the enrolment's per-stage evidence row (local log,
+           existing log shape) and the self-check's scan record.
+           The self-check record rides kind 'verify' — an existing
+           kind in the frozen scan-record schema — with the
+           distinguishing marker in the result field's value
+           space ('Self-Check Verified' / 'Self-Check Denied');
+           no schema field was added. A skipped or stopped
+           self-check ran no scan and writes no scan record. */
+        var sc = enrollSelfCheck, scHoldout = enrollHoldout;
+        var scText = !sc ? 'not run'
+          : !sc.ran ? 'skipped — this profile is marked for Strengthen guidance'
+          : sc.stopped ? 'stopped before a verdict — this profile is marked for Strengthen guidance'
+          : sc.verified ? 'passed — a fresh scan of the same palm matched this enrolment'
+          : 'FAILED — the confirmation scan did not match this enrolment; this profile is marked for Strengthen guidance';
+        DB.put('logs', { ts: Date.now(), personId: person.id, personName: person.name, store: '', method: 'palm', measured: 'Enrolment banked. ' + holdoutMeasuredText(scHoldout) + ' Enrolment self-check: ' + scText + (sc && sc.ran && !sc.stopped ? ' (EDCC ' + (typeof sc.edcc === 'number' ? sc.edcc.toFixed(3) : 'n/a') + ', PalmNet ' + (typeof sc.neural === 'number' ? sc.neural.toFixed(3) : 'n/a') + ').' : '.'), result: 'Enrolled' }).catch(function () { return null; });
+        if (sc && sc.ran && !sc.stopped) {
+          Sync.noteScan({ kind: 'verify', profileName: person.name, biomId: person.id, hand: B.palmProfileHand(person.palmProfile), edccScore: sc.edcc, palmnetScore: sc.neural, result: sc.verified ? 'Self-Check Verified' : 'Self-Check Denied' });
+        }
         setStep('done');
         $('enrollDoneBody').innerHTML =
           '<b>Name:</b> ' + esc(person.name) + '<br><b>Biom ID:</b> ' + esc(person.id) + '<br>' +
           '<b>Store:</b> ' + esc(person.store) + '<br>' +
           '<b>Palm:</b> ' + (person.palmProfile && person.palmProfile.v === 3 ? 'Enrolled (palmprint — EDCC competitive code, ' + person.palmProfile.codes.length + ' individual captures, movement-checked)' : person.palmProfile ? 'Enrolled (palmprint — ' + (Array.isArray(person.palmProfile.codes) ? person.palmProfile.codes.length : 0) + ' bit-packed templates banked, movement-checked)' : 'Not enrolled') + '<br>' +
+          '<b>Palm confirmation:</b> ' + esc(scText) + '<br>' +
           '<b>Wallet:</b> ' + (person.walletProvider ? esc(person.walletProvider) + ' ' + esc(B.maskWalletNumber(person.walletNumber)) : 'Not linked') + '<br>' +
           '<b>Biometric-only limits:</b> ' + (person.limits.perTx ? 'BDT ' + Number(person.limits.perTx).toLocaleString() + ' per transaction' : 'No per-transaction limit') + (person.limits.daily ? ', BDT ' + Number(person.limits.daily).toLocaleString() + ' per day' : '') + '<br>' +
           '<b>Palm Loyalty:</b> Active — 0 points<br>' +
           (ScanTimers.e.hasRun() ? '<b>Palm capture time:</b> ' + ScanTimers.e.elapsedText() + ' (the palm-capture step of this registration, measured on this device)<br>' : '') + // v74: the registration timer's total, stated on the completion screen (only when a capture actually ran this session)
           '<b>Demo wallet:</b> Created — this Biom ID is the wallet account, balance BDT 0. Open My Wallet to use it; your palm is asked for only when money moves. Demo money inside the app, not real funds.';
         enroll = { details: null, palm: null, types: { palm: true } };
+        enrollHoldout = null; enrollSelfCheck = null; enrollBankWeak = null; // v85: self-check state is per-enrolment
         /* v69: a fresh enrolment is a thin bank by definition
            (B.palmBankThin — one burst, never strengthened).
            Offer the Strengthen path ONCE, here on the Done
@@ -6343,6 +6431,7 @@
     if (err) { $('enrollDetailsError').innerHTML = '<div class="error">' + esc(err) + '</div>'; return; }
     $('enrollDetailsError').innerHTML = '';
     enroll.palm = null;
+    enrollHoldout = null; enrollSelfCheck = null; enrollBankWeak = null; // v85: a fresh attempt carries no self-check state
     resetPalmEnroll();
     enroll.details = {
       name: name, phone: $('enPhone').value.trim(), type: $('enType').value, store: $('enStore').value,
@@ -6374,6 +6463,16 @@
      the Chairman's 2026-11-25 order retired that — a sudden
      capture catches the hand unpositioned. */
   var enrollControl = null;
+  /* v85 (Phase 2 reliability) — enrolment self-check state.
+     enrollHoldout: the within-burst holdout result computed at
+     banking time (B.burstHoldoutCheck) — per-stage evidence the
+     2843 records never had. enrollSelfCheck: the confirmation
+     scan's outcome { ran, verified, edcc, neural } once it runs.
+     enrollBankWeak: the bankHealth mark finishEnrollment writes
+     on the new person when the bank could not be confirmed
+     (B.personBankWeak documents the shape; display-only). All
+     three reset with every fresh enrolment attempt. */
+  var enrollHoldout = null, enrollSelfCheck = null, enrollBankWeak = null;
   function startPalmCamera() {
     return Cam.start($('palmVideo'), camFacing.enrollPalm, 'enrollPalm').then(function () {
       Pipeline.enterScanView();
@@ -6391,6 +6490,159 @@
   /* v71: enrolment/topup capture settle — clears the money-commit
      hold and delivers a held service-worker update reload. */
   function settleCaptureReload() { moneyCommitBusy = false; checkPendingSwReload(); }
+  /* ================= v85: enrolment self-check =================
+     THE CORE FIX. Banking (bankCapturedPalm) proves the burst's
+     frames agree with each other; it never proved the banked
+     profile can match a FRESH presentation of the same palm —
+     the gap a 2026-11-28 enrolment (TSG-BIO-2843) fell through:
+     banked in 2.4 s, passed the topup banking guard twice, then
+     matched nothing ever again. Now, immediately after a NEW
+     enrolment banks (this flow only — never topup, never the
+     re-registration replace path, which has its own guard), the
+     wizard asks for the same palm once more and runs the REAL
+     streamed verify (streamVerifyPalm) against the just-banked
+     profile, judged by its PLAIN fused verdict — the same
+     judgement a loyalty/identify scan uses. strictMoney is NOT
+     applied: the self-check's question is "can this bank match
+     this palm at all", not "may money move" — the money rule's
+     two-frame + impostor-margin demands would fail banks that
+     verify perfectly well for identification, and no money is
+     at stake in a confirmation scan.
+       PASS  -> enrolment completes (finishEnrollment) with the
+                confirmation stated on the Done screen.
+       FAIL  -> the user is told plainly, on the spot, and can
+                capture the palm again (runPalmCapture — the
+                existing machinery, duplicate guard and all,
+                replacing the in-memory bank before any person
+                exists) or keep the enrolment and finish: the
+                profile is then marked bankHealth.weak so My
+                Account / Registry guide them to Strengthen.
+                Nothing is ever deleted or silently kept
+                unmarked.
+       SKIP / CANCEL -> the enrolment still completes (a cancel
+                never wedges the wizard and never un-banks
+                anything), marked self-check-skipped so the
+                Strengthen guidance follows the profile.
+     The scan is recorded like other scans: a local log row and,
+     once the person exists, a Sync.noteScan of kind 'verify'
+     (an existing kind in the frozen schema) whose result rides
+     the existing result field's value space: 'Self-Check
+     Verified' / 'Self-Check Denied'. A skipped or stopped
+     self-check ran no scan, so it writes no scan record — only
+     the local log line in finishEnrollment. */
+  var selfCheckBusy = false;
+  function holdoutMeasuredText(h) {
+    if (!h) return 'Within-burst holdout: not computed.';
+    if (!h.checked) return 'Within-burst holdout: no non-picked usable burst frame was available to score, so the holdout is unchecked (no signal).';
+    return 'Within-burst holdout: burst frame ' + h.frameIndex + ' (not one of the banked picks) scored EDCC ' + (typeof h.edccScore === 'number' ? h.edccScore.toFixed(3) : 'n/a') + ' (bar ' + B.PALMPRINT_THRESHOLD + ') / PalmNet ' + (typeof h.neuralScore === 'number' ? h.neuralScore.toFixed(3) : 'n/a') + ' (bar ' + B.PALMNET_THRESHOLD + ') against the banked templates — fused verdict ' + (h.verified ? 'VERIFIED' : 'NOT verified') + '.';
+  }
+  function renderSelfCheck(state) {
+    var el = $('palmSelfCheck');
+    if (!el) return;
+    if (state === 'hidden') { el.classList.add('hidden'); el.innerHTML = ''; return; }
+    el.classList.remove('hidden');
+    if (state === 'offered') {
+      el.innerHTML = '<div class="diagpanel"><div class="diagtitle">One more scan — confirm your palm works</div>' +
+        '<div class="diagrow">Your palm is banked. Now show the <b>same palm</b> once more, the way you would at a shop counter. This confirmation scan proves the banked palm can actually be recognised — if it cannot, you will be told here and can capture the palm again straight away, instead of finding out later when a scan fails.</div>' +
+        '<div style="margin-top:10px"><button class="btn primary" id="selfCheckScan">Scan to confirm</button> <button class="btn" id="selfCheckSkip">Skip for now</button></div></div>';
+      $('selfCheckScan').onclick = runEnrolSelfCheck;
+      $('selfCheckSkip').onclick = skipEnrolSelfCheck;
+    } else if (state === 'checking') {
+      el.innerHTML = '<div class="diagpanel"><div class="diagtitle">Checking your palm…</div>' +
+        '<div class="diagrow">Show the same palm to the camera and hold it steady. The scan running now is the ordinary palm scan, judged exactly as a normal recognition scan is judged.</div></div>';
+    } else if (state === 'passed') {
+      el.innerHTML = '<div class="success">Confirmation passed — this palm matches the bank just enrolled.</div>';
+    } else if (state === 'failed') {
+      el.innerHTML = '<div class="diagpanel"><div class="diagtitle">This enrolment did not confirm</div>' +
+        '<div class="diagrow">The palm just enrolled <b>did not match</b> its own confirmation scan. Kept as it is, everyday scans of this palm would likely fail the same way. You can capture the palm again now — a fresh capture replaces this bank before anything is saved — or keep this enrolment and finish; if you keep it, this profile will carry a reminder to Strengthen the palm (Add Angles) from My Account, which is the usual fix.</div>' +
+        '<div style="margin-top:10px"><button class="btn primary" id="selfCheckRecapture">Capture my palm again</button> <button class="btn" id="selfCheckKeep">Keep this enrolment and finish</button></div></div>';
+      $('selfCheckRecapture').onclick = recaptureEnrolPalm;
+      $('selfCheckKeep').onclick = skipEnrolSelfCheck;
+    }
+  }
+  function beginEnrolSelfCheck() {
+    renderSelfCheck('offered');
+    startPalmCamera(); // the confirmation scan runs on this step's camera, exactly like the capture did
+  }
+  function runEnrolSelfCheck() {
+    if (selfCheckBusy || !enroll.palm) return;
+    selfCheckBusy = true;
+    Research.clearBuffer(); // v85: a fresh scan starts with an empty research buffer, as a fresh capture does (the tapFrame consent gates inside the stream are unchanged)
+    renderSelfCheck('checking');
+    var control = { cancelled: false, onFrame: function (info) { var fr = enrolSession.frame({ hasHand: info.hasHand, pose: info.pose }); enrolInds.update(info, fr); } };
+    enrollControl = control; // the wizard's existing cancel handle: leaving the enrol page cancels this scan exactly like a capture
+    enrolSession.enter();
+    enrolInds.reset();
+    setSurfacePill('e', 'Scanning');
+    var probe = { id: '', name: enroll.details ? enroll.details.name : '', palmProfile: enroll.palm };
+    streamVerifyPalm($('palmVideo'), $('palmStatus'), probe, [], null, function () {}, control).then(function (out) {
+      selfCheckBusy = false;
+      setSurfacePill('e', 'Ready');
+      if (out.stopped) {
+        // Cancel: never wedges, never un-banks. The enrolment
+        // completes, marked so Strengthen guidance follows it.
+        enrollSelfCheck = { ran: true, verified: false, stopped: true, edcc: null, neural: null };
+        enrollBankWeak = { weak: true, reason: 'self-check-skipped', ts: Date.now() };
+        finishEnrolSelfCheck();
+        return;
+      }
+      var verified = !!(out.r && out.r.verified);
+      enrollSelfCheck = {
+        ran: true, verified: verified,
+        edcc: out.diag && typeof out.diag.edcc === 'number' ? out.diag.edcc : (out.r && typeof out.r.similarity === 'number' ? out.r.similarity : null),
+        neural: out.diag && typeof out.diag.neural === 'number' ? out.diag.neural : (out.r && typeof out.r.neuralScore === 'number' ? out.r.neuralScore : null)
+      };
+      if (verified) {
+        // The stronger evidence wins: a bank that just matched a
+        // fresh presentation is NOT marked weak, even when the
+        // single-frame holdout read low (the holdout stays in
+        // the enrolment log as evidence, nothing more).
+        enrollBankWeak = null;
+        renderSelfCheck('passed');
+        Snd.chime();
+        finishEnrolSelfCheck();
+      } else {
+        enrollBankWeak = { weak: true, reason: 'self-check-failed', ts: Date.now() };
+        renderSelfCheck('failed');
+        Snd.buzz();
+      }
+    }).catch(function () {
+      selfCheckBusy = false;
+      setSurfacePill('e', 'Ready');
+      enrollSelfCheck = { ran: true, verified: false, error: true, edcc: null, neural: null };
+      enrollBankWeak = { weak: true, reason: 'self-check-failed', ts: Date.now() };
+      renderSelfCheck('failed');
+      Snd.buzz();
+    });
+  }
+  function skipEnrolSelfCheck() {
+    if (!enrollSelfCheck || !enrollSelfCheck.ran) {
+      enrollSelfCheck = { ran: false, verified: false, edcc: null, neural: null };
+      enrollBankWeak = { weak: true, reason: 'self-check-skipped', ts: Date.now() };
+    }
+    // From the FAILED state the mark already reads
+    // self-check-failed; skipping there keeps it.
+    finishEnrolSelfCheck();
+  }
+  function recaptureEnrolPalm() {
+    // A fresh capture through the existing machinery: the
+    // in-memory bank is discarded (no person exists yet, so
+    // nothing stored is touched), and Scan Palm runs the full
+    // capture + duplicate guard + banking + self-check again.
+    renderSelfCheck('hidden');
+    enroll.palm = null;
+    enrollHoldout = null; enrollSelfCheck = null; enrollBankWeak = null;
+    $('palmMsg').innerHTML = '';
+    $('palmCapture').disabled = false;
+    startPalmCamera();
+    $('palmStatus').textContent = 'Capture your palm again — show one open palm, fingers spread, in good light, hold it steady, then tap Scan Palm.';
+  }
+  function finishEnrolSelfCheck() {
+    renderSelfCheck('hidden');
+    Cam.stop();
+    advanceFrom('palm');
+  }
+
   function runPalmCapture() {
     if (palmScanBusy) return;
     if (!enroll.details) return;
@@ -6558,19 +6810,36 @@
         } else {
           neuralNote = ' PalmNet neural embeddings were not banked (' + (PalmNet.state === 'failed' ? PalmNet.failReason : 'the neural runtime did not produce embeddings') + ') — this palm verifies by EDCC, and the Registry will offer a Neural Scan to add them.';
         }
-        Cam.stop();
-        $('palmStatus').textContent = 'Palm captured.';
-        // v51: the enrolment states which hand was recorded —
-        // from now on the OTHER hand is a different identity to
-        // this profile and will not match it.
-        var handNote = capHand
-          ? ' ' + (capHand === 'left' ? 'Left' : 'Right') + ' palm recorded — this profile is the ' + capHand + ' hand; the other hand will not match it.'
-          : ' The hand (left or right) could not be determined from this capture, so this profile is not hand-stamped yet — a later Add Angles capture will record it.';
-        $('palmMsg').innerHTML = '<div class="success">Palm enrolled in ' + (res.elapsedMs / 1000).toFixed(1) + ' s: one 900 ms burst (' + res.burst.frames + ' frames) banked ' + sel.codes.length + ' palmprint templates (bit-packed EDCC — the palm\'s own print pattern), and passive liveness passed (natural micro-shift ' + (res.burst.liveness.microShift * 100).toFixed(1) + '% across the burst).' + esc(neuralNote) + esc(handNote) + '</div>';
-        Snd.chime();
-        Snd.speak('Palm captured');
-        advanceFrom('palm');
-        settleCaptureReload(); // v71: enrolment outcome fully applied
+        /* v85: WITHIN-BURST HOLDOUT — score one non-picked burst
+           frame against the bank just built (B.burstHoldoutCheck;
+           the frame's PalmNet embedding is computed here, from
+           data already in hand — no extra camera time). The
+           result is evidence only: it rides the success text
+           below and the enrolment's log row, and feeds the
+           weak-bank signal if the self-check never confirms. */
+        var holdoutFrame = B.burstHoldoutFrame(res.results, sel);
+        var holdoutEmbP = holdoutFrame ? PalmNet.embedRois([holdoutFrame.roi]) : Promise.resolve([]);
+        return holdoutEmbP.then(function (hembs) {
+          enrollHoldout = B.burstHoldoutCheck(holdoutFrame, enroll.palm, (hembs || []).filter(function (e) { return !!e; }));
+          Cam.stop();
+          $('palmStatus').textContent = 'Palm captured.';
+          // v51: the enrolment states which hand was recorded —
+          // from now on the OTHER hand is a different identity to
+          // this profile and will not match it.
+          var handNote = capHand
+            ? ' ' + (capHand === 'left' ? 'Left' : 'Right') + ' palm recorded — this profile is the ' + capHand + ' hand; the other hand will not match it.'
+            : ' The hand (left or right) could not be determined from this capture, so this profile is not hand-stamped yet — a later Add Angles capture will record it.';
+          $('palmMsg').innerHTML = '<div class="success">Palm enrolled in ' + (res.elapsedMs / 1000).toFixed(1) + ' s: one 900 ms burst (' + res.burst.frames + ' frames) banked ' + sel.codes.length + ' palmprint templates (bit-packed EDCC — the palm\'s own print pattern), and passive liveness passed (natural micro-shift ' + (res.burst.liveness.microShift * 100).toFixed(1) + '% across the burst).' + esc(neuralNote) + esc(handNote) + ' ' + esc(holdoutMeasuredText(enrollHoldout)) + '</div>';
+          Snd.chime();
+          Snd.speak('Palm captured');
+          /* v85: the enrolment does NOT complete yet — the
+             self-check runs first (see the v85 block above
+             runPalmCapture). advanceFrom('palm') is reached only
+             through finishEnrolSelfCheck / the self-check's own
+             outcomes. */
+          beginEnrolSelfCheck();
+          settleCaptureReload(); // v71: enrolment outcome fully applied
+        });
       });
       }
     }).catch(function (e) {
@@ -6582,6 +6851,125 @@
     });
   }
   $('palmCapture').addEventListener('click', runPalmCapture);
+  /* ---------------- Palm Loyalty (v86) -----------------------------------
+     Phase A Step 8.1, app-side half (CD-5): points are an
+     append-only EVENT LEDGER on the person record
+     (person.loyaltyEvents; the pure ledger rules live in
+     biometrics.js — B.loyaltyBalance / B.loyaltyAppendEvent /
+     B.loyaltyStreak). The balance is COMPUTED from the events;
+     person.loyaltyPoints is a cached display value that every
+     append recomputes and writes back, so profile sync carries
+     the balance exactly as it did before v86.
+     LOYALTY_CONFIG is the ONE place loyalty numbers live. The
+     two earn parameters below are the EXISTING shipped behaviour
+     (a verified visit scan earns 5; a payment earns 1 point per
+     BDT 10 of the created transaction) — kept, not re-decided.
+     The streak milestone is the Duolingo-note design parameter
+     (consecutive-WEEK activity; reaching it earns one streak
+     freeze). ABSENT BY DESIGN — the Chairman's unmade D3
+     decisions, invented nowhere in this build: the point's BDT
+     value, point expiry, tier names/thresholds, the merchant
+     funding rate, and any per-day visit-earn cap. Until D3
+     exists, no surface quotes a value or an expiry, there are
+     no tiers, points cannot be spent (the ledger supports
+     'redeem' events structurally; no redemption UI is built),
+     and the visit earn stays uncapped — now auditable through
+     the ledger. Merchant offers are data in LOYALTY_CONFIG
+     .offers, which ships EMPTY: the loyalty surface renders
+     whatever a merchant funds, and an honest empty state until
+     then. No platform-funded promise exists anywhere. */
+  var LOYALTY_CONFIG = {
+    visitPoints: 5,
+    paymentEarnDivisor: 10,
+    streakMilestoneWeeks: 4,
+    offers: []
+  };
+  var loyaltySeq = 0;
+  /* The balance a surface should show: computed from the ledger
+     whenever the person has events (refreshing the cache in
+     memory so it can never drift from the ledger's truth), the
+     cached value while the ledger is still empty (pre-migration
+     records, brand-new enrolments). */
+  function loyaltyBalanceOf(person) {
+    if (person && Array.isArray(person.loyaltyEvents) && person.loyaltyEvents.length) {
+      var bal = B.loyaltyBalance(person.loyaltyEvents);
+      if (person.loyaltyPoints !== bal) person.loyaltyPoints = bal;
+      return bal;
+    }
+    return Number(person && person.loyaltyPoints || 0);
+  }
+  /* THE earn path — every loyalty credit in the app goes through
+     this one function, which appends the event and lets
+     B.loyaltyAppendEvent recompute the cached balance. Callers
+     keep the v59 D6 ordering exactly: this is invoked only at
+     the points in each flow where points are credited today —
+     after a verified visit scan, and after a payment record
+     exists — never on a refused or failed payment. The earn is
+     post-verdict in every flow, so it adds no scan time. */
+  function loyaltyEarn(person, points, reason, opts) {
+    opts = opts || {};
+    if (!person || !(Number(points) > 0)) return loyaltyBalanceOf(person);
+    loyaltySeq++;
+    var ev = {
+      eventId: 'loy-' + String(person.id) + '-' + Date.now().toString(36) + '-' + loyaltySeq + '-' + Math.floor(Math.random() * 1679616).toString(36),
+      biomId: person.id, type: 'earn', points: Number(points), reason: reason, ts: Date.now()
+    };
+    if (opts.refIntentId) ev.refIntentId = opts.refIntentId;
+    if (opts.scanRef) ev.scanRef = opts.scanRef;
+    B.loyaltyAppendEvent(person, ev);
+    return Number(person.loyaltyPoints || 0);
+  }
+  function loyaltyReasonLabel(reason) {
+    if (reason === 'visit') return 'Visit scan';
+    if (reason === 'payment') return 'Biom Pay payment';
+    if (reason === 'opening') return 'Opening balance';
+    if (reason === 'adjust') return 'Adjustment';
+    return 'Points';
+  }
+  /* The Palm Loyalty section (My Account): computed balance,
+     the weekly streak with its freeze state, how it works —
+     factual mechanics only: NO point value and NO expiry are
+     quoted anywhere, because neither is set (D3); the copy says
+     plainly that what points will be worth is announced by the
+     merchant programme — and the recent ledger events with
+     their signed direction, plus merchant offers rendered from
+     LOYALTY_CONFIG.offers (empty state while none is funded). */
+  function loyaltySectionHTML(me) {
+    var bal = loyaltyBalanceOf(me);
+    var events = (me && Array.isArray(me.loyaltyEvents)) ? me.loyaltyEvents : [];
+    var streak = B.loyaltyStreak(events, Date.now(), LOYALTY_CONFIG.streakMilestoneWeeks);
+    var html = '<div class="kv"><b>Points balance:</b> <span class="num">' + bal.toLocaleString() + ' pts</span></div>';
+    html += '<p class="sub" style="margin:10px 0 0">Points are earned when your palm is verified on a visit scan, and when a Biom Pay payment completes. A point is only ever added after the scan or payment has actually happened — a refused or failed payment earns nothing. Every earn is recorded in the statement below, and the balance is counted from those records. What points will be worth is set by the merchant programme and will be announced there — this app promises no value for points yet.</p>';
+    html += '<div class="kv" style="margin-top:12px"><b>Weekly palm streak:</b> ' + streak.weeks + (streak.weeks === 1 ? ' week' : ' weeks');
+    if (streak.freezesHeld > 0) html += '<br><b>Streak freeze:</b> 1 held — it will cover one missed week automatically, so your streak survives it.';
+    else html += '<br><span style="color:var(--muted)">Streak freeze: none held. Reaching ' + LOYALTY_CONFIG.streakMilestoneWeeks + ' weeks in a row earns one — it covers a missed week so the streak survives. Freezes are earned, never bought.</span>';
+    html += '</div>';
+    html += '<h3 style="margin:16px 0 8px">Points statement</h3>';
+    if (!events.length) {
+      html += '<p class="sub" style="margin:0">No points activity recorded yet. Your earns will appear here as they happen.</p>';
+    } else {
+      var rows = '';
+      var recent = events.slice(-10).reverse();
+      recent.forEach(function (ev) {
+        var signed = B.loyaltySignedPoints(ev);
+        var when = ev.ts > 0 ? new Date(ev.ts).toLocaleDateString() + ' ' + new Date(ev.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Carried into the ledger at the v86 update';
+        rows += '<div class="wrow"><span class="wrow-k">' + esc(loyaltyReasonLabel(ev.reason)) + '<br><span style="color:var(--muted);font-weight:normal">' + esc(when) + '</span></span><span class="wrow-v num">' + (signed >= 0 ? '+' : '−') + Math.abs(signed).toLocaleString() + ' pts</span></div>';
+      });
+      html += rows;
+      if (events.length > recent.length) html += '<p class="sub" style="margin:8px 0 0">Showing the ' + recent.length + ' most recent of ' + events.length + ' records.</p>';
+    }
+    html += '<h3 style="margin:16px 0 8px">Merchant offers</h3>';
+    var offers = Array.isArray(LOYALTY_CONFIG.offers) ? LOYALTY_CONFIG.offers : [];
+    if (!offers.length) {
+      html += '<p class="sub" style="margin:0">No merchant offers yet — offers appear here when a shop funds one.</p>';
+    } else {
+      offers.forEach(function (o) {
+        html += '<div class="wrow"><span class="wrow-k"><b>' + esc(o.title || 'Merchant offer') + '</b>' + (o.merchant ? '<br><span style="color:var(--muted);font-weight:normal">' + esc(o.merchant) + '</span>' : '') + '</span><span class="wrow-v">' + esc(o.text || '') + '</span></div>';
+      });
+    }
+    return html;
+  }
+
   /* ---------------- Terminal --------------------------------------------- */
   var termPeopleCache = [];
   function renderTermPeople() {
@@ -7119,8 +7507,11 @@
           // that never happened).
           var loyaltyLine = '';
           if (!(amount > 0)) {
-            person.loyaltyPoints = (person.loyaltyPoints || 0) + 5;
-            loyaltyLine = '<div class="notice" style="margin-top:10px">Palm Loyalty: +5 points awarded — balance ' + person.loyaltyPoints + ' points.</div>';
+            // v86: the visit earn appends a ledger event through
+            // the one earn function (which recomputes the cached
+            // balance); the credit point in the flow is unchanged.
+            var visitBal = loyaltyEarn(person, LOYALTY_CONFIG.visitPoints, 'visit', { scanRef: out.measured || null });
+            loyaltyLine = '<div class="notice" style="margin-top:10px">Palm Loyalty: +' + LOYALTY_CONFIG.visitPoints + ' points awarded — balance ' + visitBal + ' points.</div>';
             DB.put('people', person);
           }
           if (amount > 0) {
@@ -7149,9 +7540,12 @@
                   // the created transaction's amount, never the
                   // typed field. Refused payments never reach here
                   // and earn no payment points.
-                  var payPts = Math.floor(tx.amount / 10);
+                  var payPts = Math.floor(tx.amount / LOYALTY_CONFIG.paymentEarnDivisor);
                   if (payPts > 0) {
-                    person.loyaltyPoints = (person.loyaltyPoints || 0) + payPts;
+                    // v86: ledger append via the one earn function,
+                    // keyed to the created transaction — same D6
+                    // credit point, same amount source as v59.
+                    loyaltyEarn(person, payPts, 'payment', { refIntentId: tx.id });
                     loyaltyLine = '<div class="notice" style="margin-top:10px">Palm Loyalty: +' + payPts + ' points awarded — balance ' + Number(person.loyaltyPoints || 0) + ' points.</div>';
                     DB.put('people', person);
                   }
@@ -7353,7 +7747,7 @@
       balEl.addEventListener('animationend', function h() { balEl.classList.remove('balflash'); balEl.removeEventListener('animationend', h); });
     }
     $('wBalEye').classList.toggle('off', balanceHidden);
-    if ($('wHomePoints')) $('wHomePoints').textContent = Number(me.loyaltyPoints || 0).toLocaleString() + ' pts';
+    if ($('wHomePoints')) $('wHomePoints').textContent = loyaltyBalanceOf(me).toLocaleString() + ' pts'; // v86: computed from the ledger when events exist
     /* v67: the prototype wallet home's greeting and the
        "Your wallet" facts card — read live from the same
        record, like everything else on this page. */
@@ -8347,8 +8741,8 @@ Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: fresh
                   /* v59 D6 rule, same as the terminal: points are
                      credited only now, from the created
                      transaction's amount — never the typed field. */
-                  var payPts = Math.floor(tx.amount / 10);
-                  if (payPts > 0) fresh.loyaltyPoints = (fresh.loyaltyPoints || 0) + payPts;
+                  var payPts = Math.floor(tx.amount / LOYALTY_CONFIG.paymentEarnDivisor);
+                  if (payPts > 0) loyaltyEarn(fresh, payPts, 'payment', { refIntentId: tx.id }); // v86: ledger append via the one earn function (D6 credit point unchanged)
                   return DB.put('people', fresh).then(function () {
                     /* v67: the Inbox event is written HERE — on
                        the success path only: the payment record
@@ -8639,8 +9033,8 @@ Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: fresh
                refused any executed amount that differs from
                the authorised one, so this amount IS the
                authorised amount. */
-            var pts = Math.floor(executedAmount / 10);
-            if (pts > 0) person.loyaltyPoints = (person.loyaltyPoints || 0) + pts;
+            var pts = Math.floor(executedAmount / LOYALTY_CONFIG.paymentEarnDivisor);
+            if (pts > 0) loyaltyEarn(person, pts, 'payment', { refIntentId: rec.id }); // v86: ledger append via the one earn function (D6 credit point unchanged)
             return DB.put('people', person).then(function () {
               Inbox.add(person.id, Inbox.event('bkash', {
                 amount: executedAmount, ref: rec.id,
@@ -8727,6 +9121,20 @@ Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: fresh
          only the door moved, from a failed entry scan to the
          owner's own account page. */
       var actions = '';
+      /* v85: WEAK-BANK GUIDANCE (display-only). A profile whose
+         enrolment bank carries the bankHealth mark AND is still
+         the thin one-burst bank it enrolled with gets a plain
+         prompt to Strengthen. The mark never blocks a scan,
+         never changes a verdict and is never read by any
+         matching path — this prompt and the Registry line are
+         its only readers. A successful Add Angles merge retires
+         it (the bank is no longer thin, and the merge clears
+         the mark). */
+      if (enrolled && B.personBankWeak(me) && B.palmBankThin(me.palmProfile)) {
+        actions += '<div class="diagpanel" style="margin-bottom:10px"><div class="diagtitle">This palm bank needs strengthening</div>' +
+          '<div class="diagrow">When this palm was enrolled, its confirmation scan did not confirm the bank (or the confirmation was skipped), so everyday scans of this palm may fail. Strengthening it — Add Angles, a minute with the same palm — gives the scanner more of your palm to recognise and is the usual fix.</div>' +
+          '<div style="margin-top:10px"><button class="btn primary" data-acct-topup="angles">Strengthen my palm</button></div></div>';
+      }
       if (enrolled) actions += '<div><button class="btn primary" data-acct-topup="angles">Strengthen my palm</button></div>';
       if (format === 'legacy') actions += '<div><button class="btn primary" data-acct-topup="angles">Re-scan Palm</button></div>';
       if (B.palmnetNeedsScan(me.palmProfile)) actions += '<div><button class="btn" data-acct-topup="neural">Neural scan</button></div>';
@@ -8746,7 +9154,12 @@ Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: fresh
         '<b>Person type:</b> ' + esc(me.type || '') + '<br>' +
         '<b>Home store:</b> ' + esc(me.store || '') + '<br>' +
         '<b>Biom ID:</b> ' + esc(me.id) + '<br>' +
-        '<b>Loyalty points:</b> ' + Number(me.loyaltyPoints || 0);
+        '<b>Loyalty points:</b> ' + loyaltyBalanceOf(me);
+      /* v86: the Palm Loyalty section — computed balance, the
+         points statement (recent ledger events), the weekly
+         streak + freeze state, and merchant offers from
+         LOYALTY_CONFIG (empty state while none is funded). */
+      if ($('acLoyaltyBody')) $('acLoyaltyBody').innerHTML = loyaltySectionHTML(me);
       var linkedParts = w.linkedAccounts.map(function (a) { return a.type; });
       if (me.walletProvider) linkedParts.push(me.walletProvider + ' (Biom Pay)');
       $('acLinkedVal').textContent = linkedParts.length ? linkedParts.join(', ') : 'None linked';
@@ -8872,7 +9285,7 @@ Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: fresh
         return !q || p.name.toLowerCase().indexOf(q) >= 0 || p.id.toLowerCase().indexOf(q) >= 0 || (p.phone || '').indexOf(q) >= 0;
       });
       var rows = filteredPeople.map(function (p) {
-        return '<tr><td><b>' + esc(p.name) + '</b>' + (p.owner === true ? ' <span class="badge ok">Owner</span>' : '') + '<br><span style="color:var(--muted)">' + esc(p.phone || '') + '</span>' + (p.loyaltyPoints ? '<br><span style="color:var(--muted)">Loyalty: ' + Number(p.loyaltyPoints || 0) + ' pts</span>' : '') + '</td>' +
+        return '<tr><td><b>' + esc(p.name) + '</b>' + (p.owner === true ? ' <span class="badge ok">Owner</span>' : '') + '<br><span style="color:var(--muted)">' + esc(p.phone || '') + '</span>' + (loyaltyBalanceOf(p) ? '<br><span style="color:var(--muted)">Loyalty: ' + loyaltyBalanceOf(p) + ' pts</span>' : '') + '</td>' +
           '<td>' + esc(p.id) + '</td><td>' + esc(p.type) + '<br><span style="color:var(--muted)">' + esc(p.store) + '</span></td>' +
           '<td>' + (personHasMethod(p) ? '<span class="badge ok">Enrolled</span>' : (B.palmprintProfileFormat(p.palmProfile) === 'legacy' ? '<span class="badge bad">Palm re-scan needed</span>' : '<span class="badge bad">Not enrolled</span>')) + (B.palmnetNeedsScan(p.palmProfile) ? '<br><span class="badge warn">Neural scan needed</span>' : '') + (personHasMethod(p) && B.palmProfileHand(p.palmProfile) ? '<br><span style="color:var(--muted)">' + (B.palmProfileHand(p.palmProfile) === 'left' ? 'Left' : 'Right') + ' palm</span>' : '') + '</td>' +
           '<td>' + (p.walletProvider ? esc(p.walletProvider) + '<br>' + esc(B.maskWalletNumber(p.walletNumber)) : '—') + '</td>' +
@@ -8935,7 +9348,10 @@ Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: fresh
       '<b>Type / Store:</b> ' + esc(p.type || '') + ' / ' + esc(p.store || '') + '<br>' +
       '<b>Palm:</b> ' + (personHasMethod(p) ? 'Enrolled' + (hand ? ' — ' + (hand === 'left' ? 'Left' : 'Right') + ' palm' : '') : 'Not enrolled') + '<br>' +
       '<b>Wallet:</b> ' + (p.walletProvider ? esc(p.walletProvider) + ' — ' + esc(B.maskWalletNumber(p.walletNumber)) : '—') + '<br>' +
-      '<b>Loyalty:</b> <span class="num">' + Number(p.loyaltyPoints || 0).toLocaleString() + ' pts</span><br>' +
+      '<b>Loyalty:</b> <span class="num">' + loyaltyBalanceOf(p).toLocaleString() + ' pts</span><br>' +
+      /* v85: weak-bank guidance line (display-only — see the
+         My Account prompt; the mark is never read by matching). */
+      (B.personBankWeak(p) && B.palmBankThin(p.palmProfile) ? '<b>Palm bank:</b> <span class="badge warn">Needs strengthening</span> — this enrolment was not confirmed by its self-check; guide the person to My Account → Strengthen my palm (Add Angles).<br>' : '') +
       '<b>Owner:</b> ' + (p.owner === true ? 'Owner of this device' : 'Not an owner');
     var btn = $('registryDetailOwnerBtn');
     btn.textContent = p.owner === true ? 'Remove owner' : 'Make owner';
@@ -9325,6 +9741,10 @@ Sync.noteScan({ kind: 'money-auth', profileName: freshSender.name, biomId: fresh
           // capture's (the stamp).
           profile.hand = B.palmProfileHand(person.palmProfile) || captureHand;
           var updated = Object.assign({}, person, { palmProfile: profile });
+          /* v85: a bank that just absorbed a guarded Add Angles
+             merge is no longer the unconfirmed enrolment bank —
+             the display-only bankHealth mark retires with it. */
+          if (updated.bankHealth) delete updated.bankHealth;
           return DB.put('people', updated).then(function () {
             Sync.noteProfile(updated);
             Sync.noteScan({ kind: 'topup', durationMs: captureMs, profileName: person.name, biomId: person.id, hand: B.palmProfileHand(updated.palmProfile), result: 'Banked' });
@@ -10702,7 +11122,6 @@ Sync.noteScan({ kind: 'owner-unlock', profileName: person.name, biomId: person.i
     toast(isIOS ? 'To install: tap Share, then "Add to Home Screen".' : 'To install: open the Chrome menu and choose "Install app" / "Add to Home screen". If it does not appear, this page may already be installed or opened in an in-app browser - open it in Chrome.');
   }
   $('installBtn').addEventListener('click', install);
-  $('installBtn2').addEventListener('click', install);
 
   /* ---------------- Service worker -------------------------------------
      v59: registered here instead of an inline <script> in
