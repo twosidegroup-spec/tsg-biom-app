@@ -177,8 +177,20 @@ function wiringChecks() {
     startIdx !== -1 && tuneCall > startIdx && flashCall > tuneCall);
   check('WIRING Cam.start refreshes the toggle state after every start',
     appSrc.indexOf('refreshFlashUi(flashGroupKey(viewKey))') !== -1);
-  check('WIRING the terminal mid-scan camera swap restarts under the flash key (re-application works)',
-    /Cam\.start\(\$\('termVideo'\), camFacing\[k\], k\)/.test(appSrc));
+  // v67 pin update (named): the terminal mid-scan camera swap
+  // this check covered is DELETED on the Chairman's order
+  // (2026-11-26 — the camera never changes on its own, so no
+  // swap remains for the flash to re-apply under). The pin now
+  // asserts the swap callback is gone and the terminal scan
+  // passes no swap callback at all.
+  check('WIRING v67: the terminal scan has NO mid-scan camera swap (deleted, not damped)',
+    !/Cam\.start\(\$\('termVideo'\), camFacing\[k\], k\)/.test(appSrc) &&
+    /* v82 PIN CHANGE (named openly): the terminal call now
+       passes an empty people array plus opts.peopleReady (the
+       list loads concurrently; the stream's tail awaits it) —
+       the swap-callback argument this pin guards is still the
+       literal null in the same position. */
+    appSrc.indexOf("streamVerifyPalm($('termVideo'), $('termStatus'), person, [], null, fieldRec") !== -1);
   const wf = appSrc.slice(appSrc.indexOf('function wireFlashToggles'), appSrc.indexOf('/* ---------------- Palm CLIP capture'));
   check('WIRING the flash tap handler never restarts a camera or a scan',
     wf.length > 100 && wf.indexOf('Cam.start(') === -1 && wf.indexOf('camRestarters') === -1 && wf.indexOf('Cam.stop(') === -1);

@@ -119,8 +119,15 @@ function enrolChecks() {
   check('YIELD one macrotask yield ends every analysed watch frame (the anti-starvation discipline)',
     enrol.indexOf('function yieldToUi() { return waitMs(0); }') !== -1 &&
     enrol.indexOf("return yieldToUi().then(function () { return qualifies ? 'qualify' : null; });") !== -1);
-  check('PACE the camera swap resets the pacing clock (the new stream starts fresh)',
-    (enrol.match(/lastGrabT = -1;/g) || []).length >= 2);
+  // v67 pin update (named): the mid-watch camera swap this check
+  // paced for is DELETED on the Chairman's order (2026-11-26 —
+  // the camera never changes on its own). What stays true and
+  // worth pinning: each capture starts its pacing clock fresh,
+  // and the enrol stream holds no swap machinery at all.
+  check('PACE each enrol capture starts its pacing clock fresh (v67: no camera swap exists in the stream)',
+    (enrol.match(/lastGrabT = -1;/g) || []).length >= 1 &&
+    enrol.indexOf('swapCamera()') === -1 &&
+    enrol.indexOf('switching to the other camera') === -1);
   check('BOUND the 180 s watch deadline and its honest timeout outcome are intact',
     enrol.indexOf('var deadline = t0 + 180000;') !== -1 && enrol.indexOf("return Promise.resolve('timeout');") !== -1 &&
     enrol.indexOf('return out({ timedOut: true, hint: lastHint });') !== -1);
@@ -128,11 +135,26 @@ function enrolChecks() {
     enrol.indexOf('function yieldForPaint()') !== -1 &&
     enrol.indexOf('}).then(function () { return yieldForPaint(); }); // v50: paint between burst frames') !== -1);
   check('PROGRESS the burst analysis has an honest progress status (no more frozen "capturing")',
-    enrol.indexOf("'Palm captured — analysing the burst, hold on...'") !== -1);
+    /* v82 PIN CHANGE (named openly, app-seat fix): with the
+       burst analysis overlapped into the capture window, the
+       old wording claimed the palm was already "captured"
+       while recording continued. The line now covers the
+       whole overlapped phase truthfully. */
+    enrol.indexOf("'Palm found — capturing and analysing, hold steady...'") !== -1);
+  /* v82 PIN CHANGE (named openly): the burst and its analysis
+     are one overlapped phase now (recordBurstAnalysed — the
+     Chairman's method order, 2026-11-27 22:49), so the two
+     sequential cancel checks collapse into the caller's
+     single post-burst check plus the analysis chain's own
+     per-frame cancel check, which stops the remaining
+     analyses when a cancel lands mid-burst. The invariant is
+     unchanged: a cancel landing during the burst or its
+     analysis ends the capture as stopped, before anything
+     is banked. */
   check('CANCEL a cancel landing during the burst or its analysis ends the capture as stopped',
-    enrol.indexOf('return recordBurst().then(function (burstFrames) {') !== -1 &&
+    enrol.indexOf('return recordBurstAnalysed().then(function (a) {') !== -1 &&
     enrol.indexOf('if (control && control.cancelled) { var o = out(); o.stopped = true; return o; }') !== -1 &&
-    enrol.indexOf('if (control && control.cancelled) { var o2 = out(); o2.stopped = true; return o2; }') !== -1);
+    enrol.indexOf('if (control && control.cancelled) return;') !== -1);
   check('STATUS the watch hint is written only on change (showHint)',
     enrol.indexOf('function showHint()') !== -1 && enrol.indexOf('lastHint !== shownHint') !== -1 &&
     enrol.indexOf('if (statusEl) statusEl.textContent = lastHint;') === -1);
@@ -206,12 +228,12 @@ function parityChecks() {
 
 /* ---------------- 5. wallet-open correction -------------------- */
 function walletChecks() {
-  const strictSites = (appSrc.match(/\{ strictMoney: true \}\)/g) || []).length;
+  const strictSites = (appSrc.match(/\{ strictMoney: true(?=[, }])/g) || []).length;
   /* v63 PIN CHANGE (named openly): a fourth strict site — the
      wallet Biom Pay — was added by the Chairman's explicit
      order (2026-11-25 10:47); see the v49 suite's note. */
-  check('WALLET exactly four strict-money call sites remain (terminal, Add Money, Send authorise, wallet Biom Pay — v63 named pin change)',
-    strictSites === 4, 'found ' + strictSites);
+  check('WALLET exactly three strict-money call sites remain (terminal, Add Money, wallet Biom Pay — v90 named pin change: Send Money removed by the Chairman, 2026-11-28)',
+    strictSites === 3, 'found ' + strictSites);
   /* v60 PIN CHANGE (named openly): the two checks that stood
      here pinned the wallet-open routes as plain scans (no
      strict flag). At v60 those routes are REMOVED — wallet
@@ -227,7 +249,7 @@ function walletChecks() {
   const addStart = appSrc.indexOf("$('wAddScan')");
   const addSlice = appSrc.slice(addStart, appSrc.indexOf('/* Send Money', addStart) > 0 ? appSrc.indexOf('/* Send Money', addStart) : addStart + 3000);
   check('WALLET Add Money still runs the strict rule',
-    addSlice.indexOf('{ strictMoney: true }') !== -1);
+    addSlice.indexOf('strictMoney: true') !== -1);
 }
 
 /* ---------------- 6. versions + migration ---------------------- */

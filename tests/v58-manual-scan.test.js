@@ -128,8 +128,16 @@ check('HTML wallet pill starts at Ready (armed), driven by wScanPillText',
   htmlSrc.indexOf('id="wScanPillText">Ready</span>') !== -1);
 
 /* ---------- (c) the mid-scan fallback stays ---------- */
-check('FALLBACK mid-scan camera swap after 18 analysed frames is untouched (verify + identify + enrol watch)',
-  (appSrc.match(/analysed >= 18/g) || []).length === 2 && appSrc.indexOf('watchFrames >= 18') !== -1);
+/* v67 pin reversal (named): v58 froze the mid-scan camera swap
+   as an untouchable fallback; the Chairman's direct order of
+   2026-11-26 deletes it outright (on his phone it looped the
+   cameras endlessly when no hand was seen). The check now pins
+   the deletion: no 18-frame swap trigger survives in any
+   stream. The manual-scan discipline this suite exists for is
+   unchanged — a scan still starts only on the user's tap. */
+check('FALLBACK v67: the mid-scan camera swap is DELETED in all streams (Chairman\'s order, 2026-11-26)',
+  (appSrc.match(/analysed >= 18/g) || []).length === 0 && appSrc.indexOf('watchFrames >= 18') === -1 &&
+  appSrc.indexOf('swapCamera()') === -1);
 
 /* ---------- (d) version coherence ---------- */
 const appVer = (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1];
@@ -151,17 +159,21 @@ check('VERSION v58 migration step is the identity (applies, changes nothing)',
 
 async function behaviour() {
   const camOk = { start: function () { return Promise.resolve(); } };
-  const pipe = { enterScanView: function () {} };
+  /* v83 named harness change: startTermCamera now reads the
+     pipeline warm state (its armed display is warm-aware) —
+     the stub reports a warm pipeline, so the armed behaviour
+     below is the v58 behaviour on a warm scanner, unchanged. */
+  const pipe = { enterScanView: function () {}, warmState: function () { return 'ready'; }, whenWarm: function () { return Promise.resolve('ready'); }, retryWarm: function () {} };
   const errHTML = function () { return ''; };
 
   /* wallet */
   {
     const els = { wScanVideo: makeEl(), wScanRun: makeEl(), wScanStatus: makeEl(), wScanMsg: makeEl() };
     let runs = 0;
-    const fn = new Function('Cam', '$', 'Pipeline', 'camFacing', 'runWalletScan', 'cameraErrorHTML',
+    const fn = new Function('Cam', '$', 'Pipeline', 'camFacing', 'runWalletScan', 'cameraErrorHTML', 'walletBlockedActive', 'walletScanCtx', 'showWalletScan',
       'return (' + extractFn(appSrc, 'startWalletCamera') + ');')(
       camOk, function (id) { return els[id]; }, pipe, { walletAct: 'user' },
-      function () { runs++; }, errHTML);
+      function () { runs++; }, errHTML, function () { return false; }, null, function () {});
     await fn();
     check('BEHAVIOUR wallet camera opens ARMED: no scan ran', runs === 0);
     check('BEHAVIOUR wallet Scan button enabled while armed', els.wScanRun.disabled === false);
@@ -218,18 +230,41 @@ async function behaviour() {
      the busy flag is genuinely shared across taps). */
   {
     let palmScanBusy = false;
+    /* v71 named harness change: runWalletScan also holds the
+       money-commit flag and delivers a held SW update reload
+       at settle — the sandbox supplies both. */
+    let moneyCommitBusy = false;
+    const checkPendingSwReload = function () {};
     let walletScanCtx = null;
     let walletControl = null;
     let verdicts = 0;
     const pillTexts = [];
     const els = {
       wScanRun: { disabled: false },
+      wScanStatus: { textContent: '' },
       walletScanCard: { classList: { contains: function () { return false; } } }
     };
+    /* v83 named harness change: runWalletScan opens with the
+       warm gate — the sandbox supplies a warm Pipeline (the
+       gate resolves immediately, so the tap semantics below
+       are the v58/v74 semantics on a warm scanner) and the
+       detector-failure wording the gate's fail branch uses. */
+    const Pipeline = { warmState: function () { return 'ready'; }, whenWarm: function () { return Promise.resolve('ready'); }, retryWarm: function () {} };
+    const DETECTOR_FAIL_MSG = 'The hand detector could not run on this device.';
     const $ = function (id) { return els[id]; };
     const setScanPill = function (t) { pillTexts.push(t); };
+    /* v74: runWalletScan also drives the on-screen scan timer —
+       the sandbox supplies recording stubs, and the behaviour
+       checks below pin start-at-tap / stop-at-settle. */
+    const timerCalls = [];
+    const scanTimerStart = function (p) { timerCalls.push('start:' + p); };
+    const scanTimerStop = function (p) { timerCalls.push('stop:' + p); };
     const walletSession = { verdict: function () { verdicts++; }, frame: function () { return {}; } };
     const walletScanFailed = function () {};
+    /* v79: runWalletScan opens with the blocked test — the rig's
+       account is never blocked, and the card repaint is a no-op. */
+    const walletBlockedActive = function () { return false; };
+    const showWalletScan = function () {};
     const updateScanIndicators = function () {};
     const runWalletScan = eval('(' + extractFn(appSrc, 'runWalletScan') + ')');
     const tick = function () { return new Promise(function (r) { setTimeout(r, 0); }); };
@@ -248,6 +283,8 @@ async function behaviour() {
     check('BEHAVIOUR after the verdict the session closes exactly once', verdicts === 1, 'verdicts=' + verdicts);
     check('BEHAVIOUR the pill returns to Ready (armed) after the verdict',
       pillTexts.join(',') === 'Scanning,Ready', pillTexts.join(','));
+    check('BEHAVIOUR v74: the scan timer started at the tap and stopped at the settle',
+      timerCalls.join(',') === 'start:w,stop:w', timerCalls.join(','));
     runWalletScan();            /* tap 3 — a fresh cycle from armed */
     await tick();
     check('BEHAVIOUR a fresh tap from armed runs a fresh cycle', runCalls === 2, 'runCalls=' + runCalls);

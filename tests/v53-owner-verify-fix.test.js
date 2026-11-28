@@ -249,9 +249,9 @@ check('DIAG the verify stream attaches the diag from the same values its record 
 check('DIAG the identify stream attaches its best score and hand evidence',
   appSrc.indexOf("diag: { edcc: best && typeof best.similarity === 'number'") !== -1 &&
   appSrc.indexOf('handGate: excludedCount > 0') !== -1);
-check('DIAG the wallet card renders the panel under the failure message',
+check('DIAG the wallet card renders the panel under the failure message (v69 named pin change: the v69 guidance panel is appended to the same assignment)',
   appSrc.indexOf('var diagHtml = scanDiagHTML(out && out.diag);') !== -1 &&
-  appSrc.indexOf("$('wScanDiag').innerHTML = diagHtml;") !== -1 &&
+  appSrc.indexOf("$('wScanDiag').innerHTML = diagHtml + extraHtml;") !== -1 &&
   htmlSrc.indexOf('id="wScanDiag"') !== -1);
 check('DIAG the terminal renders the panel on both failure surfaces',
   (appSrc.match(/scanDiagHTML\(out\.diag\)/g) || []).length === 2);

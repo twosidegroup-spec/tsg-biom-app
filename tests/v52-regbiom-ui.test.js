@@ -68,9 +68,10 @@ check('HOME the hide/show eye is present and wired',
   appSrc.indexOf('balanceHidden') !== -1);
 check('HOME the avatar opens My Account',
   htmlSrc.indexOf('id="wHomeAvatar"') !== -1 && appSrc.indexOf("$('wHomeAvatar').addEventListener('click', function () { go('account'); })") !== -1);
-check('HOME four quick actions exist (Add, Send, Scan Palm, History)',
-  htmlSrc.indexOf('id="wAddOpen"') !== -1 && htmlSrc.indexOf('id="wSendOpen"') !== -1 &&
-  htmlSrc.indexOf('id="wQuickScan"') !== -1 && htmlSrc.indexOf('id="wQuickHistory"') !== -1);
+check('HOME five quick actions exist (Add, Biom Pay, Scan Palm, History, Palm Loyalty — v90: Send Money removed by the Chairman, 2026-11-28)',
+  htmlSrc.indexOf('id="wAddOpen"') !== -1 && htmlSrc.indexOf('id="wPayOpen"') !== -1 &&
+  htmlSrc.indexOf('id="wQuickScan"') !== -1 && htmlSrc.indexOf('id="wQuickHistory"') !== -1 &&
+  htmlSrc.indexOf('id="wLoyaltyOpen"') !== -1 && htmlSrc.indexOf('id="wSendOpen"') === -1);
 check('HOME Linked Wallets and Recent Activity sections keep their containers',
   htmlSrc.indexOf('id="wHomeAccounts"') !== -1 && htmlSrc.indexOf('id="wHomeStatement"') !== -1 &&
   htmlSrc.indexOf('Linked Wallets') !== -1 && htmlSrc.indexOf('Recent Activity') !== -1);
@@ -145,27 +146,28 @@ check('SCAN the instruction line is the caller prompt (wScanPrompt kept)',
   htmlSrc.indexOf('id="wScanPrompt"') !== -1 && appSrc.indexOf("$('wScanPrompt').textContent = ctx.prompt") !== -1);
 
 /* ---------------- structure: Send / Add Money ----------------- */
-check('MONEY amount chips exist for both forms and are wired to their inputs',
-  htmlSrc.indexOf('data-chips="wAddAmount"') !== -1 && htmlSrc.indexOf('data-chips="wSendAmount"') !== -1 &&
+check('MONEY amount chips exist for both forms and are wired to their inputs (v90: the forms are Add and Pay — Send is removed)',
+  htmlSrc.indexOf('data-chips="wAddAmount"') !== -1 && htmlSrc.indexOf('data-chips="wPayAmount"') !== -1 &&
+  htmlSrc.indexOf('data-chips="wSendAmount"') === -1 &&
   appSrc.indexOf("document.querySelectorAll('[data-chips]')") !== -1);
-check('MONEY both forms show the real balance line',
-  htmlSrc.indexOf('id="wAddBalance"') !== -1 && htmlSrc.indexOf('id="wSendBalance"') !== -1 &&
-  appSrc.indexOf("$('wSendBalance').textContent = fmtBDT(B.walletEnsurePerson(me).wallet.balance)") !== -1);
+check('MONEY both forms show the real balance line (v90: Add and Pay)',
+  htmlSrc.indexOf('id="wAddBalance"') !== -1 && htmlSrc.indexOf('id="wPayBalance"') !== -1 &&
+  htmlSrc.indexOf('id="wSendBalance"') === -1);
 check('MONEY Add Money carries the truthful fee line (the store layer charges none)',
   htmlSrc.indexOf('Fee') !== -1 && htmlSrc.indexOf('no fee is charged') !== -1);
-check('MONEY Add authorisation button reads Scan Palm to Add; Send reads Scan Palm to Send',
-  htmlSrc.indexOf('id="wAddScan">Scan Palm to Add<') !== -1 && appSrc.indexOf('>Scan Palm to Send</button>') !== -1);
-check('MONEY the Send recipient card is the real identified profile (name, Biom ID, palm-verified badge)',
-  appSrc.indexOf('class="recvcard"') !== -1 && appSrc.indexOf('sendDraft.receiverName') !== -1 &&
-  appSrc.indexOf('sendDraft.receiverId') !== -1 && appSrc.indexOf('Palm verified') !== -1);
+check('MONEY Add authorisation button reads Scan Palm to Add; Pay reads Scan My Palm to Pay (v90: no Send button exists)',
+  htmlSrc.indexOf('id="wAddScan">Scan Palm to Add<') !== -1 && htmlSrc.indexOf('id="wPayScan">Scan My Palm to Pay<') !== -1 &&
+  appSrc.indexOf('>Scan Palm to Send</button>') === -1);
+check('MONEY the Send recipient card is REMOVED with the Send flow (v90, Chairman 2026-11-28)',
+  appSrc.indexOf('sendDraft.receiverName') === -1 && appSrc.indexOf('sendDraft.receiverId') === -1);
 
 /* ---------------- no behaviour drift -------------------------- */
 /* v63 PIN CHANGE (named openly): a fourth strict site — the
    wallet Biom Pay — was added by the Chairman's explicit order
    (2026-11-25 10:47); see the v49 suite's note. */
-check('DRIFT exactly four strict-money call sites remain (v63 named pin change)',
-  (appSrc.match(/\{ strictMoney: true \}\)/g) || []).length === 4,
-  'found ' + (appSrc.match(/\{ strictMoney: true \}\)/g) || []).length);
+check('DRIFT exactly three strict-money call sites remain (v90 named pin change: Send Money removed)',
+  (appSrc.match(/\{ strictMoney: true(?=[, }])/g) || []).length === 3,
+  'found ' + (appSrc.match(/\{ strictMoney: true(?=[, }])/g) || []).length);
 check('DRIFT the quick Scan Palm action is a PLAIN verify (authorises nothing)',
   (function () {
     const i = appSrc.indexOf("$('wQuickScan')");

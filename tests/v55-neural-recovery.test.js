@@ -257,11 +257,17 @@ check('FIX3 the expected id is the one named constant, shared with the bank stam
 check('FIX3 both load paths check the manifest modelId, and the worker receives the expected id (source)',
   (function () {
     const worker = appSrc.slice(appSrc.indexOf('function palmnetWorkerMain()'), appSrc.indexOf('var PALMNET_EXPECTED_MODEL_ID'));
-    const fetchBytes = appSrc.slice(appSrc.indexOf('fetchModelBytes: function'), appSrc.indexOf('initMainThread: function'));
-    return worker.indexOf('function loadModel(manifestUrl, expectedModelId)') !== -1 &&
+    const fetchBytes = appSrc.slice(appSrc.indexOf('fetchModelContainer: function'), appSrc.indexOf('initMainThread: function'));
+    return worker.indexOf('function loadModel(manifestUrl, expectedModelId, expectedWeightsSha256, expectedWeightsBytes, expectedProgramSha256)') !== -1 &&
       worker.indexOf('man.modelId !== expectedModelId') !== -1 &&
       worker.indexOf('PalmNet model mismatch') !== -1 &&
       appSrc.indexOf('expectedModelId: PALMNET_EXPECTED_MODEL_ID') !== -1 &&
+      /* v64 (Seat 2 H-5): the worker also receives the code-pinned
+         hash + byte length, not only the model id. v65: the pins
+         are the TSGP container's weights hash/bytes + program hash. */
+      appSrc.indexOf('expectedWeightsSha256: PALMNET_EXPECTED_SHA256') !== -1 &&
+      appSrc.indexOf('expectedWeightsBytes: PALMNET_EXPECTED_BYTES') !== -1 &&
+      appSrc.indexOf('expectedProgramSha256: PALMNET_EXPECTED_PROGRAM_SHA256') !== -1 &&
       fetchBytes.indexOf('man.modelId !== PALMNET_EXPECTED_MODEL_ID') !== -1 &&
       fetchBytes.indexOf('PalmNet model mismatch') !== -1;
   })());
@@ -301,10 +307,16 @@ check('VERSION v55 remains in the chain as an adoption step', B.BIOM_DATA_VERSIO
 
 /* ---------------- FIX 3: the worker loader, run for real ------- */
 /* The shipped palmnetWorkerMain, extracted from app.js and run
-   in Node with stubbed fetch / ort / postMessage: the match
-   case must reach session creation, a manifest naming another
+   in Node with stubbed fetch / postMessage and the REAL TSG Palm
+   Engine (assembled exactly as the app assembles it): the match
+   case must reach engine creation, a manifest naming another
    model must be refused BEFORE any part fetch, and a manifest
-   with no modelId must load exactly as pre-v55 code did. */
+   with no modelId must load exactly as pre-v55 code did.
+   (v65 rework: the loader speaks the TSGP container protocol —
+   manifest -> program (hash-pinned) -> weight parts (hash-
+   pinned) -> engine.load. The rig program is a minimal valid
+   TSGP program whose single tensor is exactly the fake weights'
+   length, so engine.load accepts it.) */
 function runWorkerScenario(manifest, partText) {
   const workerSrc = appSrc.slice(appSrc.indexOf('function palmnetWorkerMain()'), appSrc.indexOf('var PalmNet = {'));
   const messages = [];
@@ -313,31 +325,35 @@ function runWorkerScenario(manifest, partText) {
     if (String(url).indexOf('manifest.json') !== -1) {
       return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve(manifest); } });
     }
+    if (String(url).indexOf('program.json') !== -1) {
+      return Promise.resolve({ ok: true, status: 200, text: function () { return Promise.resolve(fakeProgramText); } });
+    }
     partFetches++;
     return Promise.resolve({ ok: true, status: 200, text: function () { return Promise.resolve(partText); } });
   };
-  const ortStub = { InferenceSession: { create: function (bytes) { return Promise.resolve({ fakeSession: true, len: bytes.length }); } } };
-  const factory = new Function('fetch', 'atob', 'ort', 'crypto', 'palmnetPreprocessRoi', 'PALMNET_INPUT_SIZE', 'postMessage', 'B',
+  const factory = new Function('fetch', 'atob', 'crypto', 'palmnetPreprocessRoi', 'PALMNET_INPUT_SIZE', 'postMessage', 'B', 'createTsgPalmEngine', 'TextEncoder', 'self',
     workerSrc + '\nreturn palmnetWorkerMain;');
   const main = factory(fetchStub, function (s) { return Buffer.from(s, 'base64').toString('binary'); },
-    ortStub, crypto.webcrypto, B.palmnetPreprocessRoi, B.PALMNET_INPUT_SIZE,
-    function (m) { messages.push(m); }, B);
+    crypto.webcrypto, B.palmnetPreprocessRoi, B.PALMNET_INPUT_SIZE,
+    function (m) { messages.push(m); }, B, B.createTsgPalmEngine, TextEncoder, globalThis);
   main();
   return Promise.resolve().then(function () {
-    globalThis.onmessage({ data: { type: 'init', manifestUrl: 'https://rig.invalid/models/palmnet/manifest.json', expectedModelId: 'palmnet-r3-ep12' } });
-    return new Promise(function (resolve) { setTimeout(resolve, 250); });
+    globalThis.onmessage({ data: { type: 'init', manifestUrl: 'https://rig.invalid/models/palmnet/manifest.json', expectedModelId: 'palmnet-r3-ep12', expectedSha256: fakeSha, expectedBytes: fakeBytes.length, expectedProgramSha256: fakeProgSha } });
+    return new Promise(function (resolve) { setTimeout(resolve, 400); });
   }).then(function () { return { messages: messages, partFetches: partFetches }; });
 }
-const fakeBytes = Buffer.from('v55-rig-model-bytes');
+const fakeBytes = Buffer.from('v55-rig-model-bytes!'); // 20 bytes = 5 float32
 const fakeSha = crypto.createHash('sha256').update(fakeBytes).digest('hex');
 const fakePart = fakeBytes.toString('base64');
+const fakeProgramText = JSON.stringify({ format: 'tsg-palm-engine-program', containerVersion: 1, inputs: [{ name: 'image', dims: ['batch', 3, 128, 128] }], outputs: ['embedding'], weights: { file: 'weights.bin', dtype: 'float32-le', totalFloats: fakeBytes.length / 4, tensors: { w: { offset: 0, length: fakeBytes.length / 4, dtype: 'f32' } } }, nodes: [] });
+const fakeProgSha = crypto.createHash('sha256').update(Buffer.from(fakeProgramText, 'utf8')).digest('hex');
 function manifestWith(modelId) {
-  const m = { parts: ['p0'], bytes: fakeBytes.length, sha256: fakeSha };
+  const m = { format: 'tsg-palm-engine-container', programFile: 'program.json', parts: ['p0'], weightsBytes: fakeBytes.length, weightsSha256: fakeSha, programSha256: fakeProgSha, bytes: fakeBytes.length, sha256: fakeSha };
   if (modelId !== undefined) m.modelId = modelId;
   return m;
 }
 runWorkerScenario(manifestWith('palmnet-r3-ep12'), fakePart).then(function (r) {
-  check('FIX3 worker loader: a manifest naming the RUNNING model loads (session created, ready posted)',
+  check('FIX3 worker loader: a manifest naming the RUNNING model loads (engine created, ready posted)',
     r.messages.some(function (m) { return m.type === 'ready'; }) && r.partFetches === 1,
     JSON.stringify(r.messages.map(function (m) { return m.type; })));
   return runWorkerScenario(manifestWith('palmnet-v1'), fakePart);

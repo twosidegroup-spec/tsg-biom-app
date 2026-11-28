@@ -67,9 +67,16 @@ check('MODEL the manifest names the running model id and bar',
   man.modelId === 'palmnet-r3-ep12' && man.modelId === B.PALMNET_MODEL_ID && man.neuralThreshold === B.PALMNET_THRESHOLD,
   man.modelId + ' @ ' + man.neuralThreshold);
 const snapOnnx = path.join(os.homedir(), 'workspace', 'palmnet-bench', 'round3', 'integration-v54', 'palmnet_r3_snapshot.onnx');
+/* v65 named pin change: the shipped artefact is the TSGP
+   container, not the ONNX file. The chain of custody is the
+   manifest's recorded source hash — it must equal the Round 3
+   snapshot ONNX exactly, and the container's weights are proven
+   a byte-exact repack of that ONNX's tensors by the converter
+   (max diff 0.0) + the parity gate (tests/v65-tsg-engine). */
+const srcHash = ((man.note || '').match(/SHA-256 ([0-9a-f]{64})/) || [])[1];
 if (fs.existsSync(snapOnnx)) {
   const snapSha = crypto.createHash('sha256').update(fs.readFileSync(snapOnnx)).digest('hex');
-  check('MODEL the shipped model IS the Round 3 snapshot ONNX (hash equal)', snapSha === man.sha256, snapSha.slice(0, 16) + '…');
+  check('MODEL the shipped container records the Round 3 snapshot ONNX as its source (hash equal)', snapSha === srcHash, snapSha.slice(0, 16) + '…');
 } else {
   info('snapshot ONNX not on this machine — hash-vs-snapshot check skipped (manifest self-check above still ran)');
 }
@@ -77,7 +84,7 @@ const measureMd = path.join(os.homedir(), 'workspace', 'palmnet-bench', 'round3'
 if (fs.existsSync(measureMd)) {
   const md = fs.readFileSync(measureMd, 'utf8');
   check('MODEL the measurement record carries this bar, this model id and this model hash',
-    md.indexOf('0.5895') !== -1 && md.indexOf('palmnet-r3-ep12') !== -1 && md.indexOf(man.sha256) !== -1);
+    md.indexOf('0.5895') !== -1 && md.indexOf('palmnet-r3-ep12') !== -1 && md.indexOf(srcHash) !== -1);
 } else {
   info('measurement.md not on this machine — record cross-check skipped');
 }

@@ -7,11 +7,17 @@
          grayscale /255, repeat to 3 channels, ImageNet MEAN/STD
          normalisation; the ORIGINAL two-file ONNX export under
          Python onnxruntime), and
-     (b) the app's shipping path (B.palmnetPreprocessRoi + ONNX
-         Runtime Web, WASM, numThreads=1 exactly as the app's
-         worker configures it, running the model reassembled from
-         the repo's own base64 parts — length + SHA-256 verified
-         against models/palmnet/manifest.json first).
+     (b) the app's shipping path (B.palmnetPreprocessRoi + the
+         TSG Palm Engine — v65 named change: ONNX Runtime Web is
+         REMOVED and the app's own engine runs the model from the
+         TSGP container reassembled from the repo's own base64
+         parts — length + SHA-256 verified against
+         models/palmnet/manifest.json first. The Python side (a)
+         stays ONNX Runtime on the original ONNX export, so this
+         suite is now the standing TSG-engine-vs-reference gate;
+         the full-protocol gate lives in the TSG-ONLY programme
+         record: max embedding diff 1.3e-6, zero verdict
+         differences at 0.5895).
 
    Paths proven:
      A  native 128x128 (a real Tongji EVAL gallery ROI): the JS
@@ -69,9 +75,10 @@ const PY = process.env.PALMNET_BENCH_PYTHON || path.join(BENCH, 'venv', 'bin', '
 const PY_MODEL = path.join(BENCH, 'round3', 'integration-v54', 'palmnet_r3_snapshot.onnx');
 const GRAY_DIR = path.join(BENCH, 'data', 'gray_eval');
 
-let ort = null;
-try { ort = require('onnxruntime-web'); } catch (e) { /* handled below */ }
-const depsOk = !!ort && fs.existsSync(PY) && fs.existsSync(PY_MODEL) && fs.existsSync(GRAY_DIR);
+/* v65: the JS side needs no runtime dependency at all — the TSG
+   Palm Engine ships inside biometrics.js. Only the Python
+   reference stack is external (bench-side, never shipped). */
+const depsOk = fs.existsSync(PY) && fs.existsSync(PY_MODEL) && fs.existsSync(GRAY_DIR);
 if (!depsOk) {
   skip('parity suite', 'onnxruntime-web and/or the PalmNet-Bench venv/model/data are absent on this machine');
   console.log('v47 parity: ' + pass + ' passed, ' + fail + ' failed, ' + skipped + ' skipped (dependencies absent)');
@@ -123,12 +130,16 @@ async function main() {
   const sha = crypto.createHash('sha256').update(bytes).digest('hex');
   check('MODEL shipped parts match the manifest SHA-256', sha === man.sha256, sha.slice(0, 16) + '...');
 
-  ort.env.wasm.numThreads = 1; // the app worker's configuration
-  const session = await ort.InferenceSession.create(bytes);
+  /* v65: the app path is the TSG Palm Engine on the TSGP
+     container — program.json from the same shipped directory,
+     weights from the verified reassembled bytes above. */
+  const program = JSON.parse(fs.readFileSync(path.join(manDir, 'program.json'), 'utf8'));
+  const engine = B.createTsgPalmEngine();
+  engine.load(program, bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
   async function jsEmbed(roi, size) {
     const input = B.palmnetPreprocessRoi(roi, size);
-    const out = await session.run({ image: new ort.Tensor('float32', input, [1, 3, 128, 128]) });
-    return Array.from(out.embedding.data);
+    const out = engine.run(input, [1, 3, 128, 128]);
+    return Array.from(out.data);
   }
 
   /* Fixture A: a real Tongji EVAL gallery ROI, native 128 path. */
@@ -172,22 +183,22 @@ async function main() {
   check('PARITY C synthetic native-128: max |diff| <= 1e-4', dC.maxd <= 1e-4, 'max ' + dC.maxd.toExponential(3));
   check('PARITY C synthetic native-128: cosine >= 0.999999', dC.cos >= 0.999999, dC.cos.toFixed(9));
 
-  /* Rig inference timing (ORT Web WASM, numThreads=1, Node):
-     pure session.run on the fixture-A tensor, then end-to-end
+  /* Rig inference timing (TSG Palm Engine, pure JS, Node):
+     pure engine.run on the fixture-A tensor, then end-to-end
      (preprocess + run) on the 96 path — the app's real per-ROI
      cost shape. RIG numbers; the phone is the verdict. */
-  const tensorA = new ort.Tensor('float32', B.palmnetPreprocessRoi(rawArr, 128), [1, 3, 128, 128]);
-  for (let i = 0; i < 10; i++) await session.run({ image: tensorA });
+  const inputA = B.palmnetPreprocessRoi(rawArr, 128);
+  for (let i = 0; i < 5; i++) engine.run(inputA, [1, 3, 128, 128]);
   const ts = [];
   for (let i = 0; i < 50; i++) {
     const t0 = performance.now();
-    await session.run({ image: tensorA });
+    engine.run(inputA, [1, 3, 128, 128]);
     ts.push(performance.now() - t0);
   }
   ts.sort(function (a, b) { return a - b; });
   const median = ts[Math.floor(ts.length / 2)];
   const mean = ts.reduce(function (a, b) { return a + b; }, 0) / ts.length;
-  console.log('  ..  RIG ONLY — ORT Web (WASM, 1 thread) inference per ROI: median ' + median.toFixed(2) + ' ms, mean ' + mean.toFixed(2) + ' ms, p95 ' + ts[Math.floor(ts.length * 0.95)].toFixed(2) + ' ms (Node on this shared VM; not a phone number).');
+  console.log('  ..  RIG ONLY — TSG Palm Engine (pure JS) inference per ROI: median ' + median.toFixed(2) + ' ms, mean ' + mean.toFixed(2) + ' ms, p95 ' + ts[Math.floor(ts.length * 0.95)].toFixed(2) + ' ms (Node on this shared VM; not a phone number).');
   check('RIG inference sanity: median under 1000 ms', median < 1000, median.toFixed(2) + ' ms');
   const te = [];
   for (let i = 0; i < 30; i++) {

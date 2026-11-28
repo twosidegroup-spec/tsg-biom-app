@@ -254,8 +254,8 @@ function wiringChecks() {
   check('FREEZE Cam.start runs under the bound and supersedes on timeout',
     appSrc.indexOf('B.withTimeout(p, CAM_START_TIMEOUT_MS)') !== -1 && appSrc.indexOf("e.code === 'ETIMEOUT'") !== -1 && appSrc.indexOf('Cam._token++;') !== -1);
   check('FREEZE the camera bound is 12 s', appSrc.indexOf('var CAM_START_TIMEOUT_MS = 12000;') !== -1);
-  check('FREEZE PalmNet main-thread load is bounded (script 20 s, whole chain 60 s)',
-    appSrc.indexOf('}), 20000);') !== -1 && appSrc.indexOf('}), 60000);') !== -1);
+  check('FREEZE PalmNet main-thread load is bounded (whole chain 60 s; v65 named pin change: the 20 s runtime-script load is gone with ONNX Runtime — the TSGP container fetch rides the same 60 s chain bound)',
+    appSrc.indexOf('this.fetchModelContainer()') !== -1 && appSrc.indexOf('}), 60000);') !== -1);
   check('FREEZE the terminal log write can no longer gate the verdict card', appSrc.indexOf("method: method, measured: measured, result: result }).catch(function () { return null; })") !== -1);
   check('FREEZE the walletAct camera restarter surfaces failures like every other start',
     appSrc.indexOf("camRestarters.walletAct = function () {") !== -1 && appSrc.indexOf("$('wScanStatus').textContent = 'Camera blocked.'; });") !== -1);
@@ -292,7 +292,18 @@ function wiringChecks() {
      identification stays plain. */
   check('WIRING the strict refusal message is the exact ordered wording',
     appSrc.indexOf("var MONEY_STRICT_FAIL_MSG = 'Matched, but not clearly enough to authorise money — please scan again';") !== -1);
-  const strictSites = (appSrc.match(/\{ strictMoney: true \}\)/g) || []).length;
+  const strictSites = (appSrc.match(/\{ strictMoney: true(?=[, }])/g) || []).length;
+  /* v82 PIN CHANGE (named openly): the count pattern widens
+     from the exact "{ strictMoney: true })" to the strict
+     option in either option-object shape — at v82 the
+     terminal and Add Money call sites also pass
+     peopleReady (the concurrently loaded people list the
+     verdict tail awaits). The rule's intent is unchanged:
+     the strict option rides ONLY on money-moving scans, the
+     set is still exactly the four named below, and the
+     option's value is still the literal true. The same
+     widening is applied in the v50/v52/v60 suites' copies
+     of this pin. */
   /* v63 PIN CHANGE (named openly): the Chairman's 2026-11-25
      10:47 order adds a fourth money-moving call site — the
      wallet's own Biom Pay (choose a partner store, enter the
@@ -300,12 +311,10 @@ function wiringChecks() {
      payment. The rule's intent is unchanged: the strict option
      rides ONLY on money-moving scans, and the set is exactly
      the four named below. */
-  check('WIRING exactly four money-moving call sites pass the strict option (terminal Biom Pay, Add Money, Send authorise, wallet Biom Pay — v63 named pin change)',
-    strictSites === 4, 'found ' + strictSites);
-  const recvStart = appSrc.indexOf("$('wSendScanReceiver')");
-  const recvSlice = appSrc.slice(recvStart, appSrc.indexOf('function renderSendConfirm()', recvStart));
-  check('WIRING the Send RECEIVER identification stays a plain scan (identifying a person moves no money)',
-    recvSlice.indexOf('streamIdentifyPalm') !== -1 && recvSlice.indexOf('strictMoney') === -1);
+  check('WIRING exactly three money-moving call sites pass the strict option (terminal Biom Pay, Add Money, wallet Biom Pay — v90 named pin change: Send Money removed by the Chairman, 2026-11-28)',
+    strictSites === 3, 'found ' + strictSites);
+  check('WIRING the Send flow is gone entirely (v90: no receiver scan, no send authorise)',
+    appSrc.indexOf('wSendScanReceiver') === -1 && appSrc.indexOf('authoriseSend') === -1);
   /* v60 PIN CHANGE (named openly): the two checks that stood
      here pinned the wallet-open routes as plain scans with no
      strict flag (the v50 correction). At v60 those routes are

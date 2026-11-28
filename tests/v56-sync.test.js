@@ -38,6 +38,21 @@
      delete-all record (the wipe sends nothing);
    - migration 'v56' purity lives in v38-migration.test.js.
 
+   v73 PIN ALIGNMENT (named, 2026-11-26): the API now refuses
+   non-tombstone profile writes carrying templates without
+   enc:'v1' ("enc v1 required", API lib/records.js S2-2). This
+   rig originally drove the engine with NO sealing dep (the
+   pre-v61 plaintext contract), so its E2E profile write was
+   rejected by the fixed API. The rig now wires a REAL ready
+   vault into the engine — the same mechanism the v61 suite
+   uses (B.vaultGenerateRaw / vaultImportKey /
+   vaultDeriveBankKey + B.bankEncryptProfileCore, exactly the
+   shipped app's sealing helper) — and every profile outcome
+   below is asserted over the SEALED path: the posted/read-back
+   bank carries enc:'v1' with sealed template strings, and
+   opening those strings with the rig vault key restores the
+   stored bank byte-for-byte. No outcome was dropped.
+
    All numbers here are RIG numbers; the phone is the verdict. */
 'use strict';
 const fs = require('fs');
@@ -90,7 +105,7 @@ const createBiomSync = new Function(engineSrc + '\nreturn createBiomSync;')();
 
 function makeEngine(over) {
   over = over || {};
-  const store = { outbox: [] };
+  const store = { outbox: [], versions: {} };
   const prefs = Object.assign({ on: true, endpoint: 'http://api.test', deviceKey: 'device-key-1', label: 'Chairman phone' }, over.prefs || {});
   let seq = 0;
   const engine = createBiomSync({
@@ -101,13 +116,78 @@ function makeEngine(over) {
     fetchFn: over.fetchFn || function () { return Promise.resolve({ status: 201 }); },
     now: function () { return 1764000000000; },
     uuid: function () { return 'uuid-' + (++seq); },
-    onStatus: function () {}
+    onStatus: function () {},
+    /* v73 PIN ALIGNMENT (2): the engine is wired with the
+       version-store deps, exactly as the shipped app wires
+       them (DB.getMeta/setMeta 'syncVersions'). With them the
+       engine stamps every profile write with baseVersion —
+       the v73 API (S2-3) refuses profile writes without one
+       ("baseVersion required"); without the deps the engine
+       sends none and the E2E bank write below cannot land. */
+    loadVersions: function () { return Promise.resolve(JSON.parse(JSON.stringify(store.versions))); },
+    saveVersions: function (v) { store.versions = v; },
+    /* v73 PIN ALIGNMENT: the engine is wired with the sealing
+       dep, exactly as the shipped app wires Vault.encryptProfileCore
+       (which delegates to B.bankEncryptProfileCore under a ready
+       vault). Rigs that omit the dep get the pre-v61 plaintext
+       core — the fixed API refuses that, so this rig seals. */
+    encryptProfileCore: function (core) { return sealProfileCore(core); }
   });
   return { engine: engine, store: store, prefs: prefs };
 }
 const PERSON = { id: 'TSG-BIO-9', name: 'Rig Person', palmProfile: { v: 4, format: 'packed96', hand: 'left', codes: ['QUJD', 'REVG'], neural: { v: 1, dim: 256, model: 'palmnet-r3-ep12', embeddings: ['R0hJ'] } } };
 
+/* ---- v73 sealed-contract helpers (the v61 suite's vault) ------
+   A real vault key for this rig: deriveKey(biomId) yields the
+   per-bank AES key, sealProfileCore produces the enc:'v1'
+   envelope the shipped app posts, and openCore reverses a
+   sealed core back to the plaintext syncProfileRecord shape so
+   the assertions below can prove the SAME bank landed. */
+let vaultCtx = null;
+async function initVault() {
+  if (vaultCtx) return vaultCtx;
+  const raw = await B.vaultGenerateRaw();
+  const kid = await B.vaultKeyId(raw);
+  const vaultKey = await B.vaultImportKey(raw, false);
+  const cache = {};
+  function deriveKey(biomId) {
+    if (!cache[biomId]) cache[biomId] = B.vaultDeriveBankKey(vaultKey, biomId);
+    return cache[biomId];
+  }
+  vaultCtx = { kid: kid, deriveKey: deriveKey };
+  return vaultCtx;
+}
+function sealProfileCore(core) {
+  if (!vaultCtx) return Promise.resolve(null);
+  return B.bankEncryptProfileCore(core, vaultCtx.deriveKey, vaultCtx.kid);
+}
+async function openCore(sealed) {
+  const bankKey = await vaultCtx.deriveKey(sealed.biomId);
+  const edcc = [];
+  for (const s of sealed.edccCodes || []) edcc.push(await B.bankDecryptString(s, bankKey));
+  const neural = [];
+  for (const s of sealed.neuralEmbeddings || []) neural.push(await B.bankDecryptString(s, bankKey));
+  return { biomId: sealed.biomId, name: sealed.name, hand: sealed.hand, edccCodes: edcc, neuralEmbeddings: neural, neuralModel: sealed.neuralModel, updatedTs: sealed.updatedTs };
+}
+function isSealedCore(core) {
+  return !!core && core.enc === 'v1' &&
+    (core.edccCodes || []).every(function (s) { return B.bankEncIsSealed(s); }) &&
+    (core.neuralEmbeddings || []).every(function (s) { return B.bankEncIsSealed(s); });
+}
+/* Sealing is async (WebCrypto): wait until the engine's outbox
+   actually carries a profile item matching pred before flushing
+   or asserting queue state — the v61 suite's wait pattern. */
+async function waitForProfile(m, pred) {
+  for (let i = 0; i < 200; i++) {
+    const items = m.engine.pendingItems().filter(function (it) { return it.type === 'profile'; });
+    if (items.length && (!pred || pred(items[items.length - 1].record))) return true;
+    await tick(10);
+  }
+  return false;
+}
+
 async function engineTests() {
+  await initVault();
   /* OFF: nothing queues, no fetch is attempted */
   let fetchCount = 0;
   let m = makeEngine({ prefs: { on: false }, fetchFn: function () { fetchCount++; return Promise.resolve({ status: 201 }); } });
@@ -144,6 +224,13 @@ async function engineTests() {
   m = makeEngine({ fetchFn: function (url, opts) { sent.push({ url: url, body: JSON.parse(opts.body), key: opts.headers['x-device-key'] }); return Promise.resolve({ status: 201 }); } });
   m.engine.noteScan({ kind: 'enrol', profileName: 'Rig Person', biomId: 'TSG-BIO-9', hand: 'left', result: 'Enrolled' });
   m.engine.noteProfile(PERSON);
+  /* v73: sealing is async — wait for the sealed profile to be
+     queued BEFORE noting the second scan, so the queue order
+     asserted below (scan, profile, scan) is deterministic.
+     (Cross-type order carries no server semantics; the rig
+     sequences the calls so the original order outcome is
+     still the thing asserted.) */
+  await waitForProfile(m);
   m.engine.noteScan({ kind: 'verify', profileName: 'Rig Person', biomId: 'TSG-BIO-9', hand: 'left', edccScore: 0.457, palmnetScore: 0.912, result: 'Verified' });
   await tick();
   await m.engine.flush();
@@ -158,18 +245,58 @@ async function engineTests() {
   check('UP the device key rides the header and appears in NO posted body',
     sent.every(function (s) { return s.key === 'device-key-1'; }) &&
     sent.every(function (s) { return JSON.stringify(s.body).indexOf('device-key-1') === -1; }));
-  check('UP the profile body is the stored bank', deepEq(sent[1].body, B.syncProfileRecord(PERSON, 1764000000000)));
+  /* v73 PIN CHANGE (named): was 'UP the profile body is the
+     stored bank' against the PLAINTEXT core. The same outcome
+     is now asserted over the sealed path: the posted body is
+     the enc:'v1' envelope of the stored bank — shape fields
+     verbatim, every template string sealed, no plaintext
+     template anywhere in the body — and opening it with the
+     rig vault key restores B.syncProfileRecord(PERSON, …)
+     byte-for-byte. */
+  check('UP the profile body is the stored bank, sealed (enc v1; opens back to the exact bank)',
+    sent.length === 3 && isSealedCore(sent[1].body) &&
+    JSON.stringify(sent[1].body).indexOf('QUJD') === -1 && JSON.stringify(sent[1].body).indexOf('R0hJ') === -1 &&
+    deepEq(await openCore(sent[1].body), B.syncProfileRecord(PERSON, 1764000000000)));
   check('UP the status line reports the sync', /^Last synced .* · 0 queued$/.test(m.engine.statusText()), m.engine.statusText());
 
-  /* profile dedupe: the latest bank per Biom ID wins */
+  /* profile dedupe: the latest bank per Biom ID wins.
+     v88 PIN CHANGE (named): instant sync fires the first
+     upsert's flush AT CREATION, so the rig's first fetch is
+     held pending — the second note then lands while the first
+     is in flight, exactly the phone race. The invariants are
+     unchanged and still asserted: the QUEUE holds ONE item for
+     the Biom ID (the in-flight upsert is deduped out of it),
+     and the LAST bank posted is the LATEST bank, sealed. (The
+     in-flight first post may complete — it was legitimately
+     sent before the newer bank existed; the engine's identity
+     removal keeps its completion from dropping the newer
+     queued item, which is what makes the last post latest.) */
   const sentP = [];
-  m = makeEngine({ fetchFn: function (url, opts) { sentP.push(JSON.parse(opts.body)); return Promise.resolve({ status: 201 }); } });
+  let releaseFirstP = null;
+  m = makeEngine({ fetchFn: function (url, opts) {
+    sentP.push(JSON.parse(opts.body));
+    if (sentP.length === 1) return new Promise(function (r) { releaseFirstP = function () { r({ status: 201 }); }; });
+    return Promise.resolve({ status: 201 });
+  } });
   m.engine.noteProfile(PERSON);
   m.engine.noteProfile(Object.assign({}, PERSON, { palmProfile: Object.assign({}, PERSON.palmProfile, { codes: ['QUJD', 'REVG', 'TU5P'] }) }));
-  await tick();
+  /* v73: wait until the queued item is the SEALED latest bank
+     (3 sealed codes) — sealing resolves asynchronously and the
+     per-person sequence guard keeps the last call's bank. */
+  await waitForProfile(m, function (rec) { return rec.edccCodes.length === 3; });
   check('DEDUPE two upserts for one Biom ID queue ONE item', m.engine.state().queued === 1, 'queued=' + m.engine.state().queued);
+  if (releaseFirstP) releaseFirstP();
+  await tick(60);
   await m.engine.flush();
-  check('DEDUPE the item sent is the LATEST bank', sentP.length === 1 && sentP[0].edccCodes.length === 3);
+  /* v73 PIN CHANGE (named): 'the item sent is the LATEST bank'
+     now also proves the sent item is the sealed form of that
+     latest bank (enc v1) and opens back to its exact codes.
+     v88: asserted on the LAST post (see the pin note above). */
+  check('DEDUPE the last item sent is the LATEST bank, sealed (enc v1; opens back to the latest codes)',
+    sentP.length >= 1 && sentP[sentP.length - 1].edccCodes.length === 3 && isSealedCore(sentP[sentP.length - 1]) &&
+    deepEq((await openCore(sentP[sentP.length - 1])).edccCodes, ['QUJD', 'REVG', 'TU5P']) &&
+    m.engine.state().queued === 0,
+    'posts=' + sentP.length);
 
   /* 401: latches, no retry storm, settingsChanged re-arms */
   let calls401 = 0;
@@ -193,6 +320,7 @@ async function engineTests() {
 
 /* ---------------- end to end into the real API server ---------- */
 async function e2eTest() {
+  await initVault();
   const apiDir = path.join(__dirname, '..', '..', 'tsg-biom-api');
   if (!fs.existsSync(path.join(apiDir, 'server.js'))) { info('tsg-biom-api not found beside the app — e2e skipped'); return; }
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tsg-biom-v56-'));
@@ -212,6 +340,11 @@ async function e2eTest() {
     const m = makeEngine({ prefs: { endpoint: 'http://127.0.0.1:' + PORT, deviceKey: 'v56-device-key' }, fetchFn: function (u, o) { return fetch(u, o); } });
     m.engine.noteScan({ kind: 'enrol', profileName: 'Rig Person', biomId: 'TSG-BIO-9', hand: 'left', result: 'Enrolled' });
     m.engine.noteProfile(PERSON);
+    /* v73: the profile write is the SEALED core (enc v1) — the
+       only form the fixed API accepts. Wait for it to queue
+       before the last scan + flush so the whole queue drains
+       in this one flush, as the original rig asserted. */
+    await waitForProfile(m);
     m.engine.noteScan({ kind: 'wallet-open', profileName: 'Rig Person', biomId: 'TSG-BIO-9', hand: 'left', edccScore: 0.457, palmnetScore: 0.912, result: 'Verified' });
     await tick();
     await m.engine.flush();
@@ -228,11 +361,21 @@ async function e2eTest() {
     /* v62 NAMED PIN CHANGE: the server now stamps version,
        ownerDeviceId and receivedTs on the stored bank (B3/B4) —
        the client-sent fields still read back verbatim. */
-    const bankBack = Object.assign({}, profJson.profiles[0]);
+    const bankBack = Object.assign({}, (profJson.profiles || [])[0] || {});
     delete bankBack.version; delete bankBack.ownerDeviceId; delete bankBack.receivedTs;
-    check('E2E the bank reads back verbatim', profJson.count === 1 && deepEq(bankBack, B.syncProfileRecord(PERSON, 1764000000000)));
+    /* v73 PIN CHANGE (named): was 'E2E the bank reads back
+       verbatim' against the PLAINTEXT syncProfileRecord. The
+       same outcome is now asserted over the sealed path: the
+       stored record carries enc:'v1', every template string
+       reads back as a sealed envelope (the server stored the
+       ciphertext verbatim, staying blind), and opening the
+       read-back bank with the rig vault key restores
+       B.syncProfileRecord(PERSON, …) byte-for-byte. */
+    check('E2E the bank reads back verbatim, sealed (enc v1; opens back to the exact bank)',
+      profJson.count === 1 && isSealedCore(bankBack) &&
+      deepEq(await openCore(bankBack), B.syncProfileRecord(PERSON, 1764000000000)));
     check('E2E the v62 server stamped version 1 + the legacy owner on the bank',
-      profJson.profiles[0].version === 1 && profJson.profiles[0].ownerDeviceId === 'legacy');
+      !!(profJson.profiles || [])[0] && profJson.profiles[0].version === 1 && profJson.profiles[0].ownerDeviceId === 'legacy');
   } finally {
     child.kill('SIGTERM');
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) {}

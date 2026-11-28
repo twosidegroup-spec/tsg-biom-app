@@ -22,6 +22,13 @@
      the dashboard's ink-soft) keeps the v64 frozen discipline: it
      is the lightest text grey permitted on tinted backgrounds and
      sits well above 4.5:1 on --bg (#f2f5fb). */
+  /* v91: the Liquid Glass · Biom Blue tokens live in the ONE
+     :root (v66 rule) — the ramp + the glass material. */
+  --gb-950:#03195B; --gb-800:#0B2CB1; --gb-600:#1951FC; --gb-500:#3781FC; --gb-ice:#CBE9FD;
+  --glass-bg:rgba(255,255,255,.66); --glass-bg-strong:rgba(255,255,255,.88);
+  --glass-edge:rgba(255,255,255,.72);
+  --glass-shadow:0 18px 40px rgba(3,25,91,.13), 0 3px 10px rgba(3,25,91,.07);
+  --glass-blur:blur(16px) saturate(1.5);
   --blue-950:#071c3f; --blue-900:#0a2a5e; --blue-800:#0b3d91;
   --blue:#0b4ea2; --blue-dark:#083a7c; --blue-600:#1663d9;
   --blue-100:#dbe7fb; --blue-50:#eef3fd; --blue-soft:#e8f1fb;
@@ -52,6 +59,21 @@
      400ms; transitions animate transform/opacity ONLY — a transition
      must never target width/height/top/left/margin. */
   --dur-state:180ms; --dur-page:300ms; --ease-std:cubic-bezier(0.2,0,0,1);
+  /* v88 (Phase 3): the Phase-1 §K token layer — font families,
+     the §K single-blue ramp + blue-tinted neutrals as role
+     tokens for new/status surfaces, the four semantic colours
+     (status only, always with a word), and the focus token.
+     Layered over the house palette above, which stays frozen. */
+  --font-sans:"Inter","Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif;
+  --font-mono:ui-monospace,"SF Mono","Roboto Mono",Menlo,Consolas,monospace;
+  --k-blue-50:#EEF4FF; --k-blue-100:#DCE8FD; --k-blue-200:#B9D0FA; --k-blue-300:#8AB0F5;
+  --k-blue-400:#5B8DEF; --k-blue-500:#3370E0; --k-blue-600:#1F5BD1; --k-blue-700:#1A4CAF;
+  --k-blue-800:#173F8A; --k-blue-900:#122F66; --k-blue-950:#0B1E42;
+  --k-n-50:#F7F9FC; --k-n-100:#EEF1F6; --k-n-200:#DCE2EC; --k-n-500:#5B6B82; --k-n-700:#33415C; --k-n-900:#131A29;
+  --k-success:#177245; --k-success-bg:#E6F4EC;
+  --k-warning:#9A6B00; --k-warning-bg:#FFF4D6;
+  --k-danger:#C81E1E; --k-danger-bg:#FDECEC;
+  --focus:var(--k-blue-500);
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
@@ -128,6 +150,9 @@ input:focus,select:focus{outline:2px solid rgba(22,99,217,.35);border-color:var(
 .camstatus{position:absolute;left:10px;bottom:10px;background:rgba(7,28,63,.78);color:#eaf2ff;padding:7px 11px;border-radius:9px;font-size:13px}
 .notice{border:1px solid #ecd9a8;color:#7a5a0e;border-radius:14px;padding:12px 14px;font-size:14px;line-height:1.5;background:#fdf6e0}
 .error{border:1px solid #f0caca;color:#8f1d1d;border-radius:14px;padding:12px 14px;font-size:14px;line-height:1.5;background:#fdf0f0}
+.blockedcard{border:1px solid var(--danger,#C81E1E);background:var(--danger-bg,#FDECEC);color:var(--ink,#131A29);border-radius:14px;padding:14px 16px;margin-top:12px}
+.blockedcard h3{margin:0 0 6px;font-size:16px;color:var(--danger,#C81E1E)}
+.blockedcard .blockedreason{margin:0 0 6px;font-weight:600;font-size:14px;line-height:1.5}
 .success{border:1px solid #b5e6cd;color:#0a5c40;border-radius:14px;padding:12px 14px;font-size:14px;line-height:1.5;background:#ecf9f2}
 table{width:100%;border-collapse:collapse;font-size:14px}
 th,td{text-align:left;padding:11px 8px;border-bottom:1px solid var(--line2);vertical-align:top}
@@ -221,14 +246,14 @@ section.page.active{animation:pagein var(--dur-page) var(--ease-std) backwards}
 .avatarbtn:hover{background:rgba(255,255,255,.24)}
 .balcard .ballabel{color:rgba(255,255,255,.75);font-size:13px;font-weight:700;margin-top:16px}
 .balrow{display:flex;align-items:center;gap:12px;margin-top:2px}
-.balcard .balnum{font-size:40px;font-weight:800;letter-spacing:.2px;line-height:1.1}
+.balcard .balnum{font-size:var(--fs-display);font-weight:800;letter-spacing:.2px;line-height:1.1}
 .eyebtn{background:transparent;border:none;color:rgba(255,255,255,.9);cursor:pointer;padding:10px;border-radius:10px;display:flex;min-width:44px;min-height:44px;align-items:center;justify-content:center}
 .eyebtn svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .eyebtn.off{color:rgba(255,255,255,.45)}
 .balholder{font-size:17px;font-weight:700;margin-top:12px}
 .balid{color:rgba(255,255,255,.8);font-size:13.5px;margin-top:2px}
 .balcard .balnote{color:#ffd98a;font-size:12.5px;font-weight:700;margin-top:12px}
-.qa-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:16px}
+.qa-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:16px}/* v90: 3 calm columns — the 5-across squeeze was the clutter the Chairman named */
 .qa-tile{background:var(--surface);border:1px solid var(--line2);border-radius:20px;box-shadow:var(--shadow);
   padding:16px 6px 13px;cursor:pointer;color:var(--text);display:flex;flex-direction:column;align-items:center;gap:8px;
   font-size:13px;font-weight:700;min-height:88px;justify-content:center}
@@ -333,7 +358,7 @@ section.page.active{animation:pagein var(--dur-page) var(--ease-std) backwards}
 .diagtitle{font-weight:800;font-size:14.5px;margin-bottom:6px}
 .diagrow{font-size:13.5px;line-height:1.55;color:var(--text);margin-top:3px}
 .diagpanel .btn{margin-right:8px}
-@media (max-width:640px){ .qa-grid{grid-template-columns:repeat(5,1fr);gap:8px}
+@media (max-width:640px){ .qa-grid{grid-template-columns:repeat(3,1fr);gap:8px}
   .qa-tile{font-size:11.5px;min-height:80px;padding:13px 4px 11px} .balcard .balnum{font-size:34px} }
 
 /* ---- v63 two-face ------------------------------------------------
@@ -724,3 +749,117 @@ body.mode-customer.role-merchant #page-terminal .check{color:#fff}
    choice must never sit below the fold. */
 .rc-card .rc-actions{position:sticky;bottom:0;background:var(--surface,#fff);
   padding:12px 0 4px;margin-top:8px}
+
+/* ---- v88 (Phases 3+4): Phase-1 §K token layer + sync indicator --
+   The §K system lands as role tokens layered over the frozen v66
+   house palette (the house blue #0b4ea2 stays the brand primary —
+   it is the shipped, Chairman-approved colour; the §K ramp is
+   adopted as the token vocabulary for new/status surfaces, with
+   the same single-hue discipline). Type, spacing and shape for
+   the new components come only from these tokens and the v66
+   scale above: 4px spacing steps, one radius family, semantic
+   colours reserved for status and always paired with a word. */
+/* (§K token variables live in the single :root block at the top of this file — v66 token discipline.) */
+body{font-family:var(--font-sans)}
+.num,.balcard .balnum,.sstat .num,.stat .num,.amt,.balpoints,.balanceline b{font-variant-numeric:tabular-nums}
+code,.mono{font-family:var(--font-mono)}
+/* The persistent sync indicator: colour + word, never colour
+   alone. Kinds come from the engine's indicator() — synced /
+   pending / offline / blocked / error / setup / off. */
+.sync-indicator{display:flex;align-items:center;gap:var(--sp-2);border:1px solid var(--line);
+  border-radius:var(--radius-row);padding:var(--sp-2) var(--sp-3);margin:0 0 var(--sp-4);
+  font-size:var(--fs-caption);font-weight:700;line-height:1.45;background:var(--surface);color:var(--muted)}
+.sync-indicator .sync-dot{width:9px;height:9px;border-radius:50%;background:var(--k-n-500);flex:none}
+.sync-indicator.kind-synced{color:var(--k-success);background:var(--k-success-bg);border-color:#bfe3cf}
+.sync-indicator.kind-synced .sync-dot{background:var(--k-success)}
+.sync-indicator.kind-pending{color:var(--k-blue-700);background:var(--k-blue-50);border-color:var(--k-blue-200)}
+.sync-indicator.kind-pending .sync-dot{background:var(--k-blue-500)}
+.sync-indicator.kind-offline{color:var(--k-warning);background:var(--k-warning-bg);border-color:#ecd9a8}
+.sync-indicator.kind-offline .sync-dot{background:#E8A100}
+.sync-indicator.kind-blocked,.sync-indicator.kind-error{color:var(--k-danger);background:var(--k-danger-bg);border-color:#f0caca}
+.sync-indicator.kind-blocked .sync-dot,.sync-indicator.kind-error .sync-dot{background:var(--k-danger)}
+.sync-indicator.kind-setup{color:var(--k-warning);background:var(--k-warning-bg);border-color:#ecd9a8}
+.sync-indicator.kind-setup .sync-dot{background:#E8A100}
+/* Scan is the nav's primary action (Phase 1 J1/J3): the Scanner
+   tab's icon rides a filled brand disc so the scan action reads
+   first in the bottom nav, without moving any approved tab. */
+.nav button.nav-scan svg{background:var(--blue);stroke:#fff;border-radius:50%;
+  width:38px;height:38px;padding:7px;box-sizing:border-box}
+.nav button.nav-scan{color:var(--blue);font-weight:800}
+body.mode-customer.role-merchant .nav button.nav-scan svg,
+body.mode-customer.role-customer .nav button.nav-scan svg{background:var(--k-blue-500)}
+@media (min-width:1024px){
+  .nav button.nav-scan svg{background:rgba(255,255,255,.16)}
+  .nav button.nav-scan{color:#fff}
+}
+/* Scan-state pill: the word is the state (Phase 1 J4/G3); the
+   pill gains a mono timer + tabular figures already, and its
+   dot now also carries the semantic colour for ready states. */
+.scanpill{font-size:13px}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+
+/* ================= v91 — LIQUID GLASS · BIOM BLUE =================
+   The Chairman's design direction (2026-11-28, 14 reference
+   images; colour decision reported to him the same morning):
+   liquid glass built as a token system, in BIOM's own blue.
+   The ramp is the reference's printed hexes — deep navy
+   #03195B → royal #0B2CB1 → vivid #1951FC → bright #3781FC →
+   ice #CBE9FD — continuing the house blue identity. The
+   violet/teal of the iridescent references survives ONLY as
+   faint background glow (light, never surface colour).
+   Rules of the layer:
+   - glass blur lives on the shell surfaces only (top bar,
+     floating nav, tiles, buttons, and the cards of the light
+     pages); camera and scan surfaces get NO backdrop blur —
+     scan speed and camera clarity are untouched;
+   - text always sits on strong glass (>=85% white) or on the
+     deep end of the ramp — contrast is never traded for looks;
+   - every value below is a token or a ramp hex; no one-off
+     colours (the styleguide discipline). */
+body{background:
+  radial-gradient(90% 55% at 88% -6%, rgba(139,124,255,.20), rgba(139,124,255,0) 60%),
+  radial-gradient(80% 50% at -10% 0%, rgba(45,212,191,.15), rgba(45,212,191,0) 55%),
+  radial-gradient(120% 70% at 50% -20%, #DCEBFD, rgba(220,235,253,0) 60%),
+  linear-gradient(180deg,#F2F7FE,#EAF3FE);
+  background-attachment:fixed}
+.topbar{background:linear-gradient(135deg, rgba(3,25,91,.95), rgba(11,44,177,.92) 58%, rgba(25,81,252,.90));
+  -webkit-backdrop-filter:var(--glass-blur);backdrop-filter:var(--glass-blur);
+  border-bottom:1px solid rgba(255,255,255,.28);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.35), 0 14px 30px rgba(3,25,91,.25)}
+.balcard{background:
+  radial-gradient(130% 100% at 12% -10%, rgba(255,255,255,.38), rgba(255,255,255,0) 52%),
+  linear-gradient(140deg,#0B2CB1 0%, #1951FC 55%, #3781FC 100%);
+  border:1px solid rgba(255,255,255,.35);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.45), var(--shadow-l1)}
+.card{background:var(--glass-bg);border:1px solid var(--glass-edge);box-shadow:var(--glass-shadow)}
+#page-wallet .card,#page-account .card,#page-balance .card,#page-inbox .card,
+#page-more .card,#page-partner .card,#page-stores .card,#page-settings .card,
+#page-dashboard .card,.profilecard,.research-consent{
+  -webkit-backdrop-filter:var(--glass-blur);backdrop-filter:var(--glass-blur)}
+.profilecard{background:var(--glass-bg)}
+.research-consent{background:var(--glass-bg-strong);border:1px solid var(--glass-edge);box-shadow:var(--glass-shadow)}
+.qa-tile{background:var(--glass-bg-strong);
+  -webkit-backdrop-filter:var(--glass-blur);backdrop-filter:var(--glass-blur);
+  border:1px solid var(--glass-edge);box-shadow:0 12px 26px rgba(3,25,91,.12)}
+.btn{border-radius:var(--radius-pill);background:var(--glass-bg-strong);border:1px solid var(--glass-edge)}
+.btn.primary{background:linear-gradient(135deg,#1951FC,#3781FC);border:1px solid rgba(255,255,255,.35);color:#fff;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.5), 0 12px 26px rgba(25,81,252,.32)}
+.btn.primary:hover{background:linear-gradient(135deg,#0B2CB1,#1951FC)}
+.nav{left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom));border-radius:28px;
+  background:var(--glass-bg);-webkit-backdrop-filter:var(--glass-blur);backdrop-filter:var(--glass-blur);
+  border:1px solid var(--glass-edge);box-shadow:0 18px 40px rgba(3,25,91,.20)}
+.nav button.active{background:rgba(25,81,252,.12)}
+input,select{background:rgba(255,255,255,.85);border:1px solid var(--glass-edge);border-radius:16px}
+.blockedcard{background:rgba(253,236,236,.85);
+  -webkit-backdrop-filter:var(--glass-blur);backdrop-filter:var(--glass-blur)}
+/* Desktop: the same .nav is the 248px sidebar (v66 shell) — the
+   floating-pill geometry above must NOT reach it (first v91
+   render showed a pale sidebar with white text: the pill rule
+   outranked the shell's media rule by file order). The sidebar
+   becomes NAVY glass instead: same ramp, vertical. */
+@media (min-width:1024px){
+  .nav{left:0;right:auto;bottom:0;border-radius:0;
+    background:linear-gradient(180deg, rgba(3,25,91,.96), rgba(11,44,177,.94));
+    border:none;border-right:1px solid rgba(255,255,255,.22);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.25), 18px 0 40px rgba(3,25,91,.18)}
+}

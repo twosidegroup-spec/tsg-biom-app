@@ -115,18 +115,25 @@ const termStart = appSrc.indexOf('function runTermScan(');
 const termEnd = appSrc.indexOf("$('termScan').addEventListener", termStart);
 const term = termStart !== -1 && termEnd !== -1 ? appSrc.slice(termStart, termEnd) : '';
 check('D6 runTermScan located', term.length > 1000);
+/* v86 named pin change (Phase-3 loyalty ledger): the two direct
+   cache increments became calls to the ONE earn function
+   (loyaltyEarn appends the ledger event and recomputes the
+   cache). The D6 invariant is unchanged — the same two credit
+   points in the flow, the same amount sources, the same refusal
+   branches earning nothing — so the pins below track the earn
+   calls instead of the old assignment strings. */
 const awardSites = [];
-let ai = term.indexOf('person.loyaltyPoints = (person.loyaltyPoints || 0) +');
-while (ai !== -1) { awardSites.push(ai); ai = term.indexOf('person.loyaltyPoints = (person.loyaltyPoints || 0) +', ai + 1); }
+let ai = term.indexOf('loyaltyEarn(person,');
+while (ai !== -1) { awardSites.push(ai); ai = term.indexOf('loyaltyEarn(person,', ai + 1); }
 check('D6 exactly two award sites remain (visit + post-payment)', awardSites.length === 2, 'found ' + awardSites.length);
-check('D6 the visit award is the 5-point award, gated to no-amount scans',
+check('D6 the visit award is the config visit award, gated to no-amount scans',
   term.indexOf('if (!(amount > 0)) {') !== -1 &&
-  term.indexOf('person.loyaltyPoints = (person.loyaltyPoints || 0) + 5;') !== -1 &&
-  awardSites.length === 2 && term.slice(Math.max(0, awardSites[0] - 200), awardSites[0]).indexOf('if (!(amount > 0))') !== -1);
+  term.indexOf("loyaltyEarn(person, LOYALTY_CONFIG.visitPoints, 'visit'") !== -1 &&
+  awardSites.length === 2 && term.slice(Math.max(0, awardSites[0] - 400), awardSites[0]).indexOf('if (!(amount > 0))') !== -1);
 check('D6 no award is computed from the typed amount anywhere in the app',
-  appSrc.indexOf('Math.floor(amount / 10)') === -1);
+  appSrc.indexOf('Math.floor(amount /') === -1);
 const txWrite = term.indexOf("return DB.put('transactions', tx).then(function () {");
-const payAward = term.indexOf('var payPts = Math.floor(tx.amount / 10);');
+const payAward = term.indexOf('var payPts = Math.floor(tx.amount / LOYALTY_CONFIG.paymentEarnDivisor);');
 check('D6 the payment award is computed from the created transaction amount', payAward !== -1);
 check('D6 the payment award sits INSIDE the transaction-write success callback',
   txWrite !== -1 && payAward > txWrite && awardSites.length === 2 && awardSites[1] > txWrite);
@@ -137,7 +144,7 @@ const refusalMarks = ['Biom Pay not created: this person has no linked', "exceed
 check('D6 all three refusal branches still exist', refusalMarks.every(function (m) { return term.indexOf(m) !== -1; }));
 check('D6 no refusal branch carries an award (award sites are only the two pinned ones)',
   awardSites.every(function (pos) {
-    return term.slice(Math.max(0, pos - 200), pos).indexOf('if (!(amount > 0))') !== -1 || pos > txWrite;
+    return term.slice(Math.max(0, pos - 400), pos).indexOf('if (!(amount > 0))') !== -1 || pos > txWrite;
   }));
 
 /* ---------- 0.4 inline handlers / inline scripts removed ---------- */
@@ -150,7 +157,7 @@ check('INLINE app.js binds the Done buttons with addEventListener',
   ['enrollDoneRegistry', 'enrollDoneWallet', 'enrollDoneTerminal'].every(function (id) { return appSrc.indexOf("'" + id + "'") !== -1; }) &&
   appSrc.indexOf("b.addEventListener('click', function () { go(pair[1]); })") !== -1);
 check('INLINE SW registration lives in app.js now',
-  appSrc.indexOf("navigator.serviceWorker.register('sw.js')") !== -1 && htmlSrc.indexOf('serviceWorker') === -1);
+  appSrc.indexOf("navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })") !== -1 && htmlSrc.indexOf('serviceWorker') === -1);
 check('INLINE window.TSGApp export retained (nothing else broke)',
   appSrc.indexOf('window.TSGApp = { go: go };') !== -1);
 

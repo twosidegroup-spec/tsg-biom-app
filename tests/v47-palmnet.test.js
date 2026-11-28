@@ -220,8 +220,10 @@ check('APP worker preprocessing is assembled from biometrics (single implementat
   appSrc.indexOf('B.palmnetPreprocessSource()') !== -1);
 check('APP model loads from the in-repo manifest with a SHA-256 check',
   appSrc.indexOf('models/palmnet/manifest.json') !== -1 && appSrc.indexOf('model hash mismatch') !== -1);
-check('APP runtime loads from the pinned jsDelivr CDN (the MediaPipe pattern)',
-  appSrc.indexOf('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.wasm.min.js') !== -1);
+check('APP runtime is the TSG Palm Engine shipped inside biometrics.js (v65 named pin change: ONNX Runtime Web removed entirely — TSG-ONLY programme; the v64 vendored-copy pin is superseded)',
+  appSrc.indexOf('B.palmEngineSource()') !== -1 &&
+  appSrc.indexOf('vendor/onnxruntime-web-1.20.1/ort.wasm.min.js') === -1 &&
+  appSrc.indexOf('cdn.jsdelivr.net/npm/onnxruntime-web') === -1);
 check('APP enrolment banks neural embeddings from the burst picks',
   appSrc.indexOf('palmnetBankFromEmbeddings') !== -1 && appSrc.indexOf('sel.picks') !== -1);
 check('APP Registry shows Neural scan needed + the Neural Scan action',
@@ -237,9 +239,10 @@ const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
 const shellBlock = swSrc.slice(swSrc.indexOf('const SHELL'), swSrc.indexOf('];', swSrc.indexOf('const SHELL')));
 check('SW shell does NOT precache the model (install can never fail on it)', shellBlock.indexOf('palmnet') === -1 && shellBlock.indexOf('models/') === -1);
 const man = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'models', 'palmnet', 'manifest.json'), 'utf8'));
-check('MODEL manifest is coherent (parts exist, sizes add up)',
-  man.bytes === 4317738 && typeof man.sha256 === 'string' && man.sha256.length === 64 &&
-  man.parts.length === 7 && man.parts.every(function (p) { return fs.existsSync(path.join(__dirname, '..', 'models', 'palmnet', p)); }));
+check('MODEL manifest is coherent (v65 named pin change: the TSGP container — weights parts + program, sizes add up)',
+  man.format === 'tsg-palm-engine-container' && man.bytes === 4278756 && typeof man.sha256 === 'string' && man.sha256.length === 64 &&
+  man.parts.length === 7 && man.parts.every(function (p) { return fs.existsSync(path.join(__dirname, '..', 'models', 'palmnet', p)); }) &&
+  fs.existsSync(path.join(__dirname, '..', 'models', 'palmnet', 'program.json')));
 
 console.log(fail === 0 ? 'ALL v47 PALMNET TESTS PASSED (' + pass + ')' : fail + ' FAILURES, ' + pass + ' passed');
 process.exit(fail === 0 ? 0 : 1);

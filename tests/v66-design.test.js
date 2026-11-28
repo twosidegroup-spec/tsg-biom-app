@@ -103,11 +103,12 @@ check('ACTIVITY the inspector is desktop-only (mobile keeps the v63 behaviour)',
   appSrc.indexOf("window.matchMedia('(min-width: 1024px)').matches") !== -1);
 
 /* ---------- money flows as desktop sheets (§B.2) ---------------------- */
-check('SHEETS a real backdrop element exists and is shown only while a flow is open on the wallet page',
+check('SHEETS a real backdrop element exists and is shown only while a flow is open on the wallet page (v77 mechanism change: body.sheet-open class maintained in app.js replaces the v66 body:has() selectors — same visual rule, no per-mutation style re-test)',
   html.indexOf('id="sheetBackdrop"') !== -1 && html.indexOf('class="sheet-backdrop"') !== -1 &&
-  css.indexOf('body:has(#page-wallet.active #walletAdd:not(.hidden)) .sheet-backdrop') !== -1 &&
-  css.indexOf('body:has(#page-wallet.active #walletSend:not(.hidden)) .sheet-backdrop') !== -1 &&
-  css.indexOf('body:has(#page-wallet.active #walletPay:not(.hidden)) .sheet-backdrop') !== -1);
+  css.indexOf('body.sheet-open .sheet-backdrop') !== -1 &&
+  css.indexOf('body:has(#page-wallet.active #walletAdd') === -1 &&
+  appSrc.indexOf("classList.toggle('sheet-open'") !== -1 &&
+  appSrc.indexOf("'walletAdd'") !== -1 && appSrc.indexOf("'walletSend'") === -1 && appSrc.indexOf("'walletPay'") !== -1);
 check('SHEETS Send / Add Money / Biom Pay present as centred 480px modal sheets at >=1024px only',
   css.indexOf('#walletAdd:not(.hidden),#walletSend:not(.hidden),#walletPay:not(.hidden)') !== -1 &&
   css.indexOf('width:min(480px,94vw)') !== -1 && css.indexOf('box-shadow:var(--shadow-l2)') !== -1 &&
@@ -131,10 +132,12 @@ check('DESK the Desk becomes a console home on desktop (KPI strip over log/actio
   css.indexOf('#page-dashboard.active{display:grid;grid-template-columns:7fr 5fr') !== -1 &&
   css.indexOf('#page-dashboard>.statsstrip{grid-column:1/-1') !== -1 &&
   css.indexOf('#page-dashboard>.desk-actions{grid-column:2') !== -1);
-check('REGISTRY the desktop list–detail pattern is present (row click opens the detail panel)',
+check('REGISTRY the desktop list–detail pattern is present (row click opens the detail panel) (v77 mechanism change: .detail-open class maintained in app.js replaces the :has() selector)',
   html.indexOf('id="registryDetail"') !== -1 && html.indexOf('id="registryDetailBody"') !== -1 &&
   appSrc.indexOf('function showRegistryDetail(p)') !== -1 &&
-  css.indexOf('#page-registry.active:has(#registryDetail:not(.hidden))') !== -1);
+  css.indexOf('#page-registry.active.detail-open') !== -1 &&
+  css.indexOf('#page-registry.active:has(') === -1 &&
+  appSrc.indexOf("classList.toggle('detail-open'") !== -1);
 check('REGISTRY grant/revoke in the panel routes through the existing row toggle (behaviour unchanged)',
   appSrc.indexOf("document.querySelector('[data-owner-toggle=\"' + id + '\"]')") !== -1 &&
   html.indexOf('id="registryDetailOwnerBtn"') !== -1);
@@ -145,11 +148,11 @@ check('SKELETONS row-shaped skeletons exist for desktop alongside the mobile car
   html.indexOf('id="walletProfilesSkeleton"') !== -1);
 
 /* ---------- version + migration (§D.5 / item 9) -------------------------- */
-check('VERSION app, shell, user-visible line and chain agree at v66',
-  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v66' &&
-  swSrc.indexOf("CACHE = 'tsg-biom-shell-v66'") !== -1 &&
-  html.indexOf('TSG Biom · App v66 · TwoSide Group') !== -1 &&
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v66');
+check('VERSION app, shell, user-visible line and chain agree at v91 (v91 named pin change: liquid glass)',
+  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v91' &&
+  swSrc.indexOf("CACHE = 'tsg-biom-shell-v91'") !== -1 &&
+  html.indexOf('TSG Biom · App v91 · TwoSide Group') !== -1 &&
+  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v91');
 check('MIGRATION the v66 step is a pure adoption: a v65 store opens byte-identical',
   (function () {
     const store = {

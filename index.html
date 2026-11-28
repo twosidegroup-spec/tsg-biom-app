@@ -21,13 +21,13 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="TSG Biom">
-<meta name="biom-build" content="v87">
+<meta name="biom-build" content="v91">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-180.png">
-<link rel="stylesheet" href="styles.css?b=v87">
-<script src="vendor/mediapipe-hands-0.4.1675469240/hands.js?b=v87"></script>
-<script src="biometrics.js?b=v87"></script>
+<link rel="stylesheet" href="styles.css?b=v91">
+<script src="vendor/mediapipe-hands-0.4.1675469240/hands.js?b=v91"></script>
+<script src="biometrics.js?b=v91"></script>
 </head>
 <body class="mode-customer">
 <!-- v71 boot splash: a neutral branded state that paints before
@@ -70,13 +70,18 @@
   <button data-page="dashboard" data-face="owner"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>Home</button>
   <button data-page="enroll" data-face="owner"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="8" r="3.5"/><path d="M4 20c.6-3.2 3-5 6-5s5.4 1.8 6 5"/><path d="M18.5 5v6M15.5 8h6"/></svg>regBIOM</button>
   <button data-page="terminal" data-face="owner"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M4 12h16"/></svg>takeBIOM</button>
-  <button data-page="scanner" data-face="customer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M4 12h16"/></svg>Scanner</button>
+  <button data-page="scanner" class="nav-scan" data-face="customer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M4 12h16"/></svg>Scanner</button>
   <button data-page="balance" data-face="customer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h12M12 3.5v17M8.5 20.5h7"/><path d="M5.5 8 3.8 13a2.4 2.4 0 0 0 3.4 0L5.5 8zM18.5 8 16.8 13a2.4 2.4 0 0 0 3.4 0L18.5 8z"/><path d="M5.5 8h13"/></svg>Balance</button>
   <button data-page="registry" data-face="owner"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5c.5-3 2.7-4.6 5.5-4.6s5 1.6 5.5 4.6"/><path d="M15.5 5.8a3.2 3.2 0 0 1 0 5.9M17.8 15.2c1.6.7 2.5 2 2.8 4"/></svg>People</button>
   <button data-page="more" data-face="owner"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>More</button>
 </nav>
 
 <main>
+  <!-- v88: the persistent sync indicator — plain-words sync state
+       (Synced / N pending / Offline / stopped + next step) visible
+       on every surface where records are created. Text is set by
+       renderSyncStatus from the sync engine's indicator(). -->
+  <div id="syncIndicator" class="sync-indicator kind-pending" role="status" aria-live="polite" aria-label="Sync status"><span class="sync-dot" aria-hidden="true"></span><span id="syncIndicatorText">Checking sync…</span></div>
   <!-- ROLE CHOICE (v67) -->
   <section class="page" id="page-role">
     <div class="rolewrap">
@@ -107,7 +112,7 @@
 
     <div id="walletLocked" class="card">
       <h2>Open your wallet</h2>
-      <p class="sub">Your wallet lives on this device and opens without a scan — tap your profile to open it. Choosing a profile is not a security check: your palm authorises payments, not entry.</p>
+      <p class="sub">Your wallet lives on this device and opens without a scan — tap your name to open it. Your palm is only needed when you pay or add money.</p>
       <h2 style="margin-top:22px">Choose your wallet</h2>
       <div id="walletProfilesSkeleton" class="profilecards" aria-hidden="true"><div class="skelcard"></div><div class="skelcard"></div></div>
       <div id="walletProfiles" class="profilecards"></div>
@@ -132,13 +137,14 @@
         <div class="balpoints"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="9" r="5.2"/><path d="M8.8 13.2 7 21l5-2.6L17 21l-1.8-7.8"/></svg><span id="wHomePoints">0 pts</span><span class="balpoints-lbl">Palm Loyalty</span></div>
         <div class="balnote">Demo balance · Demo money — not real funds</div>
       </div>
+      <div id="wHomeBlocked" class="blockedcard hidden" role="alert"></div>
       <div id="wHomeMsg" style="margin-top:12px"></div>
       <div class="qa-grid">
         <button class="qa-tile" id="wAddOpen"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M12 8.4v7.2M8.4 12h7.2"/></svg><span>Add Money</span></button>
-        <button class="qa-tile" id="wSendOpen"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M9.2 14.8 14.8 9.2M10.2 9.2h4.6v4.6"/></svg><span>Send Money</span></button>
         <button class="qa-tile" id="wPayOpen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 11.8V6.2a1.5 1.5 0 0 1 3 0v4.3m0-5.8a1.5 1.5 0 0 1 3 0v5.3m0-4.8a1.5 1.5 0 0 1 3 0v5.8m0-3.6a1.5 1.5 0 0 1 3 0v4.7c0 4.3-3 6.9-6.9 6.9-3.4 0-5.7-1.9-7.1-5L3.7 12c-.4-.9.7-1.8 1.5-1.2L7 12.4"/></svg><span>Biom Pay</span></button>
         <button class="qa-tile" id="wQuickScan"><svg viewBox="0 0 24 24" aria-hidden="true" class="palmicon"><path d="M7 11.8V6.2a1.5 1.5 0 0 1 3 0v4.3m0-5.8a1.5 1.5 0 0 1 3 0v5.3m0-4.8a1.5 1.5 0 0 1 3 0v5.8m0-3.6a1.5 1.5 0 0 1 3 0v4.7c0 4.3-3 6.9-6.9 6.9-3.4 0-5.7-1.9-7.1-5L3.7 12c-.4-.9.7-1.8 1.5-1.2L7 12.4"/></svg><span>Scan Palm</span></button>
         <button class="qa-tile" id="wQuickHistory"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M12 7.4V12l3.1 2"/></svg><span>History</span></button>
+        <button class="qa-tile" id="wLoyaltyOpen"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="9" r="5.2"/><path d="M8.8 13.2 7 21l5-2.6L17 21l-1.8-7.8"/></svg><span>Palm Loyalty</span></button>
       </div>
       <div class="card seccard" id="wFactsCard" data-face="customer">
         <h2>Your wallet</h2>
@@ -194,34 +200,6 @@
       </div>
     </div>
 
-    <div id="walletSend" class="card hidden" role="dialog" aria-modal="true" aria-label="Send Money">
-      <h2>Send Money (demo)</h2>
-      <p class="sub">Demo money between wallets on this device, in three steps: <b>first</b> the receiver is found by <b>their palm</b> — if the scanned palm matches no registered Biom ID, no money can be sent — <b>then</b> you enter the amount, and <b>finally</b> your own palm authorises the send.</p>
-      <p class="balanceline">Your balance: <b id="wSendBalance">BDT 0</b></p>
-      <div class="progresslabel" id="wSendProgressLabel">Step 1 of 3 — Scan the receiver's palm</div>
-      <div class="progress" style="margin:10px 0 4px"><i id="wSendProgressBar"></i></div>
-      <button class="btn primary big" id="wSendScanReceiver" style="margin-top:10px">Scan the Receiver's Palm</button>
-      <div id="wSendAmountBlock" class="hidden" style="margin-top:16px">
-        <div id="wSendReceiverLine"></div>
-        <div class="progresslabel" style="margin-top:14px">Step 2 of 3 — Enter the amount</div>
-        <label>Amount (BDT)</label>
-        <input id="wSendAmount" type="number" min="1" placeholder="e.g. 200">
-        <div class="chips" data-chips="wSendAmount">
-          <button type="button" class="chip" data-amt="100">BDT 100</button>
-          <button type="button" class="chip" data-amt="500">BDT 500</button>
-          <button type="button" class="chip" data-amt="1000">BDT 1,000</button>
-          <button type="button" class="chip" data-amt="5000">BDT 5,000</button>
-        </div>
-        <p class="balanceline" id="wSendProjected" style="margin-top:10px"></p>
-        <div class="row" style="margin-top:12px">
-          <div><button class="btn" id="wSendChangeReceiver">Change receiver</button></div>
-          <div><button class="btn primary" id="wSendContinue">Continue</button></div>
-        </div>
-      </div>
-      <div id="wSendMsg" style="margin-top:12px"></div>
-      <div id="wSendConfirm" class="hidden" style="margin-top:14px"></div>
-      <button class="btn" id="wSendBack" style="margin-top:12px">Back</button>
-    </div>
 
     <div id="walletPay" class="card hidden" role="dialog" aria-modal="true" aria-label="Biom Pay">
       <h2>Biom Pay (demo)</h2>
@@ -452,7 +430,7 @@
         <div id="acLoyaltyBody"></div>
       </div>
     </div>
-    <div class="versionline" id="versionLine">TSG Biom · App v87 · TwoSide Group</div>
+    <div class="versionline" id="versionLine">TSG Biom · App v91 · TwoSide Group</div>
   </section>
 
   <!-- DESK (HOME) -->
@@ -826,7 +804,7 @@
   <!-- ADD ANGLES (v43) -->
   <section class="page" id="page-topup">
     <h1 id="topTitle">Add Angles — widen a palm profile</h1>
-    <p class="sub" id="topSub">Runs the same burst capture as enrolment and adds diverse sharp templates to this person's stored profile — or re-banks the palm in the current format when it was enrolled in the previous one. Their Biom ID, wallet, balance, statement, linked accounts and loyalty points do not change — only the palm profile gains templates.</p>
+    <p class="sub" id="topSub">Take a few more photos of this palm — different angles, different light. It makes the palm easier to recognise later, so scans work first time. Nothing else changes: same Biom ID, same wallet, same balance, same loyalty points.</p>
     <div class="card">
       <div id="topWho" class="kv"></div>
       <div class="camtoggle" data-cam-toggle="topup" role="group" aria-label="Add-angles camera choice">
@@ -929,6 +907,6 @@
 
 <div id="toast" class="hidden" role="status"></div>
 
-<script src="app.js?b=v87"></script>
+<script src="app.js?b=v91"></script>
 </body>
 </html>

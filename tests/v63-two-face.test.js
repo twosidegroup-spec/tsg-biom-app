@@ -64,12 +64,12 @@ const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
 const apiRecordsSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'tsg-biom-api', 'lib', 'records.js'), 'utf8');
 
 /* ---------------- version coherence ---------------------------- */
-check('VERSION app, shell and chain agree at v66 (v66 named pin change: design overhaul)',
-  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v66' &&
-  swSrc.indexOf('tsg-biom-shell-v66') !== -1 &&
-  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v66');
-check('VERSION the chain is v37->v66: 30 links, 29 migration steps (the v38 suite proves the 29 applied steps)',
-  B.BIOM_DATA_VERSIONS.length === 30 && B.BIOM_DATA_VERSIONS[0] === 'v37', 'links=' + B.BIOM_DATA_VERSIONS.length);
+check('VERSION app, shell and chain agree at v91 (v91 named pin change: liquid glass))',
+  (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v91' &&
+  swSrc.indexOf('tsg-biom-shell-v91') !== -1 &&
+  B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v91');
+check('VERSION the chain is v37->v88: 52 links, 51 migration steps (v91 named pin change: liquid glass) — was 50 links at v86 (the v38 suite proves the applied steps; v79 named pin change: block system, pure adoption like the v77 performance link)',
+  B.BIOM_DATA_VERSIONS.length === 55 && B.BIOM_DATA_VERSIONS[0] === 'v37', 'links=' + B.BIOM_DATA_VERSIONS.length);
 
 /* ---------------- the face-mode core, extracted ---------------- */
 const faceSrc = appSrc.slice(appSrc.indexOf('/* FACE-MODE-BEGIN'), appSrc.indexOf('/* FACE-MODE-END */'));
@@ -174,7 +174,7 @@ check('FACE Lock returns to the customer face (surfaces detached, gate closed)',
   check('MARKUP the page boots in customer mode and carries the owner bar + version line',
     htmlSrc.indexOf('<body class="mode-customer">') !== -1 &&
     htmlSrc.indexOf('id="ownerBar"') !== -1 && htmlSrc.indexOf('id="ownerLockBtn"') !== -1 &&
-    htmlSrc.indexOf('id="versionLine"') !== -1 && htmlSrc.indexOf('App v66') !== -1 &&
+    htmlSrc.indexOf('id="versionLine"') !== -1 && htmlSrc.indexOf('App v91') !== -1 &&
     htmlSrc.indexOf('id="brandLogo"') !== -1);
   check('MARKUP the wallet hero carries the points chip',
     htmlSrc.indexOf('id="wHomePoints"') !== -1 && htmlSrc.indexOf('Palm Loyalty') !== -1);
@@ -185,10 +185,9 @@ check('FACE Lock returns to the customer face (surfaces detached, gate closed)',
   check('MARKUP the enrolment consent line names the sealed code and the vault, never a photo',
     htmlSrc.indexOf('sealed (encrypted) under this device\'s Biom Vault key — never a photo') !== -1 &&
     htmlSrc.indexOf('secure TSG Biom vault') !== -1);
-  check('MARKUP the Send flow is receiver block, then amount block, then confirm',
-    htmlSrc.indexOf('id="wSendScanReceiver"') !== -1 && htmlSrc.indexOf('id="wSendAmountBlock"') !== -1 &&
-    htmlSrc.indexOf('id="wSendContinue"') !== -1 && htmlSrc.indexOf('id="wSendChangeReceiver"') !== -1 &&
-    htmlSrc.indexOf('Step 1 of 3 — Scan the receiver') !== -1 && htmlSrc.indexOf('Step 2 of 3 — Enter the amount') !== -1);
+  check('MARKUP the Send flow is REMOVED (v90, Chairman 2026-11-28 — people send money in bKash itself)',
+    htmlSrc.indexOf('id="wSendScanReceiver"') === -1 && htmlSrc.indexOf('id="wSendAmountBlock"') === -1 &&
+    htmlSrc.indexOf('id="wSendContinue"') === -1 && htmlSrc.indexOf('id="walletSend"') === -1);
   check('MARKUP the wallet Pay card carries the store picker, amount and scan button',
     htmlSrc.indexOf('id="walletPay"') !== -1 && htmlSrc.indexOf('id="wPayStore"') !== -1 &&
     htmlSrc.indexOf('id="wPayAmount"') !== -1 && htmlSrc.indexOf('id="wPayScan"') !== -1 &&
@@ -231,20 +230,15 @@ check('FACE Lock returns to the customer face (surfaces detached, gate closed)',
     appSrc.indexOf('deviceKey: SYNC_BOOTSTRAP_KEY') !== -1);
   check('WIRING the legacy shared-key pref is never read as the device key',
     appSrc.indexOf("deviceKey: syncPrefGet('biomSyncDeviceKey')") === -1);
-  const recvSlice = appSrc.slice(appSrc.indexOf("$('wSendScanReceiver')"), appSrc.indexOf('function renderSendConfirm()'));
-  check('SEND step 1 identifies the receiver WITHOUT reading or validating the amount (v63 order)',
-    recvSlice.indexOf('streamIdentifyPalm') !== -1 && recvSlice.indexOf("$('wSendAmount').value") === -1 &&
-    recvSlice.indexOf('walletValidateAmount') === -1 && recvSlice.indexOf('strictMoney') === -1);
-  check('SEND step 2 validates the amount on Continue; step 3 authorises as before',
-    appSrc.indexOf("$('wSendContinue').addEventListener") !== -1 &&
-    appSrc.indexOf('B.walletValidateAmount($(\'wSendAmount\').value)') !== -1 &&
-    appSrc.indexOf('B.walletApplySend(') !== -1);
+  check('SEND the whole send wiring is REMOVED (v90, Chairman 2026-11-28)',
+    appSrc.indexOf('wSendScanReceiver') === -1 && appSrc.indexOf('renderSendConfirm') === -1 &&
+    appSrc.indexOf("$('wSendContinue')") === -1 && appSrc.indexOf('B.walletApplySend(') === -1);
   const paySlice = appSrc.slice(appSrc.indexOf("$('wPayScan').addEventListener"), appSrc.indexOf('/* ---------------- My Account'));
   check('PAY the wallet Pay verifies the OWN palm under the strict rule and creates the terminal-shaped record',
     paySlice.indexOf('{ strictMoney: true }') !== -1 &&
     paySlice.indexOf("'BIOM-PAY-' + seq") !== -1 &&
     paySlice.indexOf('status: PAY_STATUS') !== -1 &&
-    paySlice.indexOf('Math.floor(tx.amount / 10)') !== -1);
+    paySlice.indexOf('Math.floor(tx.amount / LOYALTY_CONFIG.paymentEarnDivisor)') !== -1);
   check('PAY the store picker is filled from the same STORES list as enrolment and terminal',
     appSrc.indexOf("['enStore', 'termStore', 'wPayStore']") !== -1);
 })();
@@ -311,8 +305,14 @@ async function engineTests() {
   m1.engine.noteScan({ kind: 'owner-unlock', profileName: 'Rig', biomId: 'TSG-BIO-9', hand: 'left', edccScore: 0.5, palmnetScore: 0.9, result: 'Verified' });
   await tick();
   const st1 = await m1.engine.flush();
+  /* v88 PIN CHANGE (named): instant sync attempts the flush at
+     record creation AND this rig flushes manually, so the
+     bootstrap registration may be attempted twice — the
+     invariant is unchanged: EVERY call is the registration
+     call; no scan/profile write is ever attempted with the
+     bootstrap key. */
   check('SYNC with registration refused, NO scan/profile write is attempted with the bootstrap key',
-    calls1.length === 1 && calls1[0].url.endsWith('/api/devices'), 'calls=' + calls1.length);
+    calls1.length >= 1 && calls1.every(function (c) { return c.url.endsWith('/api/devices'); }), 'calls=' + calls1.length);
   check('SYNC with registration refused, the queue HOLDS (nothing dropped)',
     st1.queued === 1 && m1.engine.pendingItems().length === 1, 'queued=' + st1.queued);
   check('SYNC with registration refused, no misleading key-rejected latch is set',

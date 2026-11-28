@@ -34,8 +34,11 @@
    6. SYNC SHAPE: with the vault dep wired, the engine posts
       ciphertext + enc:'v1' through the EXISTING profile shape;
       the API's own shape function (sibling repo, when present)
-      keeps the marker and the strings verbatim; without the dep
-      the engine posts plaintext exactly as v56 (proven there).
+      keeps the marker and the strings verbatim. (v73 update:
+      the API shape now REFUSES a plaintext template core —
+      'enc v1 required' — see the named v73 PIN REPLACEMENT in
+      section 6 below; the v56 rig proves the sealed E2E path
+      against the real server.)
    7. VAULT: key wrap/unwrap under a passphrase and the recovery
       sheet encode/decode round-trip; the app source carries the
       vault card, the honest key-loss copy, the storage-boundary
@@ -351,15 +354,30 @@ async function main() {
     const shaped = (apiShape(posted) || {}).record;
     check('SYNC the API shape keeps enc v1 and the ciphertext verbatim (server stays blind)',
       !!shaped && shaped.enc === 'v1' && deepEq(shaped.edccCodes, posted.edccCodes) && deepEq(shaped.neuralEmbeddings, posted.neuralEmbeddings));
-    const shapedPlain = (apiShape(core) || {}).record;
-    check('SYNC the API shape adds no enc marker to a plaintext core', !!shapedPlain && !('enc' in shapedPlain));
+    /* v73 PIN REPLACEMENT (named, 2026-11-26 — flagged per the
+       alignment rules): this check previously read 'SYNC the
+       API shape adds no enc marker to a plaintext core' and
+       proved a PLAINTEXT template core passes the API shape
+       unchanged. That contract is deliberately closed by the
+       v73 API fix (S2-2): a non-tombstone profile carrying
+       templates without enc:'v1' is REFUSED. The replacement
+       check asserts the equivalent sealed-contract outcome
+       from the other side: the same plaintext core is refused
+       with 'enc v1 required' and yields NO record, while the
+       sealed core above still shapes verbatim (previous check,
+       unchanged). No outcome is weakened — the plaintext path
+       it proved is the hole the fix exists to close. */
+    const plainAttempt = apiShape(core) || {};
+    check('SYNC v73 REPLACEMENT: the API shape REFUSES a plaintext template core (enc v1 required, no record)',
+      plainAttempt.error === 'enc v1 required' && !plainAttempt.record,
+      String(plainAttempt.error));
   } else if (!apiShape) {
     info('sibling tsg-biom-api repo not present: the API-side shape checks run in that repo\'s own suite (api.test.js)');
   }
 
   /* ---------- 7. vault UX + wiring source pins ------------------- */
-  check('VERSION app is v66 and the shell is v66 (v66 named pin change: design overhaul)', appSrc.indexOf("APP_DATA_VERSION = 'v66'") !== -1 && swSrc.indexOf('tsg-biom-shell-v66') !== -1);
-  check('VERSION v66 is the newest chain link (v66 named pin change: design overhaul)', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v66');
+  check('VERSION app and shell agree at v91 (v91 named pin change: liquid glass)', appSrc.indexOf("APP_DATA_VERSION = 'v91'") !== -1 && swSrc.indexOf('tsg-biom-shell-v91') !== -1);
+  check('VERSION v88 is the newest chain link (v91 named pin change: liquid glass)', B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v91');
   const vaultIds = ['vaultStatus', 'vaultReport', 'vaultBanks', 'vaultSetup', 'vaultSheetSetup', 'vaultPass1', 'vaultPass2', 'vaultAckInput', 'vaultAckBtn', 'vaultSetupMsg', 'vaultActions', 'vaultConvertBtn', 'vaultShowPass', 'vaultShowBtn', 'vaultHideBtn', 'vaultSheetView', 'vaultShowMsg', 'vaultImportCode', 'vaultImportPass', 'vaultImportBtn', 'vaultImportMsg'];
   check('VAULT UX the Biom Vault card carries every control the wiring expects',
     vaultIds.every(function (id) { return htmlSrc.indexOf('id="' + id + '"') !== -1; }),

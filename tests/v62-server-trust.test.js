@@ -43,10 +43,10 @@ const swSrc = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
 
 /* ---------------- version + shape ------------------------------ */
 (function () {
-  check('VERSION app, shell and chain agree at v66 (v66 named pin change: design overhaul)',
-    (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v66' &&
-    swSrc.indexOf('tsg-biom-shell-v66') !== -1 &&
-    B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v66');
+  check('VERSION app, shell and chain agree at v91 (v91 named pin change: liquid glass))',
+    (appSrc.match(/APP_DATA_VERSION = '(v\d+)'/) || [])[1] === 'v91' &&
+    swSrc.indexOf('tsg-biom-shell-v91') !== -1 &&
+    B.BIOM_DATA_VERSIONS[B.BIOM_DATA_VERSIONS.length - 1] === 'v91');
 
   const person = { id: 'TSG-BIO-9', name: 'Rig', palmProfile: { v: 4, format: 'packed96', codes: ['QUJD'] } };
   check('SHAPE a person without a walletLink emits the v61 record byte-identical',
@@ -156,12 +156,18 @@ async function engineTests() {
   /* CAS: baseVersion at send time, ack stored, 409 handled */
   const casCalls = [];
   let casStage = 0;
+  let releaseCas1 = null;
   m = makeEngine({
     prefs: { deviceId: 'dev-cas', deviceSecret: 'secret-cas', deviceKey: '' },
     fetchFn: function (url, opts) {
       casCalls.push({ url: url, body: JSON.parse(opts.body) });
       casStage++;
-      if (casStage === 1) return Promise.resolve(jsonRes(201, { ok: true, biomId: 'TSG-BIO-9', version: 1 }));
+      /* v88 PIN CHANGE (named): instant sync fires the first
+         write at creation, so the rig holds that first response
+         pending while it inspects the still-queued item — the
+         assertion (posted body carries baseVersion, the queued
+         item itself does not) is unchanged. */
+      if (casStage === 1) return new Promise(function (r) { releaseCas1 = function () { r(jsonRes(201, { ok: true, biomId: 'TSG-BIO-9', version: 1 })); }; });
       if (casStage === 2) return Promise.resolve(jsonRes(409, { error: 'version conflict', currentVersion: 5 }));
       return Promise.resolve(jsonRes(201, { ok: true, biomId: 'TSG-BIO-9', version: 6 }));
     }
@@ -169,6 +175,8 @@ async function engineTests() {
   m.engine.noteProfile(PERSON);
   await tick();
   const queuedItem = m.store.outbox[0];
+  if (releaseCas1) releaseCas1();
+  await tick();
   await m.engine.flush();
   check('CAS the first profile write carries baseVersion 0 (queued item itself unchanged)',
     casCalls[0].body.baseVersion === 0 && !!queuedItem && !('baseVersion' in queuedItem.record));

@@ -167,7 +167,7 @@ check('MIGRATE the v42 step never resets an existing wallet balance',
 const appSrc = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
 check('APP registration creates the wallet (finishEnrollment carries B.walletNew())', appSrc.indexOf('wallet: B.walletNew()') !== -1);
 check('APP add-money goes through B.walletApplyAddMoney', appSrc.indexOf('B.walletApplyAddMoney') !== -1);
-check('APP send-money goes through B.walletApplySend', appSrc.indexOf('B.walletApplySend') !== -1);
+check('APP send-money is REMOVED (Chairman, 2026-11-28: people send money in bKash itself — the app never calls B.walletApplySend; the store primitive stays for historical statement rows)', appSrc.indexOf('B.walletApplySend') === -1);
 check('APP wallet scans use the existing pipelines (streamVerifyPalm / streamIdentifyPalm)',
   appSrc.indexOf('streamIdentifyPalm') !== -1 && appSrc.indexOf('streamVerifyPalm') !== -1);
 const htmlSrc = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');

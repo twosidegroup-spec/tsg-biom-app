@@ -164,9 +164,9 @@ check('PICKER openWalletDirect invokes no camera, stream, scan card or record',
 /* ---------------- copy: entry is not a gate ---------------------- */
 check('COPY the wallet page states the truth: no scan to enter, palm only when money moves',
   htmlSrc.indexOf('opens directly — no scan to enter') !== -1 && htmlSrc.indexOf('your palm is asked for only when money moves') !== -1);
-check('COPY the picker card is not dressed as a security check',
-  htmlSrc.indexOf('opens without a scan — tap your profile to open it') !== -1 &&
-  htmlSrc.indexOf('Choosing a profile is not a security check: your palm authorises payments, not entry.') !== -1);
+check('COPY the picker card is not dressed as a security check (v90 plain-words pass: same truth, simpler words)',
+  htmlSrc.indexOf('opens without a scan — tap your name to open it') !== -1 &&
+  htmlSrc.indexOf('Your palm is only needed when you pay or add money.') !== -1);
 check('COPY no copy anywhere claims the palm opens or unlocks the wallet',
   htmlSrc.indexOf('Scan Your Palm to Open Your Wallet') === -1 &&
   htmlSrc.indexOf('Scan your palm to open your wallet') === -1 &&
@@ -207,17 +207,13 @@ check('GUARDS the typed REPLACE confirmation still gates the re-registration',
 /* v63 PIN CHANGE (named openly): a fourth strict site — the
    wallet Biom Pay — was added by the Chairman's explicit order
    (2026-11-25 10:47); see the v49 suite's note. */
-check('MONEY exactly four strict-money call sites remain (terminal Biom Pay, Add Money, Send authorise, wallet Biom Pay — v63 named pin change)',
-  (appSrc.match(/\{ strictMoney: true \}\)/g) || []).length === 4);
-const addSrc = sliceBetween(appSrc, "$('wAddScan').addEventListener", '/* Send Money');
+check('MONEY exactly three strict-money call sites remain (terminal Biom Pay, Add Money, wallet Biom Pay — v90 named pin change: Send Money removed)',
+  (appSrc.match(/\{ strictMoney: true(?=[, }])/g) || []).length === 3);
+const addSrc = sliceBetween(appSrc, "$('wAddScan').addEventListener", '/* ---------------- Wallet Biom Pay');
 check('MONEY Add Money still opens the scan card under the strict rule',
-  addSrc.indexOf('showWalletScan({') !== -1 && addSrc.indexOf('{ strictMoney: true }') !== -1);
-const sendAuthSrc = sliceBetween(appSrc, 'function authoriseSend()', '/* ---------------- My Account');
-check('MONEY Send authorisation still opens the scan card under the strict rule',
-  sendAuthSrc.indexOf('showWalletScan({') !== -1 && sendAuthSrc.indexOf('{ strictMoney: true }') !== -1);
-const recvSrc = sliceBetween(appSrc, "$('wSendScanReceiver').addEventListener", 'function renderSendConfirm()');
-check('MONEY the Send receiver identify remains an explicit palm scan',
-  recvSrc.indexOf('showWalletScan({') !== -1 && recvSrc.indexOf('streamIdentifyPalm') !== -1);
+  addSrc.indexOf('showWalletScan({') !== -1 && addSrc.indexOf('strictMoney: true') !== -1);
+check('MONEY the Send flow is REMOVED (v90, Chairman 2026-11-28 — no authorise, no receiver identify)',
+  appSrc.indexOf('function authoriseSend()') === -1 && appSrc.indexOf('wSendScanReceiver') === -1);
 const quickSrc = sliceBetween(appSrc, "$('wQuickScan').addEventListener", "document.querySelectorAll('[data-chips]')");
 check('MONEY quick verify (Scan Palm) remains an explicit palm scan',
   quickSrc.indexOf('showWalletScan({') !== -1 && quickSrc.indexOf('streamVerifyPalm') !== -1);

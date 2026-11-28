@@ -41,15 +41,15 @@ const csp = (html.match(/http-equiv="Content-Security-Policy" content="([^"]+)"/
 check('CSP the app ships a Content-Security-Policy meta', csp.indexOf("default-src 'none'") === 0);
 check("CSP script-src is self + wasm-unsafe-eval only (both wasm runtimes die without it)",
   csp.indexOf("script-src 'self' 'wasm-unsafe-eval'") !== -1 && csp.indexOf("script-src-attr 'none'") !== -1);
-check('CSP connect-src is pinned to the TSG Biom API (M-7 decided: the endpoint is fixed for this build)',
-  csp.indexOf("connect-src 'self' https://tsg-biom-api.vercel.app") !== -1);
+check('CSP connect-src is pinned to the TSG Biom API (M-7 decided: the endpoint is fixed for this build; v68 named pin change: blob: added — the assembled detector runtime is fetched from Blob URLs minted by this origin\'s own scripts, the same treatment worker-src/img-src/media-src already carry; blob: names no network endpoint, so the M-7 endpoint pin stands)',
+  csp.indexOf("connect-src 'self' https://tsg-biom-api.vercel.app blob:") !== -1);
 check('CSP framing, objects and forms are closed', csp.indexOf("frame-src 'none'") !== -1 &&
   csp.indexOf("object-src 'none'") !== -1 && csp.indexOf("form-action 'self'") !== -1);
 check('CSP the page sends no referrer', html.indexOf('<meta name="referrer" content="no-referrer">') !== -1);
 check('SELF-HOST no shipped file references the jsDelivr CDN any more',
   Object.keys(shipped).every(function (k) { return shipped[k].indexOf('cdn.jsdelivr.net') === -1; }));
 check('SELF-HOST MediaPipe loads from the vendored copy (script tag + locateFile)',
-  html.indexOf('src="vendor/mediapipe-hands-0.4.1675469240/hands.js"') !== -1 &&
+  html.indexOf('src="vendor/mediapipe-hands-0.4.1675469240/hands.js?b=v91"') !== -1 &&
   appSrc.indexOf("'vendor/mediapipe-hands-0.4.1675469240/' + f") !== -1);
 check('SELF-HOST ONNX Runtime is REMOVED — the TSG Palm Engine ships in biometrics.js (v65 named pin change: the v64 vendored-runtime pin is superseded by the TSG-ONLY programme)',
   appSrc.indexOf('B.palmEngineSource()') !== -1 &&
@@ -80,8 +80,8 @@ check('MODEL a context without SubtleCrypto fails soft with the reason stated, o
   (appSrc.match(/no SubtleCrypto/g) || []).length >= 2);
 
 /* ---------- service worker (Seat 2 M-3) ---------------------------- */
-check('SW the shell is v66 and models/ + vendor/ are network-only (never cached; v66 named pin change: design overhaul)',
-  swSrc.indexOf("CACHE = 'tsg-biom-shell-v66'") !== -1 &&
+check('SW the shell is v88 and models/ + vendor/ are network-only (never cached; (v91 named pin change: liquid glass))',
+  swSrc.indexOf("CACHE = 'tsg-biom-shell-v91'") !== -1 &&
   swSrc.indexOf("url.pathname.indexOf('/models/')") !== -1 &&
   swSrc.indexOf("url.pathname.indexOf('/vendor/')") !== -1);
 
@@ -119,10 +119,11 @@ check('DESIGN A-1/A-2: toggle + expansion state is published (aria-pressed / ari
   appSrc.indexOf("setAttribute('aria-current', 'page')") !== -1 && /id="toast"[^>]*role="status"/.test(html));
 check('DESIGN A-3/A-4: one focus-visible rule and the 44px chip floor',
   css.indexOf(':focus-visible') !== -1 && /\.chip\{[^}]*min-height:44px/.test(css));
-check('DESIGN M-3/R-UX2: the Send step bar and the three projected-balance lines exist and are wired',
-  html.indexOf('id="wSendProgressBar"') !== -1 && html.indexOf('id="wSendProgressLabel"') !== -1 &&
-  ['wAddProjected', 'wSendProjected', 'wPayProjected'].every(function (id) { return html.indexOf('id="' + id + '"') !== -1; }) &&
-  appSrc.indexOf('function setSendProgress(step)') !== -1 && appSrc.indexOf('function updateProjected(') !== -1 &&
+check('DESIGN M-3/R-UX2: the two projected-balance lines exist and are wired (v90: the Send step bar and its line left with the Send flow)',
+  html.indexOf('id="wSendProgressBar"') === -1 &&
+  ['wAddProjected', 'wPayProjected'].every(function (id) { return html.indexOf('id="' + id + '"') !== -1; }) &&
+  html.indexOf('id="wSendProjected"') === -1 &&
+  appSrc.indexOf('function setSendProgress(step)') === -1 && appSrc.indexOf('function updateProjected(') !== -1 &&
   appSrc.indexOf('balanceFlashPending = true') !== -1);
 check('DESIGN L-1: the wallet chooser skeleton exists in markup + CSS and retires when profiles render',
   css.indexOf('.skelcard') !== -1 && html.indexOf('id="walletProfilesSkeleton"') !== -1 &&
